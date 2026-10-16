@@ -5,6 +5,13 @@ import webview
 import sys
 import ctypes
 
+# 打包成 exe 后以无控制台方式被拉起时，stdout/stderr 会退化为 GBK 编码，
+# 打印 emoji（如 tool_check 里的 ✅）会抛 UnicodeEncodeError 导致启动失败，
+# 这里强制重配置为 UTF-8 并容忍无法编码的字符
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 from config import create_app, check_tool_availability, logger, get_conf
 
 # ========== FastAPI 应用 ==========
