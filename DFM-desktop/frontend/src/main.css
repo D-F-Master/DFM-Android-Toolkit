@@ -1,0 +1,731 @@
+:root {
+  --blue: rgb(88, 164, 246);
+  --light: #fff;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  font-family: Arial, sans-serif;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+* {
+  box-sizing: inherit;
+}
+
+.app {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  background-color: var(--blue);
+  color: var(--light);
+  padding: 10px 20px;
+  text-align: center;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: bold;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #f5f5f5;
+}
+
+.sidebar {
+  width: 250px;
+  background-color: #f0f0f0;
+  padding: 15px;
+  overflow-y: auto;
+  border-right: 1px solid #ddd;
+  height: 100%;
+  min-height: 540px;
+  display: flex;
+  flex-direction: column;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  height: 100%;
+  background-color: #f5f5f5;
+}
+
+button {
+  border: none;
+  background: none var(--blue);
+  color: var(--light);
+  line-height: 2;
+  cursor: pointer;
+  transition: opacity .2s;
+  font-size: 14px;
+}
+
+button:disabled {
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
+
+button:not(:disabled):active {
+  opacity: 0.6;
+}
+
+textarea {
+  display: block;
+  margin: 0;
+  width: 100%;
+  font-size: 14px;
+}
+
+/* 设备项 */
+.device-item {
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  background-color: #fff;
+  transition: background-color 0.2s;
+}
+
+.device-item:hover {
+  background-color: #f5f5f5;
+}
+
+.device-item.active {
+  background-color: #e3f2fd;
+  border-color: var(--blue);
+}
+
+.device-id {
+  font-weight: bold;
+  font-size: 13px;
+}
+
+.device-info {
+  font-size: 12px;
+  color: #666;
+  margin-top: 3px;
+}
+
+/* 标签页 */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 15px;
+  overflow-x: auto;
+}
+
+.tab-button {
+  padding: 8px 16px;
+  background-color: #f0f0f0;
+  color: #333;
+  border: none;
+  border-right: 1px solid #ddd;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.tab-button.active {
+  background-color: var(--blue);
+  color: white;
+}
+
+.tab-content {
+  height: calc(100% - 40px);
+  overflow-y: auto;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.tab-content h2 {
+  margin-top: 0;
+  font-size: 16px;
+  margin-bottom: 15px;
+}
+
+@media (prefers-color-scheme: light) {
+  body {
+    background-color: #f4f4f4;
+  }
+
+  ::-webkit-scrollbar-track-piece {
+    background-color: #f4f4f4;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-color: #f4f4f4;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  &::-webkit-scrollbar-track-piece {
+    background-color: #303133;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: #666;
+    border-color: #303133;
+  }
+
+  body {
+    background-color: #303133;
+    color: #fff;
+  }
+}
+
+/* 设备信息 */
+.device-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  margin-top: 15px;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: #f9f9f9;
+}
+
+.info-row {
+  display: contents;
+}
+
+.info-item {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.status-connected {
+  color: #4CAF50;
+  font-weight: bold;
+}
+
+.status-locked {
+  color: #f44336;
+  font-weight: bold;
+}
+
+.scrcpy-button {
+  padding: 10px 20px;
+  font-size: 14px;
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  margin-top: 10px;
+}
+
+.scrcpy-button:hover {
+  background-color: #1976D2;
+}
+
+/* 投屏页面 */
+.scrcpy-section {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.scrcpy-note {
+  color: #666;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+/* 音量按钮 */
+.key-button.volume-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: center;
+}
+
+.key-button.volume-btn svg {
+  flex-shrink: 0;
+}
+
+.key-button.mute-btn {
+  background-color: #ffebee;
+  border-color: #f44336;
+  color: #f44336;
+}
+
+.key-button.mute-btn:hover {
+  background-color: #ffcdd2;
+  border-color: #d32f2f;
+  color: #d32f2f;
+}
+
+/* 按键模拟 */
+.keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 15px;
+  max-width: 350px;
+  margin: 0 auto;
+}
+
+.key-row {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.key-button {
+  padding: 12px 16px;
+  font-size: 14px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  background-color: #f5f5f5;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  min-width: 80px;
+  color: #333;
+}
+
+.key-button:hover {
+  background-color: #e0e0e0;
+  color: #333;
+}
+
+.key-button.restart {
+  background-color: #ff9800;
+  color: white;
+  border-color: #ff9800;
+}
+
+.key-button.restart:hover {
+  background-color: #f57c00;
+  color: white;
+}
+
+/* 应用管理 */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.app-header h2 {
+  margin: 0;
+}
+
+.app-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
+}
+
+.app-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background-color: #f9f9f9;
+  border-radius: 4px;
+  border: 1px solid #eee;
+}
+
+.app-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-name {
+  font-weight: bold;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-version {
+  font-size: 11px;
+  color: #666;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-actions {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.action-button {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: opacity 0.2s;
+}
+
+.action-button.start {
+  background-color: #27ae60;
+  color: white;
+}
+
+.action-button.stop {
+  background-color: #f39c12;
+  color: white;
+}
+
+.action-button.uninstall {
+  background-color: #e74c3c;
+  color: white;
+}
+
+.action-button.install {
+  background-color: #2196F3;
+  color: white;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.action-button:hover {
+  opacity: 0.8;
+}
+
+/* 文件管理 */
+.file-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 15px;
+  padding: 8px;
+  background-color: #f0f0f0;
+  border-radius: 4px;
+  flex-wrap: wrap;
+}
+
+.nav-button {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  background-color: #2196F3;
+  color: white;
+  transition: opacity 0.2s;
+}
+
+.nav-button:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.nav-button.create {
+  background-color: #27ae60;
+}
+
+.nav-button.import {
+  background-color: #9b59b6;
+}
+
+.nav-button.refresh {
+  background-color: #f39c12;
+}
+
+.nav-button:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+.current-path {
+  flex: 1;
+  font-weight: bold;
+  color: #34495e;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 200px;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.file-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  background-color: #f9f9f9;
+  border-radius: 4px;
+  border: 1px solid #eee;
+  transition: background-color 0.2s;
+}
+
+.file-item:hover {
+  background-color: #f0f8ff;
+}
+
+.file-name {
+  flex: 1;
+  cursor: default;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-name.directory {
+  font-weight: bold;
+  color: #2196F3;
+  cursor: pointer;
+}
+
+.file-name.directory:hover {
+  text-decoration: underline;
+}
+
+.file-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.file-size {
+  font-size: 12px;
+  color: #666;
+  min-width: 80px;
+  text-align: right;
+}
+
+.file-action {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: opacity 0.2s;
+}
+
+.file-action.delete {
+  background-color: #e74c3c;
+  color: white;
+}
+
+.file-action.export {
+  background-color: #3498db;
+  color: white;
+}
+
+.file-action:hover {
+  opacity: 0.8;
+}
+
+/* 设备管理 */
+.device-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.refresh-button {
+  padding: 6px 12px;
+  font-size: 14px;
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.refresh-button:hover {
+  background-color: #1976D2;
+}
+
+/* 暗色模式适配 */
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #303133;
+    color: #fff;
+  }
+  
+  .container {
+    background-color: #303133;
+  }
+  
+  .sidebar {
+    background-color: #3a3a3a;
+    border-right-color: #555;
+  }
+  
+  .content {
+    background-color: #303133;
+  }
+  
+  .info-item {
+    background-color: #424242;
+  }
+  
+  .key-button {
+    background-color: #424242;
+    border-color: #666;
+    color: #fff;
+  }
+  
+  .key-button:hover {
+    background-color: #555;
+    color: #fff;
+  }
+  
+  .scrcpy-note {
+    color: #aaa;
+  }
+  
+  .key-button.mute-btn {
+    background-color: #3e2723;
+    border-color: #ef5350;
+    color: #ef5350;
+  }
+  
+  .key-button.mute-btn:hover {
+    background-color: #5d4037;
+    border-color: #e57373;
+    color: #e57373;
+  }
+  
+  .refresh-button {
+    background-color: #1976D2;
+  }
+  
+  .refresh-button:hover {
+    background-color: #1565C0;
+  }
+  
+  .app-item {
+    background-color: #424242;
+    border-color: #555;
+  }
+  
+  .file-nav {
+    background-color: #3a3a3a;
+  }
+  
+  .file-item {
+    background-color: #424242;
+    border-color: #555;
+  }
+  
+  .file-item:hover {
+    background-color: #4a4a4a;
+  }
+  
+  .file-name.directory {
+    color: #64b5f6;
+  }
+  
+  .tab-button {
+    background-color: #3a3a3a;
+    color: #aaa;
+    border-right-color: #555;
+  }
+  
+  .tab-button.active {
+    background-color: #1976D2;
+    color: white;
+  }
+  
+  .tab-content {
+    background-color: #3a3a3a;
+  }
+}
+
+/* 设备功能区 */
+.device-features {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background-color: #f9f9f9;
+}
+
+.device-features h3 {
+  margin-top: 0;
+  font-size: 14px;
+  margin-bottom: 15px;
+  color: #333;
+}
+
+.feature-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.feature-button {
+  padding: 8px 16px;
+  font-size: 13px;
+  background-color: #2196F3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.feature-button:hover {
+  background-color: #1976D2;
+}
+
+/* 暗色模式适配 */
+@media (prefers-color-scheme: dark) {
+  .device-features {
+    border-color: #555;
+    background-color: #424242;
+  }
+  
+  .device-info-grid {
+    border-color: #555;
+    background-color: #424242;
+  }
+  
+  .device-features h3 {
+    color: #fff;
+  }
+  
+  .feature-button {
+    background-color: #1976D2;
+  }
+  
+  .feature-button:hover {
+    background-color: #1565C0;
+  }
+}
+
+
