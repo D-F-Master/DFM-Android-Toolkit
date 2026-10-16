@@ -82,7 +82,7 @@ if __name__ == "__main__":
         help="运行模式: desktop(桌面版) | server(无桌面版)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(["--mode", "server"] + sys.argv[1:])
 
     logger.info(f"CONFIG: {CONF}")
 
