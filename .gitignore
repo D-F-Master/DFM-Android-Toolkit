@@ -1,0 +1,58 @@
+# ===== Node / 前端 (DFM-frontend) =====
+node_modules/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+develop-eggs/
+*.egg-info/
+*.egg
+.venv/
+env/
+venv/
+ENV/
+
+# ===== 打包产物 / 构建输出 =====
+build/
+dist/
+upxs/
+*.exe
+*.pyz
+*.spec.bak
+
+# ===== 日志 =====
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# AI 工具目录
+.reasonix/
+.lingma/
+.trae/
+
+# 项目特定
+API文档.md
+%TEMP%utils_diff.txt

@@ -1,0 +1,17 @@
+{
+  "main": "index.html",
+  "preload": "preload/services.js",
+  "logo": "logo.png",
+  "development": {
+    "main": "http://localhost:5175"
+  },
+  "features": [
+    {
+      "code": "DFM-Android-Toolkit",
+      "explain": "DFM-Android-Toolkit",
+      "cmds": [
+        "DFM-Android-Toolkit"
+      ]
+    }
+  ]
+}
