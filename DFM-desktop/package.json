@@ -1,0 +1,13 @@
+{
+  "name": "dfm-desktop",
+  "version": "2.0.0",
+  "description": "DFM-Android-Toolkit 桌面端（Electron 壳 + DFM-service 后端）",
+  "main": "main.js",
+  "scripts": {
+    "sync": "node scripts/sync-frontend.js",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
