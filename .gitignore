@@ -16,7 +16,8 @@ venv/
 ENV/
 
 # ===== 打包产物 / 构建输出 =====
-build/
+/DFM-frontend/build/
+/DFM-service/build/
 dist/
 upxs/
 *.exe
