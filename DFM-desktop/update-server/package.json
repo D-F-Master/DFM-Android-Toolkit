@@ -1,0 +1,9 @@
+{
+  "name": "dfm-update-server",
+  "version": "1.0.0",
+  "description": "DFM-Android-Toolkit 桌面端更新服务（零依赖静态文件服务）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
