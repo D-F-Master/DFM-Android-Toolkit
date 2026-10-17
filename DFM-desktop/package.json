@@ -1,0 +1,10 @@
+{
+  "name": "dfm-desktop",
+  "version": "2.0.0",
+  "description": "DFM-Android-Toolkit 桌面端（Electron 壳 + DFM-service 后端）",
+  "main": "main.js",
+  "author": "DFM",
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}
