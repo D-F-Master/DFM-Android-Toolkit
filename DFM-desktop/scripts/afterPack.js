@@ -8,7 +8,7 @@ const fs = require('fs')
 const path = require('path')
 
 exports.default = async function afterPack(context) {
-  const desktopDist = path.join(__dirname, 'frontend', 'dist')
+  const desktopDist = path.join(__dirname, '..', 'frontend', 'dist')
   if (!fs.existsSync(path.join(desktopDist, 'index.html'))) {
     throw new Error(`[afterPack] 缺少前端构建产物 ${desktopDist}，请先执行 cd frontend && npm run build`)
   }
