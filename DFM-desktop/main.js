@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog } = require('electron')
+const { app, BrowserWindow, dialog, session } = require('electron')
 const { spawn } = require('child_process')
 const { autoUpdater } = require('electron-updater')
 const http = require('http')
@@ -28,6 +28,22 @@ const DEV_SERVICE_DIR = path.join(__dirname, '..', 'DFM-service')
 let backendProc = null
 let quitting = false
 let mainWindow = null
+
+/* ==================== 单实例锁 ====================
+ * 防止多开：多实例会互相抢 3000 端口，造成"关了还有进程/页面异常"的困惑
+ */
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    // 已有实例在跑时再次启动：把现有窗口拉到前台
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
 
 /* ==================== 更新 ====================
  * 发布地址在打包时注入：
@@ -172,6 +188,8 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   log(`app ready, packaged=${app.isPackaged}, exe=${process.execPath}`)
+  // 页面不落盘缓存：前端更新后避免 Electron 用旧缓存渲染陈旧页面
+  session.defaultSession.clearCache().catch(() => {})
   setupUpdater()
   try {
     const mode = startBackend()
