@@ -160,6 +160,8 @@ function createWindow() {
       contextIsolation: true,
     },
   })
+  // 屏蔽 File/Edit/View 等默认应用菜单栏
+  mainWindow.setMenu(null)
   // 去掉窗口标题里的 " — Electron" 后缀
   mainWindow.on('page-title-updated', (e) => e.preventDefault())
   mainWindow.on('closed', () => { mainWindow = null })
