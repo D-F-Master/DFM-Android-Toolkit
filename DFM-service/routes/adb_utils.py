@@ -1204,15 +1204,21 @@ def open_logs(request: DeviceIdRequest):
                 if pids:
                     pid = int(pids[0])
         logger.info(f"Current PID: {pid}")
-        # 3. 打开 CMD 窗口执行 logcat
+        # 3. 打开 CMD 窗口执行 logcat（用完整 adb 路径，安装包内的 adb 不在系统 PATH）
+        adb_exe = get_adb_path()
+        creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
         if pid:
             logger.info(f"Opening logcat for {device_id}-{package_name} (PID: {pid})")
-            cmd = f'start cmd.exe /k "title {device_id}-{package_name} Logs (PID: {pid}) & adb -s {device_id} logcat --pid={pid}"'
+            subprocess.Popen(
+                [adb_exe, '-s', device_id, 'logcat', f'--pid={pid}'],
+                creationflags=creationflags,
+            )
         else:
             logger.info(f"Opening logcat for {device_id}")
-            cmd = f'start cmd.exe /k "title Device Logs & adb -s {device_id} logcat"'
-        
-        subprocess.Popen(cmd, shell=True)
+            subprocess.Popen(
+                [adb_exe, '-s', device_id, 'logcat'],
+                creationflags=creationflags,
+            )
         
         return {
             "code": 200,
@@ -1230,8 +1236,12 @@ def open_logs(request: DeviceIdRequest):
 @router.post("/device/shell")
 def open_shell(request: DeviceIdRequest):
     try:
-        # Windows 下在新 cmd 窗口中运行 shell 命令
-        subprocess.Popen(f'start cmd.exe /k "adb -s {request.deviceId} shell"', shell=True)
+        # 用完整 adb 路径开新控制台（安装包内的 adb 不在系统 PATH，裸 adb 会报找不到命令）
+        adb_exe = get_adb_path()
+        subprocess.Popen(
+            [adb_exe, '-s', request.deviceId, 'shell'],
+            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0,
+        )
         return {"code": 200, "message": "success", "data": None}
     except Exception as e:
         return {"code": 500, "message": f"启动 shell 窗口失败: {str(e)}", "data": None}
