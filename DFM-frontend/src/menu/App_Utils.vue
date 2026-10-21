@@ -202,23 +202,14 @@ const batchRemoteGridCols = computed(() => {
 
 const batchRemoteSendMirror = (event: any) => {
   if (batchRemoteWs && batchRemoteWs.readyState === WebSocket.OPEN) {
-    console.log('[batchRemote] mirror send:', event)
     batchRemoteWs.send(JSON.stringify({ type: 'mirror', event }))
-  } else {
-    console.warn('[batchRemote] mirror dropped, ws not open, state =', batchRemoteWs?.readyState)
   }
 }
 
 const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
-  console.log('[batchRemote] pointer', ev.type, 'index', index, 'sourceIdx', batchRemoteSourceIndex.value)
   const isSource = index === batchRemoteSourceIndex.value
-  // 非主控画面：任何点击都只是切换主控，不产生触摸事件
-  if (!isSource) {
-    if (ev.type === 'pointerdown') {
-      setBatchRemoteSource(batchRemoteCards.value[index]?.deviceId)
-    }
-    return
-  }
+  // 非主控画面不产生触摸事件（切主控只能点右上角「设为主控」按钮）
+  if (!isSource) return
   const card = batchRemoteCards.value[index]
   const cv = batchRemoteCanvasRefs.value[index]
   if (!card || !cv) return
@@ -3000,7 +2991,6 @@ button.batch-action-btn:disabled {
   background: #000;
   border-radius: 8px;
   overflow: hidden;
-  cursor: pointer;
 }
 
 .batch-remote-tile.source {
@@ -3031,13 +3021,28 @@ button.batch-action-btn:disabled {
 
 button.batch-remote-tile-tag {
   flex-shrink: 0;
-  padding: 1px 8px;
-  border: none;
-  border-radius: 8px;
-  background: #eee;
-  color: #999;
+  padding: 2px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  background: #fff;
+  color: #555;
   font-size: 10px;
+  font-weight: 600;
   cursor: pointer;
+}
+
+button.batch-remote-tile-tag:hover:not(:disabled) {
+  background: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
+}
+
+button.batch-remote-tile-tag.active,
+button.batch-remote-tile-tag:disabled.active {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: #fff;
+  cursor: default;
 }
 
 .batch-remote-tile-tag.active {
@@ -3057,13 +3062,9 @@ button.batch-remote-tile-tag {
   -webkit-user-drag: none;
 }
 
+/* 主控画面可操作（十字光标），从机画面仅查看（默认光标，切主控用右上角按钮） */
 .batch-remote-tile.source .batch-remote-canvas {
   cursor: crosshair;
-}
-
-/* 非主控画面明确为"查看/点击切换主控"语义 */
-.batch-remote-tile:not(.source) .batch-remote-canvas {
-  cursor: pointer;
 }
 
 .batch-remote-tile-loading {
@@ -3857,7 +3858,7 @@ button.batch-remote-tile-tag {
                 <!-- 批量投屏画面区（会话建立后显示） -->
                 <div v-if="batchRemoteActive || batchRemoteCards.length > 0" class="batch-remote-area">
                   <div class="batch-remote-header">
-                    <span>批量投屏（点击画面可设为主控，主控操作同步到其他设备）</span>
+                    <span>批量投屏（主控画面的操作将同步到其他设备，切换主控请点画面右上角「设为主控」）</span>
                     <span class="batch-remote-status" :class="{ live: batchRemoteActive }">{{ batchRemoteWsStatus }}</span>
                   </div>
                   <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
@@ -3873,9 +3874,10 @@ button.batch-remote-tile-tag {
                         <button
                           class="batch-remote-tile-tag"
                           :class="{ active: index === batchRemoteSourceIndex }"
-                          @click="setBatchRemoteSource(card.deviceId)"
+                          :disabled="index === batchRemoteSourceIndex"
+                          @click.stop="setBatchRemoteSource(card.deviceId)"
                         >
-                          {{ index === batchRemoteSourceIndex ? '主控' : '设为主控' }}
+                          {{ index === batchRemoteSourceIndex ? '★ 主控' : '设为主控' }}
                         </button>
                       </div>
                       <canvas

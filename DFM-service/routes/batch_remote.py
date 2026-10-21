@@ -103,13 +103,55 @@ class DeviceSession:
     # ---------- 会话建立 ----------
 
     def start(self) -> bool:
-        """推送 server、启动设备端进程、建立双 socket 连接"""
+        """
+        推送 server、启动设备端进程、建立双 socket 连接
+
+        偶发失败（设备繁忙、端口残留、adbd 抖动）时整体重试，最多 3 次；
+        每次重试换新的 scid/端口，并清理设备端残留进程。
+        """
+        for attempt in range(1, 4):
+            # 每次重试换 scid（旧 socket 名可能被残留会话占用）
+            self.scid_hex = f"{random.randint(0x10000000, 0x7FFFFFFF):08x}"
+            self.socket_name = f"scrcpy_{self.scid_hex}"
+            try:
+                if self._start_once():
+                    if attempt > 1:
+                        logger.info(f"[{self.device_id}] session started on attempt {attempt}")
+                    return True
+            except Exception as e:
+                logger.error(f"[{self.device_id}] start attempt {attempt} error: {e}")
+            logger.warning(f"[{self.device_id}] start attempt {attempt} failed, retrying...")
+            self._cleanup_failed_attempt()
+            time.sleep(1.0)
+        logger.error(f"[{self.device_id}] all 3 start attempts failed")
+        return False
+
+    def _cleanup_failed_attempt(self):
+        """失败后清理本机 socket 与设备端残留，为重试让路"""
+        self._close_sockets()
+        try:
+            if self._server_proc and self._server_proc.poll() is None:
+                self._server_proc.kill()
+        except Exception:
+            pass
+        self.running = False
+        try:
+            _run_adb(f"-s {self.device_id} forward --remove tcp:{self.local_port}", timeout=5)
+        except Exception:
+            pass
+        try:
+            _run_adb(f'-s {self.device_id} shell "pkill -f app_process"', timeout=8)
+        except Exception:
+            pass
+
+    def _start_once(self) -> bool:
+        """单次会话建立尝试"""
         try:
             server_path = get_server_path()
 
             # 先清理设备端可能残留的旧 server（上一次会话异常退出时
             # 只杀了本机 cmd 包装进程，adb shell 会话可能仍在设备上存活）
-            _run_adb(f'-s {self.device_id} shell "pkill -f scrcpy_server_marker"')
+            _run_adb(f'-s {self.device_id} shell "pkill -f app_process"')
 
             rc, _, err = _run_adb(
                 f'-s {self.device_id} push "{server_path}" {SERVER_PUSH_PATH}'
