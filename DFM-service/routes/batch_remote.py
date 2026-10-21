@@ -129,6 +129,7 @@ class DeviceSession:
     def _cleanup_failed_attempt(self):
         """失败后清理本机 socket 与设备端残留，为重试让路"""
         self._close_sockets()
+        self._close_listener()
         try:
             if self._server_proc and self._server_proc.poll() is None:
                 self._server_proc.kill()
@@ -136,7 +137,7 @@ class DeviceSession:
             pass
         self.running = False
         try:
-            _run_adb(f"-s {self.device_id} forward --remove tcp:{self.local_port}", timeout=5)
+            _run_adb(f"-s {self.device_id} reverse --remove-all", timeout=5)
         except Exception:
             pass
         try:
@@ -145,7 +146,7 @@ class DeviceSession:
             pass
 
     def _start_once(self) -> bool:
-        """单次会话建立尝试"""
+        """单次会话建立尝试（adb reverse 模式，与官方 scrcpy 默认一致）"""
         try:
             server_path = get_server_path()
 
@@ -160,18 +161,23 @@ class DeviceSession:
                 logger.error(f"[{self.device_id}] push server failed: {err}")
                 return False
 
+            # adb reverse：设备端连 localabstract:NAME 时，adbd 反向转发到
+            # 本机的 local_port。本机先监听，server 稍后主动连入。
             rc, _, err = _run_adb(
-                f"-s {self.device_id} forward tcp:{self.local_port} "
-                f"localabstract:{self.socket_name}"
+                f"-s {self.device_id} reverse "
+                f"localabstract:{self.socket_name} tcp:{self.local_port}"
             )
             if rc != 0:
-                logger.error(f"[{self.device_id}] adb forward failed: {err}")
+                logger.error(f"[{self.device_id}] adb reverse failed: {err}")
                 return False
 
-            # tunnel_forward=true：server 监听 localabstract socket，
-            # 客户端（本机）主动向 forward 端口发起连接。
-            # 注意：命令不能用外层双引号包裹（Windows adb 会提前剥引号导致
-            # 远端参数解析异常，server 发完设备名即退出），实测必须裸传
+            # 本机监听（video 与 control 共用端口，按连入顺序区分）
+            self._listener = socket.socket()
+            self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._listener.bind(("127.0.0.1", self.local_port))
+            self._listener.listen(4)
+
+            # 启动 server（tunnel_forward=false：server 主动连本机监听端口）
             shell_cmd = (
                 f'"{get_adb_path()}" -s {self.device_id} shell '
                 f"CLASSPATH={SERVER_PUSH_PATH} "
@@ -181,8 +187,7 @@ class DeviceSession:
                 f"send_dummy_byte=false send_device_meta=true send_codec_meta=true "
                 f"send_frame_meta=true "
                 f"video_codec=h264 max_size=1280 "
-                f"video_bit_rate=8000000 max_fps=60 stay_awake=true "
-                f"tunnel_forward=true"
+                f"video_bit_rate=8000000 max_fps=60 stay_awake=true"
             )
             self._server_proc = subprocess.Popen(
                 shell_cmd, shell=True,
@@ -190,12 +195,12 @@ class DeviceSession:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
 
-            # 依次建立视频、控制两条连接（server 依次 accept，顺序不能反）
-            if not self._connect_sockets():
-                logger.error(f"[{self.device_id}] connect sockets failed")
+            # 接收 server 连入的两条 socket（video 先、control 后）
+            if not self._accept_sockets():
+                logger.error(f"[{self.device_id}] accept sockets failed")
                 return False
 
-            # 首个（视频）socket 上读设备名 + codec meta（带超时防卡死）
+            # video socket 上读 codec meta（设备名已在 accept 阶段读取）
             if not self._read_device_meta():
                 logger.error(f"[{self.device_id}] read device meta failed")
                 return False
@@ -211,45 +216,58 @@ class DeviceSession:
 
         except Exception as e:
             logger.error(f"[{self.device_id}] session start error: {e}")
-            import traceback
-            traceback.print_exc()
             return False
 
-    def _connect_sockets(self) -> bool:
+    def _accept_sockets(self) -> bool:
         """
-        建立视频 + 控制两条 TCP 连接并等待设备名
+        等待 server 反向连入 video、control 两条 socket
 
-        forward 模式下 TCP connect 总能成功（adbd 先 accept），即使 server
-        还没监听。server 端 accept 之后就会向这条连接写数据，因此一旦建立
-        连接就不能断开重连（重连的新 socket 不会再有数据），只能在同一
-        socket 上等待——WiFi 设备 server 启动较慢，等待要留足时间。
-        只有读到 EOF（server 已死）或 server 进程退出时才重建连接。
+        reverse 模式下连接由 server 主动发起，到达顺序确定（先 video 后
+        control，DesktopConnection.open 的 accept 顺序决定），不存在 forward
+        模式的排队竞态。首个 socket 上还会先到 64B 设备名，用它确认 video。
         """
-        deadline = time.time() + 25
+        deadline = time.time() + 20
+        self._listener.settimeout(2.0)
         while time.time() < deadline:
             if self._server_proc.poll() is not None:
-                return False  # server 已退出（参数错误等）
+                return False
             try:
-                self.video_sock = socket.create_connection(
-                    ("127.0.0.1", self.local_port), timeout=3)
-                self.control_sock = socket.create_connection(
-                    ("127.0.0.1", self.local_port), timeout=3)
-                self.control_sock.settimeout(None)
+                self.video_sock, _ = self._listener.accept()
                 self.video_sock.settimeout(5.0)
-
-                # 在同一条 socket 上等待 64B 设备名（超时继续等，EOF 才重连）
                 name = self._recv_meta_wait(64, deadline)
-                if name is not None:
-                    self.device_name = name.split(b"\x00")[0].decode(
-                        "utf-8", errors="replace")
-                    return True
-                # EOF：server 可能已退出，关 socket 走下一轮重连
-                self._close_sockets()
+                if name is None:
+                    self._close_sockets()
+                    continue
+                self.device_name = name.split(b"\x00")[0].decode(
+                    "utf-8", errors="replace")
+
+                self.control_sock, _ = self._listener.accept()
+                self.control_sock.settimeout(None)
+                # 剪贴板自动同步等 DeviceMessage 会从 control socket 到达，
+                # 开一个后台线程持续排空（避免缓冲堵塞 server 的 writer）
+                threading.Thread(target=self._drain_control, daemon=True).start()
+                return True
             except OSError:
                 self._close_sockets()
-            if time.time() >= deadline:
-                break
         return False
+
+    def _drain_control(self):
+        """持续读取 control socket 上的 DeviceMessage（剪贴板同步等），丢弃"""
+        try:
+            while self.running:
+                data = self.control_sock.recv(4096)
+                if not data:
+                    break
+        except OSError:
+            pass
+
+    def _close_listener(self):
+        try:
+            if getattr(self, "_listener", None):
+                self._listener.close()
+                self._listener = None
+        except OSError:
+            pass
 
     def _recv_meta_wait(self, n: int, deadline: float):
         """
@@ -362,40 +380,29 @@ class DeviceSession:
 
     @staticmethod
     def _norm_coord(v: float, max_v: int) -> int:
-        """坐标归一化为 scrcpy 的 i16 定点数（sc_int16fp）"""
-        if max_v <= 1:
-            return 0
-        return max(-0x8000, min(0x7FFF, round(v * 0xFFFF / (max_v - 1)) - 0x8000))
+        """坐标缩放（保持兼容保留接口）：x/y 为 int32 像素坐标，直接取整"""
+        return max(0, min(max_v, round(v)))
 
     def inject_touch(self, action: int, x: float, y: float, w: int, h: int,
                      pointer_id: int = POINTER_ID_GENERIC_FINGER):
         """
-        注入触摸事件（32 字节定长），字节语义对齐官方 mouse_sdk.c：
+        注入触摸事件（32 字节定长）
 
         type(1) action(1) pointerId(8) x(4) y(4) w(2) h(2)
         pressure(2) actionButton(4) buttons(4)
 
-        - ACTION_DOWN: pressure=1, actionButton=PRIMARY(1), buttons=PRIMARY(1)
-        - ACTION_UP:   pressure=0, actionButton=PRIMARY(1), buttons=0
-                       （官方 mouse click UP 时 buttons_state 为 0）
-        - ACTION_MOVE: pressure=1, actionButton=0,       buttons=PRIMARY(1)
-          （官方 motion：buttons_state 非零时才是 MOVE；UP 后为 0 时是
-           HOVER_MOVE，我们只在按下期间产生 MOVE，始终传 1）
-        - 触摸类事件（ finger）buttons 必须为 0，否则 Controller 按
-          鼠标路径处理，GENERIC_FINGER + 鼠标路径会导致事件被拒
+        使用 GENERIC_FINGER（手指语义）：Controller 的 finger 路径要求
+        buttons/actionButton 必须为 0（"Buttons must not be set for touch
+        events"，否则注入的 MotionEvent 非法被系统拒绝）。
+        官方触摸路径（mouse_sdk process_touch）也是 buttons=0。
         """
         nx, ny = self._norm_coord(x, w), self._norm_coord(y, h)
-        if action == ACTION_UP:
-            pressure, action_button, buttons = 0, 1, 0
-        elif action == ACTION_DOWN:
-            pressure, action_button, buttons = 0xFFFF, 1, 1
-        else:  # ACTION_MOVE
-            pressure, action_button, buttons = 0xFFFF, 0, 1
+        pressure = 0xFFFF if action != ACTION_UP else 0
         msg = struct.pack(
             ">B B Q i i H H H I I",
             TYPE_INJECT_TOUCH_EVENT, action, pointer_id,
             nx, ny, w, h,
-            pressure, action_button, buttons,
+            pressure, 0, 0,
         )
         self._send_control(msg)
 
@@ -450,8 +457,10 @@ class DeviceSession:
         except Exception:
             pass
         self._close_sockets()
+        self._close_listener()
         try:
-            _run_adb(f"-s {self.device_id} forward --remove tcp:{self.local_port}", timeout=5)
+            _run_adb(f"-s {self.device_id} reverse --remove "
+                     f"localabstract:{self.socket_name}", timeout=5)
         except Exception:
             pass
         # cleanup=false 时需手动清理设备端进程
