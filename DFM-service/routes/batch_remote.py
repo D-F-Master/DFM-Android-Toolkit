@@ -368,21 +368,34 @@ class DeviceSession:
         return max(-0x8000, min(0x7FFF, round(v * 0xFFFF / (max_v - 1)) - 0x8000))
 
     def inject_touch(self, action: int, x: float, y: float, w: int, h: int,
-                     pointer_id: int = POINTER_ID_GENERIC_FINGER,
-                     buttons: int = 1):
+                     pointer_id: int = POINTER_ID_GENERIC_FINGER):
         """
-        注入触摸事件（32 字节定长）
+        注入触摸事件（32 字节定长），字节语义对齐官方 mouse_sdk.c：
 
         type(1) action(1) pointerId(8) x(4) y(4) w(2) h(2)
         pressure(2) actionButton(4) buttons(4)
+
+        - ACTION_DOWN: pressure=1, actionButton=PRIMARY(1), buttons=PRIMARY(1)
+        - ACTION_UP:   pressure=0, actionButton=PRIMARY(1), buttons=0
+                       （官方 mouse click UP 时 buttons_state 为 0）
+        - ACTION_MOVE: pressure=1, actionButton=0,       buttons=PRIMARY(1)
+          （官方 motion：buttons_state 非零时才是 MOVE；UP 后为 0 时是
+           HOVER_MOVE，我们只在按下期间产生 MOVE，始终传 1）
+        - 触摸类事件（ finger）buttons 必须为 0，否则 Controller 按
+          鼠标路径处理，GENERIC_FINGER + 鼠标路径会导致事件被拒
         """
         nx, ny = self._norm_coord(x, w), self._norm_coord(y, h)
-        pressure = 0xFFFF if action != ACTION_UP else 0
+        if action == ACTION_UP:
+            pressure, action_button, buttons = 0, 1, 0
+        elif action == ACTION_DOWN:
+            pressure, action_button, buttons = 0xFFFF, 1, 1
+        else:  # ACTION_MOVE
+            pressure, action_button, buttons = 0xFFFF, 0, 1
         msg = struct.pack(
             ">B B Q i i H H H I I",
             TYPE_INJECT_TOUCH_EVENT, action, pointer_id,
             nx, ny, w, h,
-            pressure, buttons, buttons,
+            pressure, action_button, buttons,
         )
         self._send_control(msg)
 
