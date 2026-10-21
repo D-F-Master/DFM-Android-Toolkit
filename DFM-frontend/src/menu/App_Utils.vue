@@ -207,13 +207,33 @@ const batchRemoteSendMirror = (event: any) => {
 }
 
 const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
-  if (index !== batchRemoteSourceIndex.value) return
+  const isSource = index === batchRemoteSourceIndex.value
+  // 非主控画面：任何点击都只是切换主控，不产生触摸事件
+  if (!isSource) {
+    if (ev.type === 'pointerdown') {
+      setBatchRemoteSource(batchRemoteCards.value[index]?.deviceId)
+    }
+    return
+  }
   const card = batchRemoteCards.value[index]
   const cv = batchRemoteCanvasRefs.value[index]
   if (!card || !cv) return
+  // 捕获指针：滑动移出画面后仍能收到 pointerup，保证手势完整
+  if (ev.type === 'pointerdown') {
+    try { cv.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+  }
+  // 坐标换算：canvas 内部分辨率固定（设备分辨率），CSS 缩放显示。
+  // object-fit: contain 可能在高度被限制时产生上下黑边，需按实际绘制区域换算
   const rect = cv.getBoundingClientRect()
-  const x = (ev.clientX - rect.left) * card.width / rect.width
-  const y = (ev.clientY - rect.top) * card.height / rect.height
+  const scale = Math.min(rect.width / card.width, rect.height / card.height)
+  const drawW = card.width * scale
+  const drawH = card.height * scale
+  const offX = (rect.width - drawW) / 2
+  const offY = (rect.height - drawH) / 2
+  const x = (ev.clientX - rect.left - offX) / scale
+  const y = (ev.clientY - rect.top - offY) / scale
+  // 黑边区域忽略
+  if (x < 0 || y < 0 || x > card.width || y > card.height) return
   const action = ev.type === 'pointerdown' ? 0 : ev.type === 'pointerup' ? 1 : 2
   batchRemoteSendMirror({ kind: 'touch', action, x: Math.round(x), y: Math.round(y), w: card.width, h: card.height })
 }
@@ -2929,6 +2949,8 @@ button.batch-action-btn:disabled {
   padding: 12px 16px;
   background: #fafafa;
   border-radius: 8px;
+  /* 不参与 batch-card 的内部布局，独立可伸缩 */
+  flex: 0 0 auto;
 }
 
 .batch-remote-header {
@@ -3003,13 +3025,15 @@ button.batch-action-btn:disabled {
   white-space: nowrap;
 }
 
-.batch-remote-tile-tag {
+button.batch-remote-tile-tag {
   flex-shrink: 0;
   padding: 1px 8px;
+  border: none;
   border-radius: 8px;
   background: #eee;
   color: #999;
   font-size: 10px;
+  cursor: pointer;
 }
 
 .batch-remote-tile-tag.active {
@@ -3017,14 +3041,24 @@ button.batch-action-btn:disabled {
   color: #fff;
 }
 
+/* 画面按宽度等比缩放，但限制最大高度，避免把上方设备列表挤出视口 */
 .batch-remote-canvas {
   display: block;
   width: 100%;
   height: auto;
+  max-height: 280px;
+  object-fit: contain;
   touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .batch-remote-tile.source .batch-remote-canvas {
+  cursor: crosshair;
+}
+
+/* 非主控画面明确为"查看/点击切换主控"语义 */
+.batch-remote-tile:not(.source) .batch-remote-canvas {
   cursor: pointer;
 }
 
@@ -3829,13 +3863,16 @@ button.batch-action-btn:disabled {
                       :key="card.deviceId"
                       class="batch-remote-tile"
                       :class="{ source: index === batchRemoteSourceIndex, dead: !card.ready }"
-                      @click="setBatchRemoteSource(card.deviceId)"
                     >
                       <div class="batch-remote-tile-header">
                         <span class="batch-remote-tile-name">{{ card.name }}</span>
-                        <span class="batch-remote-tile-tag" :class="{ active: index === batchRemoteSourceIndex }">
-                          {{ index === batchRemoteSourceIndex ? '主控' : '从机' }}
-                        </span>
+                        <button
+                          class="batch-remote-tile-tag"
+                          :class="{ active: index === batchRemoteSourceIndex }"
+                          @click="setBatchRemoteSource(card.deviceId)"
+                        >
+                          {{ index === batchRemoteSourceIndex ? '主控' : '设为主控' }}
+                        </button>
                       </div>
                       <canvas
                         :ref="(el) => setBatchRemoteCanvasRef(el, index)"
@@ -3843,6 +3880,7 @@ button.batch-action-btn:disabled {
                         @pointerdown.stop="batchRemoteOnPointer($event, index)"
                         @pointermove.stop="batchRemoteOnPointer($event, index)"
                         @pointerup.stop="batchRemoteOnPointer($event, index)"
+                        @pointercancel.stop="batchRemoteOnPointer($event, index)"
                       ></canvas>
                       <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
                     </div>
