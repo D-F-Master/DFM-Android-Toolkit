@@ -169,6 +169,181 @@ const toggleAllBatchDevices = () => {
 
 const selectedBatchCount = computed(() => batchSelectedDevices.value.size)
 
+// ===== 批量投屏（嵌入批量操作页） =====
+const batchRemoteActive = ref(false)
+const batchRemoteConnecting = ref(false)
+const batchRemoteCards = ref<Array<{ deviceId: string; name: string; width: number; height: number; ready: boolean }>>([])
+const batchRemoteSource = ref('')
+const batchRemoteStatus = ref('')
+const batchRemoteWsStatus = ref('未连接')
+let batchRemoteWs: WebSocket | null = null
+let batchRemoteConfigs: Record<number, Uint8Array> = {}
+let batchRemoteDecoders: Record<number, VideoDecoder> = {}
+const batchRemoteCanvasRefs = ref<any[]>([])
+
+const batchRemoteSourceIndex = computed(() =>
+  batchRemoteCards.value.findIndex(d => d.deviceId === batchRemoteSource.value)
+)
+
+const setBatchRemoteCanvasRef = (el: any, index: number) => {
+  if (el) batchRemoteCanvasRefs.value[index] = el
+}
+
+const setBatchRemoteSource = (id: string) => {
+  batchRemoteSource.value = id
+}
+
+const batchRemoteGridCols = computed(() => {
+  const n = batchRemoteCards.value.length
+  if (n <= 1) return 1
+  if (n <= 4) return 2
+  return 3
+})
+
+const batchRemoteSendMirror = (event: any) => {
+  if (batchRemoteWs && batchRemoteWs.readyState === WebSocket.OPEN) {
+    batchRemoteWs.send(JSON.stringify({ type: 'mirror', event }))
+  }
+}
+
+const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
+  if (index !== batchRemoteSourceIndex.value) return
+  const card = batchRemoteCards.value[index]
+  const cv = batchRemoteCanvasRefs.value[index]
+  if (!card || !cv) return
+  const rect = cv.getBoundingClientRect()
+  const x = (ev.clientX - rect.left) * card.width / rect.width
+  const y = (ev.clientY - rect.top) * card.height / rect.height
+  const action = ev.type === 'pointerdown' ? 0 : ev.type === 'pointerup' ? 1 : 2
+  batchRemoteSendMirror({ kind: 'touch', action, x: Math.round(x), y: Math.round(y), w: card.width, h: card.height })
+}
+
+const batchRemoteHandleJson = (msg: any) => {
+  if (msg.type === 'meta') {
+    batchRemoteCards.value.push({
+      deviceId: msg.deviceId, name: msg.name,
+      width: msg.width, height: msg.height, ready: true,
+    })
+    batchRemoteStatus.value = ''
+  } else if (msg.type === 'ready') {
+    batchRemoteActive.value = true
+    batchRemoteConnecting.value = false
+    batchRemoteWsStatus.value = '运行中'
+    const okIds = new Set((msg.devices || []).map((d: any) => d.deviceId))
+    batchRemoteCards.value = batchRemoteCards.value.filter(d => okIds.has(d.deviceId))
+  } else if (msg.type === 'error') {
+    batchRemoteStatus.value = `${msg.deviceId || ''}: ${msg.message}`
+    batchRemoteConnecting.value = false
+  } else if (msg.type === 'closed') {
+    const card = batchRemoteCards.value.find(d => d.deviceId === msg.deviceId)
+    if (card) card.ready = false
+  }
+}
+
+const batchRemoteIsKeyframe = (data: Uint8Array): boolean => {
+  if (data.length < 5) return false
+  return (data[4] & 0x1F) === 5
+}
+
+const batchRemoteDrawFrame = (index: number, frame: VideoFrame) => {
+  const cv = batchRemoteCanvasRefs.value[index]
+  if (!cv) { frame.close(); return }
+  if (cv.width !== frame.displayWidth) cv.width = frame.displayWidth
+  if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
+  const ctx = cv.getContext('2d')!
+  ctx.drawImage(frame, 0, 0)
+  frame.close()
+}
+
+const batchRemoteHandleBinary = (buf: ArrayBuffer) => {
+  const view = new DataView(buf)
+  const index = view.getUint8(0)
+  const kind = view.getUint8(1)
+  const payload = new Uint8Array(buf, 2)
+  if (!batchRemoteCards.value[index]) return
+
+  if (kind === 1) {
+    batchRemoteConfigs[index] = payload
+    if (batchRemoteDecoders[index]) batchRemoteDecoders[index].close()
+    batchRemoteDecoders[index] = new VideoDecoder({
+      output: (frame) => batchRemoteDrawFrame(index, frame),
+      error: (e) => { batchRemoteStatus.value = `解码器错误: ${e.message}` },
+    })
+    batchRemoteDecoders[index].configure({ codec: 'avc1.640028', description: payload })
+  } else if (kind === 2) {
+    const dec = batchRemoteDecoders[index]
+    if (dec && dec.state === 'configured') {
+      const chunk = new EncodedVideoChunk({
+        type: batchRemoteIsKeyframe(payload) ? 'key' : 'delta',
+        timestamp: performance.now() * 1000,
+        data: payload,
+      })
+      try { dec.decode(chunk) } catch { /* 队列满时丢弃 */ }
+    }
+  }
+}
+
+const startBatchRemote = () => {
+  if (batchSelectedDevices.value.size === 0) {
+    showMessage('请先勾选要投屏的设备', '批量投屏')
+    return
+  }
+  batchRemoteConnecting.value = true
+  batchRemoteStatus.value = '正在建立会话...'
+  batchRemoteCards.value = []
+  batchRemoteConfigs = {}
+  batchRemoteDecoders = {}
+  batchRemoteSource.value = [...batchSelectedDevices.value][0]
+
+  const wsUrl = API_BASE.value.replace(/^http/, 'ws') + '/ws/remote'
+  batchRemoteWs = new WebSocket(wsUrl)
+  batchRemoteWs.binaryType = 'arraybuffer'
+  batchRemoteWsStatus.value = '连接中'
+
+  batchRemoteWs.onopen = () => {
+    batchRemoteWs!.send(JSON.stringify({
+      type: 'start',
+      devices: [...batchSelectedDevices.value],
+      source: batchRemoteSource.value,
+    }))
+  }
+
+  batchRemoteWs.onmessage = (ev) => {
+    if (typeof ev.data === 'string') {
+      batchRemoteHandleJson(JSON.parse(ev.data))
+    } else {
+      batchRemoteHandleBinary(ev.data as ArrayBuffer)
+    }
+  }
+
+  batchRemoteWs.onclose = () => {
+    batchRemoteWsStatus.value = '已断开'
+    batchRemoteActive.value = false
+    batchRemoteConnecting.value = false
+  }
+
+  batchRemoteWs.onerror = () => {
+    batchRemoteStatus.value = 'WebSocket 连接失败，请确认后端已启动'
+    batchRemoteConnecting.value = false
+  }
+}
+
+const stopBatchRemote = () => {
+  if (batchRemoteWs) {
+    try { batchRemoteWs.send(JSON.stringify({ type: 'stop' })) } catch { /* ignore */ }
+    batchRemoteWs.close()
+    batchRemoteWs = null
+  }
+  Object.values(batchRemoteDecoders).forEach(d => { try { d.close() } catch { /* ignore */ } })
+  batchRemoteDecoders = {}
+  batchRemoteConfigs = {}
+  batchRemoteCards.value = []
+  batchRemoteActive.value = false
+  batchRemoteConnecting.value = false
+  batchRemoteWsStatus.value = '未连接'
+  batchRemoteStatus.value = ''
+}
+
 const batchRebootLoading = ref(false)
 const batchInstallLoading = ref(false)
 
@@ -1658,6 +1833,8 @@ onUnmounted(() => {
   window.removeEventListener('resize', resizeMonitorCharts)
   stopMonitor()
   disposeMonitorCharts()
+  // 关闭批量投屏会话
+  stopBatchRemote()
 })
 </script>
 <style scoped>
@@ -2410,6 +2587,8 @@ button.file-act-btn.delete:hover {
   height: 100%;
   /* 底部留白与左右两侧的 10px 保持一致 */
   padding-bottom: 10px;
+  /* 会话建立后允许整页滚动以展示投屏画面 */
+  overflow-y: auto;
 }
 
 .batch-card {
@@ -2721,6 +2900,123 @@ button.batch-action-btn:disabled {
   font-weight: 500;
   color: #333;
   word-break: break-all;
+}
+
+/* ===== 批量投屏画面区 ===== */
+.batch-remote-area {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.batch-remote-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+.batch-remote-status {
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: #eceff1;
+  color: #78909c;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.batch-remote-status.live {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.batch-remote-error {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #fff8e1;
+  color: #b26a00;
+  font-size: 12px;
+}
+
+.batch-remote-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.batch-remote-tile {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.batch-remote-tile.source {
+  outline: 2px solid #4caf50;
+}
+
+.batch-remote-tile.dead {
+  opacity: 0.4;
+}
+
+.batch-remote-tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+}
+
+.batch-remote-tile-name {
+  font-weight: 600;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-remote-tile-tag {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: #eee;
+  color: #999;
+  font-size: 10px;
+}
+
+.batch-remote-tile-tag.active {
+  background: #4caf50;
+  color: #fff;
+}
+
+.batch-remote-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+}
+
+.batch-remote-tile.source .batch-remote-canvas {
+  cursor: pointer;
+}
+
+.batch-remote-tile-loading {
+  position: absolute;
+  inset: 28px 0 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.85);
+  pointer-events: none;
 }
 
 .shell-output-section {
@@ -3457,8 +3753,13 @@ button.batch-action-btn:disabled {
                           </svg>
                           <span>{{ batchShellLoading ? '执行中...' : '批量Shell' }}</span>
                         </button>
-                        <button class="batch-action-btn" disabled>
-                          <span>预留2</span>
+                        <button class="batch-action-btn" @click="batchRemoteActive ? stopBatchRemote() : startBatchRemote()" :disabled="batchRemoteConnecting && !batchRemoteActive">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <rect x="2" y="4" width="20" height="14" rx="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="18" x2="12" y2="21"/>
+                          </svg>
+                          <span>{{ batchRemoteConnecting && !batchRemoteActive ? '连接中...' : batchRemoteActive ? '结束投屏' : '批量投屏' }}</span>
                         </button>
                       </div>
 
@@ -3490,6 +3791,39 @@ button.batch-action-btn:disabled {
                           </div>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 批量投屏画面区（会话建立后显示） -->
+                <div v-if="batchRemoteActive || batchRemoteCards.length > 0" class="batch-remote-area">
+                  <div class="batch-remote-header">
+                    <span>批量投屏（点击画面可设为主控，主控操作同步到其他设备）</span>
+                    <span class="batch-remote-status" :class="{ live: batchRemoteActive }">{{ batchRemoteWsStatus }}</span>
+                  </div>
+                  <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
+                  <div class="batch-remote-grid" :style="{ gridTemplateColumns: `repeat(${batchRemoteGridCols}, 1fr)` }">
+                    <div
+                      v-for="(card, index) in batchRemoteCards"
+                      :key="card.deviceId"
+                      class="batch-remote-tile"
+                      :class="{ source: index === batchRemoteSourceIndex, dead: !card.ready }"
+                      @click="setBatchRemoteSource(card.deviceId)"
+                    >
+                      <div class="batch-remote-tile-header">
+                        <span class="batch-remote-tile-name">{{ card.name }}</span>
+                        <span class="batch-remote-tile-tag" :class="{ active: index === batchRemoteSourceIndex }">
+                          {{ index === batchRemoteSourceIndex ? '主控' : '从机' }}
+                        </span>
+                      </div>
+                      <canvas
+                        :ref="(el) => setBatchRemoteCanvasRef(el, index)"
+                        class="batch-remote-canvas"
+                        @pointerdown.stop="batchRemoteOnPointer($event, index)"
+                        @pointermove.stop="batchRemoteOnPointer($event, index)"
+                        @pointerup.stop="batchRemoteOnPointer($event, index)"
+                      ></canvas>
+                      <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
                     </div>
                   </div>
                 </div>
