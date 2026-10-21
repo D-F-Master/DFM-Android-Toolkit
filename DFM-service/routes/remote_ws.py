@@ -113,22 +113,45 @@ class RemoteHub:
 
     # ---------- 事件同步 ----------
 
+    def _rescale(self, event: dict, session: DeviceSession):
+        """
+        把主控坐标系下的事件坐标换算到目标设备坐标系
+
+        scrcpy 的 PositionMapper 会丢弃 screenSize 与当前视频尺寸不一致的
+        事件（主控与从机分辨率不同时必发生），因此必须在注入前换算。
+        返回换算后的 (x, y, w, h)；尺寸信息缺失返回 None。
+        """
+        src_w = event.get("w")
+        src_h = event.get("h")
+        dst_w, dst_h = session.video_width, session.video_height
+        if not (src_w and src_h and dst_w and dst_h):
+            return None
+        x = event.get("x", 0) * dst_w / src_w
+        y = event.get("y", 0) * dst_h / src_h
+        return x, y, dst_w, dst_h
+
     def mirror_event(self, event: dict):
-        """主控事件分发到除主控外的所有设备"""
+        """主控事件分发到除主控外的所有设备（坐标自动重映射到各目标分辨率）"""
         targets = [s for did, s in self.sessions.items() if did != self.source_device]
         kind = event.get("kind")
         for s in targets:
             try:
                 if kind == "touch":
-                    s.inject_touch(event["action"], event["x"], event["y"],
-                                   event["w"], event["h"])
+                    mapped = self._rescale(event, s)
+                    if not mapped:
+                        continue
+                    x, y, w, h = mapped
+                    s.inject_touch(event["action"], x, y, w, h)
                 elif kind == "key":
                     s.inject_keycode(event["keycode"], event["action"])
                 elif kind == "text":
                     s.inject_text(event["text"])
                 elif kind == "scroll":
-                    s.inject_scroll(event["x"], event["y"], event["hx"],
-                                    event["vy"], event["w"], event["h"])
+                    mapped = self._rescale(event, s)
+                    if not mapped:
+                        continue
+                    x, y, w, h = mapped
+                    s.inject_scroll(x, y, event["hx"], event["vy"], w, h)
             except Exception as e:
                 logger.warning(f"[{s.device_id}] mirror {kind} failed: {e}")
 

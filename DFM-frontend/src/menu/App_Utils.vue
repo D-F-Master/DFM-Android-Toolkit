@@ -211,24 +211,19 @@ const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
   // 非主控画面不产生触摸事件（切主控只能点右上角「设为主控」按钮）
   if (!isSource) return
   const card = batchRemoteCards.value[index]
+  if (!card) return
+  // 主控画面坐标换算（canvas 元素）
   const cv = batchRemoteCanvasRefs.value[index]
-  if (!card || !cv) return
+  if (!cv) return
   // 捕获指针：滑动移出画面后仍能收到 pointerup，保证手势完整
   if (ev.type === 'pointerdown') {
     try { cv.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
   }
-  // 坐标换算：canvas 内部分辨率固定（设备分辨率），CSS 缩放显示。
-  // object-fit: contain 可能在高度被限制时产生上下黑边，需按实际绘制区域换算
+  // 坐标换算：canvas 宽 100% 高 auto 等比缩放（无黑边），线性映射即可
   const rect = cv.getBoundingClientRect()
-  const scale = Math.min(rect.width / card.width, rect.height / card.height)
-  const drawW = card.width * scale
-  const drawH = card.height * scale
-  const offX = (rect.width - drawW) / 2
-  const offY = (rect.height - drawH) / 2
-  const x = (ev.clientX - rect.left - offX) / scale
-  const y = (ev.clientY - rect.top - offY) / scale
-  // 黑边区域忽略
-  if (x < 0 || y < 0 || x > card.width || y > card.height) return
+  if (rect.width === 0 || rect.height === 0) return
+  const x = (ev.clientX - rect.left) * card.width / rect.width
+  const y = (ev.clientY - rect.top) * card.height / rect.height
   const action = ev.type === 'pointerdown' ? 0 : ev.type === 'pointerup' ? 1 : 2
   batchRemoteSendMirror({ kind: 'touch', action, x: Math.round(x), y: Math.round(y), w: card.width, h: card.height })
 }
@@ -3050,13 +3045,14 @@ button.batch-remote-tile-tag:disabled.active {
   color: #fff;
 }
 
-/* 画面按宽度等比缩放，但限制最大高度，避免把上方设备列表挤出视口 */
+/* 画面按宽度等比缩放，但限制最大高度，避免把上方设备列表挤出视口。
+   注意：canvas 上 object-fit 无效，用 max-width 兜底等比（height auto 跟随） */
 .batch-remote-canvas {
   display: block;
-  width: 100%;
-  height: auto;
+  width: auto;
+  max-width: 100%;
   max-height: 280px;
-  object-fit: contain;
+  height: auto;
   touch-action: none;
   user-select: none;
   -webkit-user-drag: none;
