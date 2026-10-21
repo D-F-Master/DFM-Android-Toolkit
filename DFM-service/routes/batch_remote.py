@@ -104,6 +104,10 @@ class DeviceSession:
         try:
             server_path = get_server_path()
 
+            # 先清理设备端可能残留的旧 server（上一次会话异常退出时
+            # 只杀了本机 cmd 包装进程，adb shell 会话可能仍在设备上存活）
+            _run_adb(f'-s {self.device_id} shell "pkill -f scrcpy_server_marker"')
+
             rc, _, err = _run_adb(
                 f'-s {self.device_id} push "{server_path}" {SERVER_PUSH_PATH}'
             )
@@ -120,7 +124,9 @@ class DeviceSession:
                 return False
 
             # tunnel_forward=true：server 监听 localabstract socket，
-            # 客户端（本机）主动向 forward 端口发起连接
+            # 客户端（本机）主动向 forward 端口发起连接。
+            # 注意：命令不能用外层双引号包裹（Windows adb 会提前剥引号导致
+            # 远端参数解析异常，server 发完设备名即退出），实测必须裸传
             shell_cmd = (
                 f'"{get_adb_path()}" -s {self.device_id} shell '
                 f"CLASSPATH={SERVER_PUSH_PATH} "
@@ -129,7 +135,7 @@ class DeviceSession:
                 f"video=true audio=false control=true cleanup=false "
                 f"send_dummy_byte=false send_device_meta=true send_codec_meta=true "
                 f"send_frame_meta=true "
-                f"video_codec=h264 video_encoder=default max_size=1280 "
+                f"video_codec=h264 max_size=1280 "
                 f"video_bit_rate=8000000 max_fps=60 stay_awake=true "
                 f"tunnel_forward=true"
             )
@@ -160,17 +166,21 @@ class DeviceSession:
 
         except Exception as e:
             logger.error(f"[{self.device_id}] session start error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _connect_sockets(self) -> bool:
         """
-        建立视频 + 控制两条 TCP 连接
+        建立视频 + 控制两条 TCP 连接并等待设备名
 
-        forward 模式下 TCP connect 总能成功（adbd 先 accept），
-        即使 server 还没监听；因此以「能否读到数据」作为连接成功的判据：
-        先连两条 socket，再在视频 socket 上等设备名，超时则重来。
+        forward 模式下 TCP connect 总能成功（adbd 先 accept），即使 server
+        还没监听。server 端 accept 之后就会向这条连接写数据，因此一旦建立
+        连接就不能断开重连（重连的新 socket 不会再有数据），只能在同一
+        socket 上等待——WiFi 设备 server 启动较慢，等待要留足时间。
+        只有读到 EOF（server 已死）或 server 进程退出时才重建连接。
         """
-        deadline = time.time() + 15
+        deadline = time.time() + 25
         while time.time() < deadline:
             if self._server_proc.poll() is not None:
                 return False  # server 已退出（参数错误等）
@@ -180,20 +190,43 @@ class DeviceSession:
                 self.control_sock = socket.create_connection(
                     ("127.0.0.1", self.local_port), timeout=3)
                 self.control_sock.settimeout(None)
+                self.video_sock.settimeout(5.0)
 
-                # 短超时试探设备名（server accept 后立即发送）
-                self.video_sock.settimeout(2.0)
-                name = self._recv_exact(64)
+                # 在同一条 socket 上等待 64B 设备名（超时继续等，EOF 才重连）
+                name = self._recv_meta_wait(64, deadline)
                 if name is not None:
                     self.device_name = name.split(b"\x00")[0].decode(
                         "utf-8", errors="replace")
                     return True
-                # 没读到：可能 server 尚未 accept，断开重试
+                # EOF：server 可能已退出，关 socket 走下一轮重连
                 self._close_sockets()
             except OSError:
                 self._close_sockets()
-            time.sleep(0.4)
+            if time.time() >= deadline:
+                break
         return False
+
+    def _recv_meta_wait(self, n: int, deadline: float):
+        """
+        在 video_sock 上等待读取 n 字节（用于会话建立阶段）
+
+        超时（暂无数据）继续等到总 deadline；EOF 返回 None；
+        成功返回完整字节串。部分数据不会丢弃。
+        """
+        buf = b""
+        while len(buf) < n:
+            if time.time() >= deadline:
+                return None
+            try:
+                chunk = self.video_sock.recv(n - len(buf))
+            except socket.timeout:
+                continue  # 暂无数据，继续等
+            except OSError:
+                return None
+            if not chunk:
+                return None  # EOF
+            buf += chunk
+        return buf
 
     def _close_sockets(self):
         for attr in ("video_sock", "control_sock"):
@@ -209,12 +242,15 @@ class DeviceSession:
         """
         读取视频 socket 的 codec meta
 
-        （设备名已在 _connect_sockets 的试探中读完）
+        （设备名已在 _connect_sockets 中读完）
         codec meta（send_codec_meta=true）: codecId(4B) + width(4B) + height(4B)
+        编码器初始化需要时间（首次可能数秒），用长超时等待
         """
         try:
+            self.video_sock.settimeout(10.0)
             codec_meta = self._recv_exact(12)
             if not codec_meta:
+                logger.error(f"[{self.device_id}] codec meta EOF")
                 return False
             codec_id = codec_meta[:4]
             self.video_width, self.video_height = struct.unpack(">II", codec_meta[4:12])
