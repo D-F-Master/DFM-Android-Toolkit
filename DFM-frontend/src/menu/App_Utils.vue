@@ -2781,6 +2781,19 @@ button.batch-action-btn:disabled {
   height: 190px;
 }
 
+/* 性能监控第二行：CPU 频率 | 内存/磁盘 两列布局 */
+.monitor-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.gauge-chart {
+  width: 100%;
+  height: 160px;
+}
+
 .gauge-detail-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2879,6 +2892,10 @@ button.batch-action-btn:disabled {
 }
 
 @media (max-width: 720px) {
+  .monitor-row {
+    grid-template-columns: 1fr;
+  }
+
   .gauge-detail-row {
     grid-template-columns: 1fr;
   }
@@ -3479,59 +3496,7 @@ button.batch-action-btn:disabled {
               </div>
 
               <div v-if="activeTab === 'monitor'" class="keys-page">
-                <!-- 卡片1: 内存 / 磁盘 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="4" y="4" width="16" height="16" rx="2"/>
-                        <rect x="9" y="9" width="6" height="6"/>
-                        <line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>
-                        <line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>
-                        <line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/>
-                        <line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>
-                      </svg>
-                    </span>
-                    <span>内存 / 磁盘</span>
-                    <button class="card-action-btn" @click="refreshMonitor" :disabled="monitorLoading">
-                      {{ monitorLoading ? '刷新中...' : '刷新' }}
-                    </button>
-                  </div>
-                  <div class="card-body">
-                    <div v-if="monitorError" class="monitor-error">{{ monitorError }}</div>
-                    <div v-if="monitorSnapshot" class="monitor-usage">
-                      <div ref="snapshotChartEl" class="gauge-chart-wide"></div>
-                      <div class="gauge-detail-row">
-                        <div class="gauge-detail">
-                          <div class="detail-title">内存</div>
-                          <template v-if="monitorSnapshot.memory">
-                            <span>已用 {{ formatBytes(monitorSnapshot.memory.usedBytes) }}</span>
-                            <span>可用 {{ formatBytes(monitorSnapshot.memory.availableBytes) }}</span>
-                            <span>总计 {{ formatBytes(monitorSnapshot.memory.totalBytes) }}</span>
-                            <span v-if="monitorSnapshot.memory.cachedBytes !== undefined">
-                              页缓存 {{ formatBytes(monitorSnapshot.memory.cachedBytes) }}
-                            </span>
-                          </template>
-                          <span v-else class="monitor-empty">内存数据不可用</span>
-                        </div>
-                        <div class="gauge-detail">
-                          <div class="detail-title">磁盘</div>
-                          <template v-if="monitorSnapshot.disk">
-                            <span>挂载点 {{ monitorSnapshot.disk.mountPoint }}</span>
-                            <span>已用 {{ formatBytes(monitorSnapshot.disk.usedBytes) }}</span>
-                            <span>可用 {{ formatBytes(monitorSnapshot.disk.availableBytes) }}</span>
-                            <span>总计 {{ formatBytes(monitorSnapshot.disk.totalBytes) }}</span>
-                          </template>
-                          <span v-else class="monitor-empty">该设备无 /data 分区，磁盘数据不可用</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div v-else-if="monitorLoading" class="loading-text">加载性能数据中...</div>
-                    <div v-else class="loading-text">暂无性能数据</div>
-                  </div>
-                </div>
-
-                <!-- 卡片2: CPU 实时占用率与网络速率 -->
+                <!-- 第一行: CPU 实时占用率与网络速率 -->
                 <div class="scrcpy-card">
                   <div class="card-header">
                     <span class="card-icon">
@@ -3570,24 +3535,80 @@ button.batch-action-btn:disabled {
                   </div>
                 </div>
 
-                <!-- 卡片3: CPU 频率 -->
-                <div class="scrcpy-card" v-if="monitorSnapshot && monitorSnapshot.cpu && monitorSnapshot.cpu.cores.length > 0">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="4" y="4" width="16" height="16" rx="2"/>
-                        <line x1="4" y1="10" x2="20" y2="10"/>
-                        <line x1="10" y1="4" x2="10" y2="20"/>
-                      </svg>
-                    </span>
-                    <span>CPU 频率</span>
-                    <span class="monitor-freq-info">
-                      {{ monitorSnapshot.cpu.coreCount }} 核 · 最高 {{ formatFreq(monitorSnapshot.cpu.maxFreqKhz) }}
-                    </span>
+                <!-- 第二行: 左右两列（CPU 频率 | 内存 / 磁盘） -->
+                <div class="monitor-row">
+                  <!-- CPU 频率 -->
+                  <div class="scrcpy-card" v-if="monitorSnapshot && monitorSnapshot.cpu && monitorSnapshot.cpu.cores.length > 0">
+                    <div class="card-header">
+                      <span class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                          <rect x="4" y="4" width="16" height="16" rx="2"/>
+                          <line x1="4" y1="10" x2="20" y2="10"/>
+                          <line x1="10" y1="4" x2="10" y2="20"/>
+                        </svg>
+                      </span>
+                      <span>CPU 频率</span>
+                      <span class="monitor-freq-info">
+                        {{ monitorSnapshot.cpu.coreCount }} 核 · 最高 {{ formatFreq(monitorSnapshot.cpu.maxFreqKhz) }}
+                      </span>
+                    </div>
+                    <div class="card-body">
+                      <div ref="coreChartEl" class="core-chart"></div>
+                    </div>
                   </div>
-                  <div class="card-body">
-                    <div ref="coreChartEl" class="core-chart"></div>
-                  </div>                </div>
+
+                  <!-- 内存 / 磁盘 -->
+                  <div class="scrcpy-card">
+                    <div class="card-header">
+                      <span class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                          <rect x="4" y="4" width="16" height="16" rx="2"/>
+                          <rect x="9" y="9" width="6" height="6"/>
+                          <line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>
+                          <line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>
+                          <line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/>
+                          <line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>
+                        </svg>
+                      </span>
+                      <span>内存 / 磁盘</span>
+                      <button class="card-action-btn" @click="refreshMonitor" :disabled="monitorLoading">
+                        {{ monitorLoading ? '刷新中...' : '刷新' }}
+                      </button>
+                    </div>
+                    <div class="card-body">
+                      <div v-if="monitorError" class="monitor-error">{{ monitorError }}</div>
+                      <div v-if="monitorSnapshot" class="monitor-usage">
+                        <div ref="snapshotChartEl" class="gauge-chart"></div>
+                        <div class="gauge-detail-row">
+                          <div class="gauge-detail">
+                            <div class="detail-title">内存</div>
+                            <template v-if="monitorSnapshot.memory">
+                              <span>已用 {{ formatBytes(monitorSnapshot.memory.usedBytes) }}</span>
+                              <span>可用 {{ formatBytes(monitorSnapshot.memory.availableBytes) }}</span>
+                              <span>总计 {{ formatBytes(monitorSnapshot.memory.totalBytes) }}</span>
+                              <span v-if="monitorSnapshot.memory.cachedBytes !== undefined">
+                                页缓存 {{ formatBytes(monitorSnapshot.memory.cachedBytes) }}
+                              </span>
+                            </template>
+                            <span v-else class="monitor-empty">内存数据不可用</span>
+                          </div>
+                          <div class="gauge-detail">
+                            <div class="detail-title">磁盘</div>
+                            <template v-if="monitorSnapshot.disk">
+                              <span>挂载点 {{ monitorSnapshot.disk.mountPoint }}</span>
+                              <span>已用 {{ formatBytes(monitorSnapshot.disk.usedBytes) }}</span>
+                              <span>可用 {{ formatBytes(monitorSnapshot.disk.availableBytes) }}</span>
+                              <span>总计 {{ formatBytes(monitorSnapshot.disk.totalBytes) }}</span>
+                            </template>
+                            <span v-else class="monitor-empty">该设备无 /data 分区，磁盘数据不可用</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else-if="monitorLoading" class="loading-text">加载性能数据中...</div>
+                      <div v-else class="loading-text">暂无性能数据</div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
