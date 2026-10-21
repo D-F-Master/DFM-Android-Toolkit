@@ -183,7 +183,9 @@ async def remote_ws(ws: WebSocket):
                 })
 
             elif mtype == "mirror":
-                hub.mirror_event(msg.get("event") or {})
+                event = msg.get("event") or {}
+                logger.info(f"mirror event: {event}")
+                hub.mirror_event(event)
 
             elif mtype == "stop":
                 hub.stop_all()

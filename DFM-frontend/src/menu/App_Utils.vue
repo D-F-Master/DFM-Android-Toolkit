@@ -202,11 +202,15 @@ const batchRemoteGridCols = computed(() => {
 
 const batchRemoteSendMirror = (event: any) => {
   if (batchRemoteWs && batchRemoteWs.readyState === WebSocket.OPEN) {
+    console.log('[batchRemote] mirror send:', event)
     batchRemoteWs.send(JSON.stringify({ type: 'mirror', event }))
+  } else {
+    console.warn('[batchRemote] mirror dropped, ws not open, state =', batchRemoteWs?.readyState)
   }
 }
 
 const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
+  console.log('[batchRemote] pointer', ev.type, 'index', index, 'sourceIdx', batchRemoteSourceIndex.value)
   const isSource = index === batchRemoteSourceIndex.value
   // 非主控画面：任何点击都只是切换主控，不产生触摸事件
   if (!isSource) {
