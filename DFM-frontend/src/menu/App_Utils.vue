@@ -206,25 +206,55 @@ const batchRemoteSendMirror = (event: any) => {
   }
 }
 
+// 从机画面点击切主控的位移阈值（按下与抬起几乎不动才算点击，避免拖动误触）
+const BATCH_REMOTE_CLICK_THRESHOLD = 8
+let batchRemotePressPos: Record<number, { x: number; y: number }> = {}
+
 const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
   const isSource = index === batchRemoteSourceIndex.value
-  // 非主控画面不产生触摸事件（切主控只能点右上角「设为主控」按钮）
-  if (!isSource) return
   const card = batchRemoteCards.value[index]
   if (!card) return
-  // 主控画面坐标换算（canvas 元素）
-  const cv = batchRemoteCanvasRefs.value[index]
-  if (!cv) return
-  // 捕获指针：滑动移出画面后仍能收到 pointerup，保证手势完整
-  if (ev.type === 'pointerdown') {
-    try { cv.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+
+  // ---- 非主控画面：单击（几乎无位移）切换主控，拖动不做任何事 ----
+  if (!isSource) {
+    if (ev.type === 'pointerdown') {
+      batchRemotePressPos[index] = { x: ev.clientX, y: ev.clientY }
+    } else if (ev.type === 'pointerup') {
+      const p = batchRemotePressPos[index]
+      delete batchRemotePressPos[index]
+      if (p) {
+        const dx = ev.clientX - p.x
+        const dy = ev.clientY - p.y
+        if (Math.sqrt(dx * dx + dy * dy) < BATCH_REMOTE_CLICK_THRESHOLD) {
+          setBatchRemoteSource(card.deviceId)
+        }
+      }
+    }
+    return
   }
-  // 坐标换算：canvas 宽 100% 高 auto 等比缩放（无黑边），线性映射即可
+
+  // ---- 主控画面：同步触摸到其他设备 ----
+  const cv = batchRemoteCanvasRefs.value[index]
+  // 先发事件再捕获指针：确保 pointerdown 一定发出去（capture 失败也不影响）
+  const action = ev.type === 'pointerdown' ? 0 : ev.type === 'pointerup' ? 1 : 2
+  if (ev.type === 'pointerdown' || ev.type === 'pointerup') {
+    const rect = cv ? cv.getBoundingClientRect() : null
+    if (rect && rect.width > 0) {
+      const x = (ev.clientX - rect.left) * card.width / rect.width
+      const y = (ev.clientY - rect.top) * card.height / rect.height
+      batchRemoteSendMirror({ kind: 'touch', action, x: Math.round(x), y: Math.round(y), w: card.width, h: card.height })
+    }
+    if (ev.type === 'pointerdown' && cv) {
+      try { cv.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+    }
+    return
+  }
+  // pointermove
+  if (!cv) return
   const rect = cv.getBoundingClientRect()
   if (rect.width === 0 || rect.height === 0) return
   const x = (ev.clientX - rect.left) * card.width / rect.width
   const y = (ev.clientY - rect.top) * card.height / rect.height
-  const action = ev.type === 'pointerdown' ? 0 : ev.type === 'pointerup' ? 1 : 2
   batchRemoteSendMirror({ kind: 'touch', action, x: Math.round(x), y: Math.round(y), w: card.width, h: card.height })
 }
 
@@ -3058,9 +3088,13 @@ button.batch-remote-tile-tag:disabled.active {
   -webkit-user-drag: none;
 }
 
-/* 主控画面可操作（十字光标），从机画面仅查看（默认光标，切主控用右上角按钮） */
+/* 主控画面可操作（十字光标）；从机画面单击可切主控（手型光标） */
 .batch-remote-tile.source .batch-remote-canvas {
   cursor: crosshair;
+}
+
+.batch-remote-tile:not(.source) .batch-remote-canvas {
+  cursor: pointer;
 }
 
 .batch-remote-tile-loading {
@@ -3854,7 +3888,7 @@ button.batch-remote-tile-tag:disabled.active {
                 <!-- 批量投屏画面区（会话建立后显示） -->
                 <div v-if="batchRemoteActive || batchRemoteCards.length > 0" class="batch-remote-area">
                   <div class="batch-remote-header">
-                    <span>批量投屏（主控画面的操作将同步到其他设备，切换主控请点画面右上角「设为主控」）</span>
+                    <span>批量投屏（主控画面操作同步到其他设备 · 单击从机画面或点「设为主控」切换主控）</span>
                     <span class="batch-remote-status" :class="{ live: batchRemoteActive }">{{ batchRemoteWsStatus }}</span>
                   </div>
                   <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
