@@ -23,6 +23,7 @@ from routes.port_utils import router as port_router
 from routes.common import router as common_router
 from routes.ip_utils import router as ip_router
 from routes.test_routes import router as test_router
+from routes.remote_ws import router as remote_ws_router
 
 app.include_router(adb_router)
 app.include_router(port_router)
@@ -30,6 +31,7 @@ app.include_router(common_router)
 app.include_router(ip_router)
 app.include_router(test_router)
 app.include_router(html_config)
+app.include_router(remote_ws_router)
 
 # ========== 获取配置 ==========
 CONF = get_conf()

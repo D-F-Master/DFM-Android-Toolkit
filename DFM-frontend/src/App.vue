@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue';
 import App_Utils from './menu/App_Utils.vue';
 import App_PortTool from './menu/App_PortTool.vue';
+import App_BatchRemote from './menu/App_BatchRemote.vue';
 
 const currentPage = ref('home');
 const appVersion = ref('V2.0.0');
@@ -27,6 +28,10 @@ const enterUtils = () => {
 
 const enterPortTool = () => {
   currentPage.value = 'portTool';
+};
+
+const enterBatchRemote = () => {
+  currentPage.value = 'batchRemote';
 };
 
 
@@ -103,6 +108,20 @@ const goBack = () => {
         </span>
       </button>
 
+      <button class="menu-button" @click="enterBatchRemote">
+        <span class="btn-icon">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
+            <path d="M2 4a2 2 0 012-2h12a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V4zm3 12h10v2H5v-2z"/>
+          </svg>
+        </span>
+        <span class="btn-text">批量远控</span>
+        <span class="btn-arrow">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+            <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
+        </span>
+      </button>
+
       <!--
         ⬆⬆⬆ 新按钮加在上方 ⬆⬆⬆
       -->
@@ -112,6 +131,7 @@ const goBack = () => {
   </div>
   <App_Utils v-if="currentPage === 'utils'" @back="goBack" />
   <App_PortTool v-else-if="currentPage === 'portTool'" @back="goBack" />
+  <App_BatchRemote v-else-if="currentPage === 'batchRemote'" @back="goBack" />
 </template>
 
 <style scoped>
