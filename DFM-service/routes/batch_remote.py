@@ -85,7 +85,10 @@ class DeviceSession:
         self.device_id = device_id
         self.local_port = local_port
         # socket 名由 scid 生成（scrcpy_%08x），与 server 端 getSocketName 一致
-        self.scid_hex = f"{random.randint(0, 0x7FFFFFFF):08x}"
+        # scid：8 位零填充 hex 且首字符必须是数字（1-7 开头）——
+        # adb shell 传参时字母开头的值会被远端 shell 当作选项吞掉，
+        # 导致 server 端 NumberFormatException 退出
+        self.scid_hex = f"{random.randint(0x10000000, 0x7FFFFFFF):08x}"
         self.socket_name = f"scrcpy_{self.scid_hex}"
         self.video_sock: socket.socket = None
         self.control_sock: socket.socket = None

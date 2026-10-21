@@ -241,8 +241,16 @@ const batchRemoteHandleJson = (msg: any) => {
 }
 
 const batchRemoteIsKeyframe = (data: Uint8Array): boolean => {
+  // Annex-B：扫描 NALU 起始码（00 00 01 / 00 00 00 01），任一 NAL 类型为 5（IDR）即关键帧
   if (data.length < 5) return false
-  return (data[4] & 0x1F) === 5
+  for (let i = 0; i + 4 < data.length; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+      if ((data[i + 3] & 0x1F) === 5) return true
+    } else if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 && data[i + 3] === 1) {
+      if ((data[i + 4] & 0x1F) === 5) return true
+    }
+  }
+  return false
 }
 
 const batchRemoteDrawFrame = (index: number, frame: VideoFrame) => {
@@ -263,24 +271,37 @@ const batchRemoteHandleBinary = (buf: ArrayBuffer) => {
   if (!batchRemoteCards.value[index]) return
 
   if (kind === 1) {
+    // config 包（SPS/PPS，Annex-B 起始码格式）：缓存下来拼在关键帧前喂给解码器
     batchRemoteConfigs[index] = payload
     if (batchRemoteDecoders[index]) batchRemoteDecoders[index].close()
     batchRemoteDecoders[index] = new VideoDecoder({
       output: (frame) => batchRemoteDrawFrame(index, frame),
       error: (e) => { batchRemoteStatus.value = `解码器错误: ${e.message}` },
     })
-    batchRemoteDecoders[index].configure({ codec: 'avc1.640028', description: payload })
+    // 不传 description：Annex-B 模式（scrcpy 的 config/帧均为起始码格式）
+    batchRemoteDecoders[index].configure({ codec: 'avc1.640028', optimizeForLatency: true })
   } else if (kind === 2) {
     const dec = batchRemoteDecoders[index]
     if (dec && dec.state === 'configured') {
+      // 关键帧前拼接 config（SPS/PPS），保证随时接入都能解码
+      const cfg = batchRemoteConfigs[index]
+      const isKey = batchRemoteIsKeyframe(payload)
+      const data = isKey && cfg ? concatU8(cfg, payload) : payload
       const chunk = new EncodedVideoChunk({
-        type: batchRemoteIsKeyframe(payload) ? 'key' : 'delta',
+        type: isKey ? 'key' : 'delta',
         timestamp: performance.now() * 1000,
-        data: payload,
+        data,
       })
       try { dec.decode(chunk) } catch { /* 队列满时丢弃 */ }
     }
   }
+}
+
+const concatU8 = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+  const out = new Uint8Array(a.length + b.length)
+  out.set(a, 0)
+  out.set(b, a.length)
+  return out
 }
 
 const startBatchRemote = () => {
