@@ -2,20 +2,23 @@
 批量远控 - scrcpy 设备会话模块
 
 每台设备一个 DeviceSession：
-1. adb push scrcpy-server 到设备并以 tunnel_forward=true 启动
-2. Python 通过 adb forward 的 TCP 连接接收 H.264 流
-3. 视频与控制共用一个 socket（v3.x 协议），控制消息从客户端方向写入
-4. 帧数据通过队列交给 WebSocket 发送层
+1. adb push scrcpy-server 到 /data/local/tmp/scrcpy-server.jar 并启动
+2. adb forward tcp:PORT localabstract:scrcpy_XXXXXXXX
+3. 建立两条 TCP 连接（forward 端口相同）：视频 socket + 控制 socket
+4. 视频 socket 收 H.264 流，控制 socket 发注入事件
 
-协议依据 scrcpy v3.3.3 源码（doc/develop.md + app/src/control_msg.c）：
-- 帧/包头：12 字节 = 8B 大端（bit63=config标志, bit62=keyframe标志, 其余 PTS）
-          + 4B 大端包长
-- 控制消息 INJECT_KEYCODE(0)：type(1)+action(1)+keycode(4)+repeat(4)+metaState(4) = 14B
-- 控制消息 INJECT_TEXT(1)：type(1)+len(4)+utf8（单条最长 300 字节，超长自动分段）
-- 控制消息 INJECT_TOUCH_EVENT(2)：type(1)+action(1)+pointerId(8)
-          +x(4)+y(4)+w(2)+h(2)+pressure(2)+actionButton(4)+buttons(4) = 32B
-          坐标归一化：round(v * 0xFFFF / (max-1)) - 0x8000（sc_int16fp）
+协议依据 scrcpy v3.3.3 官方源码：
+- app/src/server.c：push 路径 /data/local/tmp/scrcpy-server.jar、
+  socket 名 "scrcpy_%08x"、tunnel_forward 模式客户端依次连视频/控制两个 socket
+- server/.../device/DesktopConnection.java：forward 模式 server 依次 accept
+  视频、控制连接，然后才在首个 socket 上发 64B 设备名；scid 为 8 位零填充 hex
+- server/.../Streamer.java：视频 socket 先收 codec meta 12B（codecId u32 +
+  width u32 + height u32），随后每帧 12B 头（bit63=config, bit62=keyframe,
+  其余 PTS + u32 包长）
+- app/src/control_msg.c：控制消息字节布局（INJECT_KEYCODE=0/TEXT=1/TOUCH=2/
+  SCROLL=3），坐标为 i16 定点数 round(v*0xFFFF/(max-1))-0x8000
 """
+import random
 import socket
 import struct
 import subprocess
@@ -27,13 +30,13 @@ from config import logger
 from utils.tool_manager import get_adb_path, get_lib_path
 
 SERVER_FILENAME = "scrcpy-server"
+SERVER_PUSH_PATH = "/data/local/tmp/scrcpy-server.jar"
 
 # 控制消息类型（与 scrcpy ControlMessageReader 一致）
 TYPE_INJECT_KEYCODE = 0
 TYPE_INJECT_TEXT = 1
 TYPE_INJECT_TOUCH_EVENT = 2
 TYPE_INJECT_SCROLL_EVENT = 3
-TYPE_BACK_OR_SCREEN_ON = 4
 
 # Android MotionEvent action
 ACTION_DOWN = 0
@@ -55,7 +58,7 @@ POINTER_ID_GENERIC_FINGER = 0xFFFFFFFFFFFFFFFE
 
 
 def get_server_path() -> str:
-    """获取 scrcpy-server 文件完整路径"""
+    """获取本地 scrcpy-server 文件完整路径"""
     lib_path = get_lib_path()
     for item in lib_path.iterdir():
         if item.is_dir() and item.name.startswith("scrcpy"):
@@ -81,49 +84,54 @@ class DeviceSession:
     def __init__(self, device_id: str, local_port: int):
         self.device_id = device_id
         self.local_port = local_port
-        # localabstract 名称需设备级唯一（多设备并行）
-        tag = device_id.replace(":", "").replace(".", "")
-        self.socket_name = f"dsh_batch_{tag}"
-        self.sock: socket.socket = None
+        # socket 名由 scid 生成（scrcpy_%08x），与 server 端 getSocketName 一致
+        self.scid_hex = f"{random.randint(0, 0x7FFFFFFF):08x}"
+        self.socket_name = f"scrcpy_{self.scid_hex}"
+        self.video_sock: socket.socket = None
+        self.control_sock: socket.socket = None
         self._server_proc: subprocess.Popen = None
         self.frame_queue: queue.Queue = queue.Queue(maxsize=600)
         self.running = False
         self.device_name = device_id
         self.video_width = 0
         self.video_height = 0
+        self._lock = threading.Lock()
 
     # ---------- 会话建立 ----------
 
     def start(self) -> bool:
-        """推送 server、启动设备端进程、建立连接"""
+        """推送 server、启动设备端进程、建立双 socket 连接"""
         try:
             server_path = get_server_path()
 
-            rc, _, err = _run_adb(f'-s {self.device_id} push "{server_path}" /data/local/tmp')
+            rc, _, err = _run_adb(
+                f'-s {self.device_id} push "{server_path}" {SERVER_PUSH_PATH}'
+            )
             if rc != 0:
                 logger.error(f"[{self.device_id}] push server failed: {err}")
                 return False
 
-            # adb forward：本机端口 → 设备端 localabstract socket
             rc, _, err = _run_adb(
-                f"-s {self.device_id} forward tcp:{self.local_port} localabstract:{self.socket_name}"
+                f"-s {self.device_id} forward tcp:{self.local_port} "
+                f"localabstract:{self.socket_name}"
             )
             if rc != 0:
                 logger.error(f"[{self.device_id}] adb forward failed: {err}")
                 return False
 
-            # 启动 server。tunnel_forward=true：设备端监听，本机主动连接
+            # tunnel_forward=true：server 监听 localabstract socket，
+            # 客户端（本机）主动向 forward 端口发起连接
             shell_cmd = (
                 f'"{get_adb_path()}" -s {self.device_id} shell '
-                f'CLASSPATH=/data/local/tmp/{SERVER_FILENAME} '
+                f"CLASSPATH={SERVER_PUSH_PATH} "
                 f"app_process / com.genymobile.scrcpy.Server 3.3.3 "
-                f"log_level=info scid={self._scid()} "
+                f"log_level=info scid={self.scid_hex} "
                 f"video=true audio=false control=true cleanup=false "
                 f"send_dummy_byte=false send_device_meta=true send_codec_meta=true "
-                f"send_frame_meta=true raw_stream=false "
+                f"send_frame_meta=true "
                 f"video_codec=h264 video_encoder=default max_size=1280 "
                 f"video_bit_rate=8000000 max_fps=60 stay_awake=true "
-                f"tunnel_forward=true socket_name={self.socket_name}"
+                f"tunnel_forward=true"
             )
             self._server_proc = subprocess.Popen(
                 shell_cmd, shell=True,
@@ -131,16 +139,17 @@ class DeviceSession:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
 
-            self.sock = self._connect_with_retry(("127.0.0.1", self.local_port), retries=24, delay=0.25)
-            if not self.sock:
-                logger.error(f"[{self.device_id}] connect to forwarded port failed")
+            # 依次建立视频、控制两条连接（server 依次 accept，顺序不能反）
+            if not self._connect_sockets():
+                logger.error(f"[{self.device_id}] connect sockets failed")
                 return False
 
-            # 单 socket 模式（v3.x）：首个（唯一）socket 上先读 device meta
+            # 首个（视频）socket 上读设备名 + codec meta（带超时防卡死）
             if not self._read_device_meta():
                 logger.error(f"[{self.device_id}] read device meta failed")
                 return False
 
+            self.video_sock.settimeout(None)
             self.running = True
             threading.Thread(target=self._read_loop, daemon=True).start()
             logger.info(
@@ -153,38 +162,57 @@ class DeviceSession:
             logger.error(f"[{self.device_id}] session start error: {e}")
             return False
 
-    @staticmethod
-    def _scid() -> int:
-        """随机 31 位 scid，同设备多客户端不冲突"""
-        import random
-        return random.randint(0, 0x7FFFFFFF)
+    def _connect_sockets(self) -> bool:
+        """
+        建立视频 + 控制两条 TCP 连接
 
-    def _connect_with_retry(self, addr, retries: int, delay: float):
-        for _ in range(retries):
+        forward 模式下 TCP connect 总能成功（adbd 先 accept），
+        即使 server 还没监听；因此以「能否读到数据」作为连接成功的判据：
+        先连两条 socket，再在视频 socket 上等设备名，超时则重来。
+        """
+        deadline = time.time() + 15
+        while time.time() < deadline:
             if self._server_proc.poll() is not None:
-                return None
+                return False  # server 已退出（参数错误等）
             try:
-                s = socket.create_connection(addr, timeout=2)
-                s.settimeout(None)
-                return s
+                self.video_sock = socket.create_connection(
+                    ("127.0.0.1", self.local_port), timeout=3)
+                self.control_sock = socket.create_connection(
+                    ("127.0.0.1", self.local_port), timeout=3)
+                self.control_sock.settimeout(None)
+
+                # 短超时试探设备名（server accept 后立即发送）
+                self.video_sock.settimeout(2.0)
+                name = self._recv_exact(64)
+                if name is not None:
+                    self.device_name = name.split(b"\x00")[0].decode(
+                        "utf-8", errors="replace")
+                    return True
+                # 没读到：可能 server 尚未 accept，断开重试
+                self._close_sockets()
             except OSError:
-                time.sleep(delay)
-        return None
+                self._close_sockets()
+            time.sleep(0.4)
+        return False
+
+    def _close_sockets(self):
+        for attr in ("video_sock", "control_sock"):
+            s = getattr(self, attr, None)
+            if s:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                setattr(self, attr, None)
 
     def _read_device_meta(self) -> bool:
         """
-        读取首 socket 的 device meta + codec meta
+        读取视频 socket 的 codec meta
 
-        v3.3.3（send_device_meta=true）：
-        - device meta: 64B 设备名（CLIPBOARD 固定 64）
-        - codec meta（send_codec_meta=true, video）: codecId(4B) + width(4B) + height(4B)
+        （设备名已在 _connect_sockets 的试探中读完）
+        codec meta（send_codec_meta=true）: codecId(4B) + width(4B) + height(4B)
         """
         try:
-            name_raw = self._recv_exact(64)
-            if not name_raw:
-                return False
-            self.device_name = name_raw.split(b"\x00")[0].decode("utf-8", errors="replace")
-
             codec_meta = self._recv_exact(12)
             if not codec_meta:
                 return False
@@ -235,7 +263,7 @@ class DeviceSession:
     def _recv_exact(self, n: int):
         buf = b""
         while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
+            chunk = self.video_sock.recv(n - len(buf))
             if not chunk:
                 return None
             buf += chunk
@@ -244,17 +272,12 @@ class DeviceSession:
     # ---------- 控制注入（字节布局严格对齐 control_msg.c） ----------
 
     def _send_control(self, data: bytes):
-        with self._io_lock():
-            if self.sock and self.running:
+        with self._lock:
+            if self.control_sock and self.running:
                 try:
-                    self.sock.sendall(data)
+                    self.control_sock.sendall(data)
                 except OSError as e:
                     logger.warning(f"[{self.device_id}] control send failed: {e}")
-
-    def _io_lock(self):
-        if not hasattr(self, "_lock"):
-            self._lock = threading.Lock()
-        return self._lock
 
     @staticmethod
     def _norm_coord(v: float, max_v: int) -> int:
@@ -332,11 +355,7 @@ class DeviceSession:
                 self._server_proc.kill()
         except Exception:
             pass
-        try:
-            if self.sock:
-                self.sock.close()
-        except Exception:
-            pass
+        self._close_sockets()
         try:
             _run_adb(f"-s {self.device_id} forward --remove tcp:{self.local_port}", timeout=5)
         except Exception:
@@ -344,8 +363,8 @@ class DeviceSession:
         # cleanup=false 时需手动清理设备端进程
         try:
             _run_adb(
-                f'-s {self.device_id} shell "ps -A | grep app_process | grep {self.socket_name} '
-                f'| grep -v grep | awk \'{{print $2}}\' | xargs -r kill"',
+                f'-s {self.device_id} shell "ps -A | grep app_process | grep -v grep '
+                f'| awk \'{{print $2}}\' | xargs -r kill"',
                 timeout=8,
             )
         except Exception:
