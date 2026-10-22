@@ -172,7 +172,7 @@ const selectedBatchCount = computed(() => batchSelectedDevices.value.size)
 // ===== 批量投屏（嵌入批量操作页） =====
 const batchRemoteActive = ref(false)
 const batchRemoteConnecting = ref(false)
-const batchRemoteCards = ref<Array<{ deviceId: string; index: number; name: string; width: number; height: number; ready: boolean }>>([])
+const batchRemoteCards = ref<Array<{ deviceId: string; index: number; name: string; width: number; height: number; ready: boolean; frames: number; diag: string; codec?: string }>>([])
 const batchRemoteSource = ref('')
 const batchRemoteStatus = ref('')
 const batchRemoteWsStatus = ref('未连接')
@@ -258,11 +258,15 @@ const batchRemoteOnPointer = (ev: PointerEvent, card: any) => {
 const batchRemoteHandleJson = (msg: any) => {
   if (msg.type === 'meta') {
     // index 来自后端帧索引，不能依赖 meta 到达顺序（多设备并行启动会乱序）
-    batchRemoteCards.value.push({
-      deviceId: msg.deviceId, index: msg.index ?? batchRemoteCards.value.length,
-      name: msg.name,
-      width: msg.width, height: msg.height, ready: true,
-    })
+    const exists = batchRemoteCards.value.some(c => c.deviceId === msg.deviceId)
+    if (!exists) {
+      batchRemoteCards.value.push({
+        deviceId: msg.deviceId, index: msg.index ?? batchRemoteCards.value.length,
+        name: msg.name,
+        width: msg.width, height: msg.height, ready: true,
+        frames: 0, diag: '',
+      })
+    }
     batchRemoteStatus.value = ''
   } else if (msg.type === 'ready') {
     batchRemoteActive.value = true
@@ -270,6 +274,16 @@ const batchRemoteHandleJson = (msg: any) => {
     batchRemoteWsStatus.value = '运行中'
     const okIds = new Set((msg.devices || []).map((d: any) => d.deviceId))
     batchRemoteCards.value = batchRemoteCards.value.filter(d => okIds.has(d.deviceId))
+    // ready 是权威设备清单：补救可能丢失的 meta（否则该设备所有帧会被丢弃）
+    for (const d of msg.devices || []) {
+      if (!batchRemoteCards.value.some(c => c.deviceId === d.deviceId)) {
+        batchRemoteCards.value.push({
+          deviceId: d.deviceId, index: d.index,
+          name: d.name, width: d.width, height: d.height, ready: true,
+          frames: 0, diag: '',
+        })
+      }
+    }
   } else if (msg.type === 'error') {
     batchRemoteStatus.value = `${msg.deviceId || ''}: ${msg.message}`
     batchRemoteConnecting.value = false
@@ -314,8 +328,14 @@ const batchRemoteIsKeyframe = (data: Uint8Array): boolean => {
 }
 
 const batchRemoteDrawFrame = (index: number, frame: VideoFrame) => {
+  const card = batchRemoteCards.value.find(c => c.index === index)
   const cv = batchRemoteCanvasRefs.value[index]
-  if (!cv) { frame.close(); return }
+  if (card) card.frames++
+  if (!cv) {
+    if (card) card.diag = '无画布元素'
+    frame.close()
+    return
+  }
   if (cv.width !== frame.displayWidth) cv.width = frame.displayWidth
   if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
   const ctx = cv.getContext('2d')!
@@ -340,13 +360,18 @@ const batchRemoteHandleBinary = (buf: ArrayBuffer) => {
     }
     batchRemoteDecoders[index] = new VideoDecoder({
       output: (frame) => batchRemoteDrawFrame(index, frame),
-      error: (e) => { batchRemoteStatus.value = `${card.name} 解码错误: ${e.message}` },
+      error: (e) => {
+        card.diag = `解码失败: ${e.message}`
+        batchRemoteStatus.value = `${card.name} 解码错误: ${e.message}`
+      },
     })
     // 不传 description：Annex-B 模式；codec 档位从 SPS 实测值推导
     const codec = batchRemoteCodecFromSps(payload)
     try {
       batchRemoteDecoders[index].configure({ codec, optimizeForLatency: true })
+      card.codec = codec
     } catch (e: any) {
+      card.diag = `初始化失败(${codec}): ${e.message || e}`
       batchRemoteStatus.value = `${card.name} 解码器初始化失败 (${codec}): ${e.message || e}`
     }
   } else if (kind === 2) {
@@ -3073,6 +3098,13 @@ button.batch-action-btn:disabled {
   white-space: nowrap;
 }
 
+.batch-remote-tile-diag {
+  margin-left: 6px;
+  font-weight: 400;
+  color: #999;
+  font-size: 10px;
+}
+
 button.batch-remote-tile-tag {
   flex-shrink: 0;
   padding: 2px 10px;
@@ -3929,7 +3961,12 @@ button.batch-remote-tile-tag:disabled.active {
                       :class="{ source: card.deviceId === batchRemoteSource, dead: !card.ready }"
                     >
                       <div class="batch-remote-tile-header">
-                        <span class="batch-remote-tile-name">{{ card.name }}</span>
+                        <span class="batch-remote-tile-name">
+                          {{ card.name }}
+                          <span class="batch-remote-tile-diag">
+                            idx{{ card.index }} · {{ card.frames }}帧{{ card.codec ? ' · ' + card.codec : '' }}{{ card.diag ? ' · ' + card.diag : '' }}
+                          </span>
+                        </span>
                         <button
                           class="batch-remote-tile-tag"
                           :class="{ active: card.deviceId === batchRemoteSource }"

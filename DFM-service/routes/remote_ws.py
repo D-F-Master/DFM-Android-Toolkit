@@ -84,7 +84,14 @@ class RemoteHub:
             })
 
     def _frame_pump(self, session: DeviceSession):
-        """单设备帧队列 → WebSocket binary 帧"""
+        """
+        单设备帧队列 → WebSocket binary 帧
+
+        注意：单次发送超时不能终止会话（关键帧较大时可能 >5s），
+        否则该设备画面会永久停止而其他设备仍正常。仅在 WS 已断开或
+        连续失败多次时才退出。
+        """
+        consecutive_fail = 0
         while session.running:
             try:
                 frame = session.frame_queue.get(timeout=1.0)
@@ -98,13 +105,21 @@ class RemoteHub:
                 index = self.device_order.index(session.device_id)
             kind = 1 if frame["kind"] == "config" else 2
             try:
-                # asyncio 的 send_bytes 线程安全，直接用 loop.call_soon_threadsafe
-                asyncio.run_coroutine_threadsafe(
+                fut = asyncio.run_coroutine_threadsafe(
                     self.ws.send_bytes(bytes([index, kind]) + frame["data"]),
                     self._loop,
-                ).result(timeout=5)
-            except Exception:
-                break
+                )
+                fut.result(timeout=10)
+                consecutive_fail = 0
+            except Exception as e:
+                consecutive_fail += 1
+                logger.warning(
+                    f"[{session.device_id}] frame send failed "
+                    f"({consecutive_fail}): {e}"
+                )
+                if consecutive_fail >= 20:
+                    logger.error(f"[{session.device_id}] frame pump aborted after 20 failures")
+                    break
         self._try_send_json({"type": "closed", "deviceId": session.device_id})
 
     def stop_all(self):
