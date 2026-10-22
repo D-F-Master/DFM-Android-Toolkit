@@ -69,8 +69,11 @@ class RemoteHub:
             with self._lock:
                 self.sessions[device_id] = session
                 self.device_order.append(device_id)
+                # 帧索引在加锁内取定：meta 消息可能乱序到达前端，
+                # 必须把索引一并下发，前端才能把帧对上设备
+                index = self.device_order.index(device_id)
             self._try_send_json({
-                "type": "meta", "deviceId": device_id,
+                "type": "meta", "deviceId": device_id, "index": index,
                 "name": session.device_name,
                 "width": session.video_width, "height": session.video_height,
             })
@@ -197,6 +200,7 @@ async def remote_ws(ws: WebSocket):
                     "devices": [
                         {
                             "deviceId": did,
+                            "index": hub.device_order.index(did),
                             "name": hub.sessions[did].device_name,
                             "width": hub.sessions[did].video_width,
                             "height": hub.sessions[did].video_height,

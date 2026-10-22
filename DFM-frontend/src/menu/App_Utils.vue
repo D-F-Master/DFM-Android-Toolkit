@@ -172,7 +172,7 @@ const selectedBatchCount = computed(() => batchSelectedDevices.value.size)
 // ===== 批量投屏（嵌入批量操作页） =====
 const batchRemoteActive = ref(false)
 const batchRemoteConnecting = ref(false)
-const batchRemoteCards = ref<Array<{ deviceId: string; name: string; width: number; height: number; ready: boolean }>>([])
+const batchRemoteCards = ref<Array<{ deviceId: string; index: number; name: string; width: number; height: number; ready: boolean }>>([])
 const batchRemoteSource = ref('')
 const batchRemoteStatus = ref('')
 const batchRemoteWsStatus = ref('未连接')
@@ -180,10 +180,6 @@ let batchRemoteWs: WebSocket | null = null
 let batchRemoteConfigs: Record<number, Uint8Array> = {}
 let batchRemoteDecoders: Record<number, VideoDecoder> = {}
 const batchRemoteCanvasRefs = ref<any[]>([])
-
-const batchRemoteSourceIndex = computed(() =>
-  batchRemoteCards.value.findIndex(d => d.deviceId === batchRemoteSource.value)
-)
 
 const setBatchRemoteCanvasRef = (el: any, index: number) => {
   if (el) batchRemoteCanvasRefs.value[index] = el
@@ -208,20 +204,22 @@ const batchRemoteSendMirror = (event: any) => {
 
 // 从机画面点击切主控的位移阈值（按下与抬起几乎不动才算点击，避免拖动误触）
 const BATCH_REMOTE_CLICK_THRESHOLD = 8
-let batchRemotePressPos: Record<number, { x: number; y: number }> = {}
+let batchRemotePressPos: Record<string, { x: number; y: number }> = {}
 
-const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
-  const isSource = index === batchRemoteSourceIndex.value
-  const card = batchRemoteCards.value[index]
+const batchRemoteOnPointer = (ev: PointerEvent, card: any) => {
   if (!card) return
+  // 主控判定按 deviceId（卡片渲染顺序与帧索引无关）
+  const isSource = card.deviceId === batchRemoteSource.value
+  // canvas 以帧索引为键，与解码输出保持一致
+  const cv = batchRemoteCanvasRefs.value[card.index]
 
   // ---- 非主控画面：单击（几乎无位移）切换主控，拖动不做任何事 ----
   if (!isSource) {
     if (ev.type === 'pointerdown') {
-      batchRemotePressPos[index] = { x: ev.clientX, y: ev.clientY }
+      batchRemotePressPos[card.deviceId] = { x: ev.clientX, y: ev.clientY }
     } else if (ev.type === 'pointerup') {
-      const p = batchRemotePressPos[index]
-      delete batchRemotePressPos[index]
+      const p = batchRemotePressPos[card.deviceId]
+      delete batchRemotePressPos[card.deviceId]
       if (p) {
         const dx = ev.clientX - p.x
         const dy = ev.clientY - p.y
@@ -234,7 +232,6 @@ const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
   }
 
   // ---- 主控画面：同步触摸到其他设备 ----
-  const cv = batchRemoteCanvasRefs.value[index]
   // 先发事件再捕获指针：确保 pointerdown 一定发出去（capture 失败也不影响）
   const action = ev.type === 'pointerdown' ? 0 : ev.type === 'pointerup' ? 1 : 2
   if (ev.type === 'pointerdown' || ev.type === 'pointerup') {
@@ -260,8 +257,10 @@ const batchRemoteOnPointer = (ev: PointerEvent, index: number) => {
 
 const batchRemoteHandleJson = (msg: any) => {
   if (msg.type === 'meta') {
+    // index 来自后端帧索引，不能依赖 meta 到达顺序（多设备并行启动会乱序）
     batchRemoteCards.value.push({
-      deviceId: msg.deviceId, name: msg.name,
+      deviceId: msg.deviceId, index: msg.index ?? batchRemoteCards.value.length,
+      name: msg.name,
       width: msg.width, height: msg.height, ready: true,
     })
     batchRemoteStatus.value = ''
@@ -278,6 +277,27 @@ const batchRemoteHandleJson = (msg: any) => {
     const card = batchRemoteCards.value.find(d => d.deviceId === msg.deviceId)
     if (card) card.ready = false
   }
+}
+
+/**
+ * 从 config 包（SPS/PPS）里解析 SPS，拼出正确的 codec 字符串
+ * avc1.PPCCLL：profile_idc、constraint_flags、level_idc
+ * 硬编码档位在设备编码器档位不同时会 configure 失败，导致该设备黑屏
+ */
+const batchRemoteCodecFromSps = (config: Uint8Array): string => {
+  const hex = (n: number) => n.toString(16).padStart(2, '0')
+  for (let i = 0; i + 4 < config.length; i++) {
+    let pos = -1
+    if (config[i] === 0 && config[i + 1] === 0 && config[i + 2] === 0 && config[i + 3] === 1) {
+      pos = i + 4
+    } else if (config[i] === 0 && config[i + 1] === 0 && config[i + 2] === 1) {
+      pos = i + 3
+    }
+    if (pos > 0 && pos + 3 < config.length && (config[pos] & 0x1F) === 7) {
+      return `avc1.${hex(config[pos + 1])}${hex(config[pos + 2])}${hex(config[pos + 3])}`
+    }
+  }
+  return 'avc1.640028'
 }
 
 const batchRemoteIsKeyframe = (data: Uint8Array): boolean => {
@@ -308,18 +328,27 @@ const batchRemoteHandleBinary = (buf: ArrayBuffer) => {
   const index = view.getUint8(0)
   const kind = view.getUint8(1)
   const payload = new Uint8Array(buf, 2)
-  if (!batchRemoteCards.value[index]) return
+  // 按后端帧索引定位卡片，canvas/decoder 也统一用该索引为键
+  const card = batchRemoteCards.value.find(c => c.index === index)
+  if (!card) return
 
   if (kind === 1) {
     // config 包（SPS/PPS，Annex-B 起始码格式）：缓存下来拼在关键帧前喂给解码器
     batchRemoteConfigs[index] = payload
-    if (batchRemoteDecoders[index]) batchRemoteDecoders[index].close()
+    if (batchRemoteDecoders[index]) {
+      try { batchRemoteDecoders[index].close() } catch { /* ignore */ }
+    }
     batchRemoteDecoders[index] = new VideoDecoder({
       output: (frame) => batchRemoteDrawFrame(index, frame),
-      error: (e) => { batchRemoteStatus.value = `解码器错误: ${e.message}` },
+      error: (e) => { batchRemoteStatus.value = `${card.name} 解码错误: ${e.message}` },
     })
-    // 不传 description：Annex-B 模式（scrcpy 的 config/帧均为起始码格式）
-    batchRemoteDecoders[index].configure({ codec: 'avc1.640028', optimizeForLatency: true })
+    // 不传 description：Annex-B 模式；codec 档位从 SPS 实测值推导
+    const codec = batchRemoteCodecFromSps(payload)
+    try {
+      batchRemoteDecoders[index].configure({ codec, optimizeForLatency: true })
+    } catch (e: any) {
+      batchRemoteStatus.value = `${card.name} 解码器初始化失败 (${codec}): ${e.message || e}`
+    }
   } else if (kind === 2) {
     const dec = batchRemoteDecoders[index]
     if (dec && dec.state === 'configured') {
@@ -3894,29 +3923,29 @@ button.batch-remote-tile-tag:disabled.active {
                   <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
                   <div class="batch-remote-grid" :style="{ gridTemplateColumns: `repeat(${batchRemoteGridCols}, 1fr)` }">
                     <div
-                      v-for="(card, index) in batchRemoteCards"
+                      v-for="card in batchRemoteCards"
                       :key="card.deviceId"
                       class="batch-remote-tile"
-                      :class="{ source: index === batchRemoteSourceIndex, dead: !card.ready }"
+                      :class="{ source: card.deviceId === batchRemoteSource, dead: !card.ready }"
                     >
                       <div class="batch-remote-tile-header">
                         <span class="batch-remote-tile-name">{{ card.name }}</span>
                         <button
                           class="batch-remote-tile-tag"
-                          :class="{ active: index === batchRemoteSourceIndex }"
-                          :disabled="index === batchRemoteSourceIndex"
+                          :class="{ active: card.deviceId === batchRemoteSource }"
+                          :disabled="card.deviceId === batchRemoteSource"
                           @click.stop="setBatchRemoteSource(card.deviceId)"
                         >
-                          {{ index === batchRemoteSourceIndex ? '★ 主控' : '设为主控' }}
+                          {{ card.deviceId === batchRemoteSource ? '★ 主控' : '设为主控' }}
                         </button>
                       </div>
                       <canvas
-                        :ref="(el) => setBatchRemoteCanvasRef(el, index)"
+                        :ref="(el) => setBatchRemoteCanvasRef(el, card.index)"
                         class="batch-remote-canvas"
-                        @pointerdown.stop="batchRemoteOnPointer($event, index)"
-                        @pointermove.stop="batchRemoteOnPointer($event, index)"
-                        @pointerup.stop="batchRemoteOnPointer($event, index)"
-                        @pointercancel.stop="batchRemoteOnPointer($event, index)"
+                        @pointerdown.stop="batchRemoteOnPointer($event, card)"
+                        @pointermove.stop="batchRemoteOnPointer($event, card)"
+                        @pointerup.stop="batchRemoteOnPointer($event, card)"
+                        @pointercancel.stop="batchRemoteOnPointer($event, card)"
                       ></canvas>
                       <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
                     </div>
