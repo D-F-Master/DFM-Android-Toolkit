@@ -149,8 +149,14 @@ class RemoteHub:
         return x, y, dst_w, dst_h
 
     def mirror_event(self, event: dict):
-        """主控事件分发到除主控外的所有设备（坐标自动重映射到各目标分辨率）"""
-        targets = [s for did, s in self.sessions.items() if did != self.source_device]
+        """
+        主控事件分发到所有设备（含主控自身）
+
+        主控画面是浏览器里渲染的远程画面，物理设备本身收不到点击，
+        因此必须把事件同样注入主控设备——否则操作主控时只有从机会动。
+        source_device 仅用于 UI 判定事件来源和坐标换算原点。
+        """
+        targets = list(self.sessions.values())
         kind = event.get("kind")
         for s in targets:
             try:
