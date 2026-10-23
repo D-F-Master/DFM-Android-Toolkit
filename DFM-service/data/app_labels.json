@@ -68,5 +68,7 @@
   "org.epcdiy.memory": "白眼",
   "com.yqsh.dzc2test": "电子秤2代设备测试",
   "com.weicong.yqsh": "智慧班牌",
-  "com.carriez.flutter_hbb": "远程协助"
+  "com.carriez.flutter_hbb": "远程协助",
+  "io.appium.settings": "Appium Settings",
+  "com.example.aclasos2checkdemo": "AclasOS2CheckDemo"
 }
