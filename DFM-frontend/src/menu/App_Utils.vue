@@ -2535,7 +2535,7 @@ onUnmounted(() => {
   background: transparent;
   border: none;
   /* 文字颜色与覆盖层背景同色系，描边用原有深绿，营造浮雕效果 */
-  color: #a5d6a7;
+  color: #d7e3d7;
   -webkit-text-stroke: 1.5px #1b5e20;
   font-size: 48px;
   font-weight: 800;
