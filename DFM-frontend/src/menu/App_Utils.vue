@@ -1259,6 +1259,29 @@ const openDeviceShell = async () => {
   }
 }
 
+const exportingLogs = ref(false)
+
+const exportDeviceLogs = async () => {
+  if (!selectedDevice.value || exportingLogs.value) return
+  
+  exportingLogs.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/logs/export`, {
+      deviceId: selectedDevice.value
+    })
+    if (response.data.code === 200) {
+      showNotification(`日志已导出：${response.data.data.path}`, 'success')
+    } else {
+      showNotification('导出日志失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    console.error('导出日志失败:', error)
+    showNotification('导出日志失败: ' + error.message, 'error')
+  } finally {
+    exportingLogs.value = false
+  }
+}
+
 const rebootToLoader = async () => {
   if (!selectedDevice.value) return
   
@@ -3590,6 +3613,14 @@ button.batch-remote-tile-tag:disabled.active {
                           <polyline points="8 6 2 12 8 18"/>
                         </svg>
                         <span>Shell窗口</span>
+                      </button>
+                      <button class="feature-btn" @click="exportDeviceLogs" :disabled="exportingLogs">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        <span>{{ exportingLogs ? '导出中...' : '导出日志' }}</span>
                       </button>
                       <button class="feature-btn danger" @click="rebootToLoader">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
