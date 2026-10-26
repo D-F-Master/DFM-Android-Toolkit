@@ -3502,6 +3502,13 @@ button.batch-remote-tile-tag:disabled.active {
               </button>
               <button 
                 class="tab-button" 
+                :class="{ active: activeTab === 'script' }"
+                @click="activeTab = 'script'"
+              >
+                模拟脚本
+              </button>
+              <button 
+                class="tab-button" 
                 :class="{ active: activeTab === 'monitor' }"
                 @click="activeTab = 'monitor'"
               >
@@ -4017,6 +4024,24 @@ button.batch-remote-tile-tag:disabled.active {
                       ></canvas>
                       <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="activeTab === 'script'" class="keys-page">
+                <!-- 模拟脚本页：功能占位，后续添加 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <polyline points="4 17 10 11 4 5"/>
+                        <line x1="12" y1="19" x2="20" y2="19"/>
+                      </svg>
+                    </span>
+                    <span>模拟脚本</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="loading-text" style="padding: 48px 24px; text-align: center;">功能开发中，敬请期待</div>
                   </div>
                 </div>
               </div>
