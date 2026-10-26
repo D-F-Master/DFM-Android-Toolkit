@@ -2534,11 +2534,15 @@ onUnmounted(() => {
   padding: 24px 48px;
   background: transparent;
   border: none;
-  color: #1b5e20;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.6);
+  /* 文字颜色与覆盖层背景同色系，描边用原有深绿，营造浮雕效果 */
+  color: #a5d6a7;
+  -webkit-text-stroke: 1.5px #1b5e20;
+  font-size: 48px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  text-shadow:
+    -2px -2px 2px rgba(255, 255, 255, 0.75),
+    2px 2px 3px rgba(27, 94, 32, 0.45);
 }
 
 .app-list {
