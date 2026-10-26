@@ -941,6 +941,31 @@ const selectDevice = (deviceId: string) => {
   fetchFiles(deviceId, '/sdcard')
 }
 
+const installApkFile = async (file: File) => {
+  if (!selectedDevice.value) return
+
+  const formData = new FormData()
+  formData.append('apk', file)
+  formData.append('deviceId', selectedDevice.value)
+
+  try {
+    const response = await axios.post(
+      `${API_BASE.value}/api/device/app/install`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    if (response.data.code === 200) {
+      showMessage('应用安装成功')
+      fetchApps(selectedDevice.value)
+    } else {
+      showMessage('应用安装失败: ' + (response.data.message || '未知错误'))
+    }
+  } catch (error) {
+    console.error('安装应用失败:', error)
+    showMessage('安装应用失败')
+  }
+}
+
 const installApp = async (event: Event) => {
   if (!selectedDevice.value) return
   
@@ -953,29 +978,26 @@ const installApp = async (event: Event) => {
     const file = target.files?.[0]
     if (!file) return
     
-    const formData = new FormData()
-    formData.append('apk', file)
-    formData.append('deviceId', selectedDevice.value)
-    
-    try {
-      const response = await axios.post(
-        `${API_BASE.value}/api/device/app/install`,
-        formData,
-        { headers: { 'Content-Type': 'multipart/form-data' } }
-      )
-      if (response.data.code === 200) {
-        showMessage('应用安装成功')
-        fetchApps(selectedDevice.value)
-      } else {
-        showMessage('应用安装失败: ' + (response.data.message || '未知错误'))
-      }
-    } catch (error) {
-      console.error('安装应用失败:', error)
-      showMessage('安装应用失败')
-    }
+    await installApkFile(file)
   }
   
   input.click()
+}
+
+// 应用管理卡片：拖入 APK 直接安装
+const apkDragOver = ref(false)
+
+const onApkDrop = async (event: DragEvent) => {
+  apkDragOver.value = false
+  if (!selectedDevice.value) return
+
+  const file = event.dataTransfer?.files?.[0]
+  if (!file) return
+  if (!file.name.toLowerCase().endsWith('.apk')) {
+    showNotification('仅支持拖入 .apk 文件', 'error')
+    return
+  }
+  await installApkFile(file)
 }
 
 const uninstallApp = async (packageName: string) => {
@@ -2421,6 +2443,23 @@ onUnmounted(() => {
   transform: translateY(0);
 }
 
+/* APK 拖拽安装 */
+.apk-drag-over {
+  outline: 2px dashed #4caf50;
+  outline-offset: -2px;
+  background: rgba(76, 175, 80, 0.06);
+  position: relative;
+}
+
+.apk-drop-hint {
+  padding: 16px;
+  text-align: center;
+  color: #4caf50;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(76, 175, 80, 0.2);
+}
+
 .app-list {
   max-height: calc(100vh - 140px);
   overflow-y: auto;
@@ -3654,7 +3693,15 @@ button.batch-remote-tile-tag:disabled.active {
                     <span>应用管理</span>
                     <button class="card-action-btn" @click="installApp">+ 安装</button>
                   </div>
-                  <div class="card-body" style="padding: 0;">
+                  <div
+                    class="card-body"
+                    style="padding: 0;"
+                    :class="{ 'apk-drag-over': apkDragOver }"
+                    @dragover.prevent="apkDragOver = true"
+                    @dragleave.prevent="apkDragOver = false"
+                    @drop.prevent="onApkDrop($event)"
+                  >
+                    <div v-if="apkDragOver" class="apk-drop-hint">松开鼠标安装 APK</div>
                     <div v-if="appLoading" class="loading-text" style="padding: 24px; text-align: center;">加载应用列表中...</div>
                     <div v-else-if="apps.length === 0" class="loading-text" style="padding: 24px; text-align: center;">无应用</div>
                     <div v-else class="app-list">
