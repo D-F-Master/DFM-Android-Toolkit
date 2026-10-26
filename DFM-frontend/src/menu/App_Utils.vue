@@ -987,6 +987,14 @@ const installApp = async (event: Event) => {
 // 应用管理卡片：拖入 APK 直接安装
 const apkDragOver = ref(false)
 
+const onApkDragLeave = (event: DragEvent) => {
+  // 移动到卡片内部的子元素（列表项等）也会触发父级 dragleave，
+  // relatedTarget 还在卡片内时不算真正离开，避免提示反复闪烁
+  const el = event.currentTarget as HTMLElement
+  if (event.relatedTarget && el.contains(event.relatedTarget as Node)) return
+  apkDragOver.value = false
+}
+
 const onApkDrop = async (event: DragEvent) => {
   apkDragOver.value = false
   if (!selectedDevice.value) return
@@ -2503,16 +2511,23 @@ onUnmounted(() => {
   outline: 2px dashed #4caf50;
   outline-offset: -2px;
   background: rgba(76, 175, 80, 0.06);
-  position: relative;
 }
 
 .apk-drop-hint {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
   padding: 16px;
   text-align: center;
   color: #4caf50;
   font-size: 13px;
   font-weight: 600;
-  border-bottom: 1px solid rgba(76, 175, 80, 0.2);
+  background: rgba(76, 175, 80, 0.12);
+  border-bottom: 1px solid rgba(76, 175, 80, 0.3);
+  /* 覆盖层不接收鼠标事件：不挤动布局，也不干扰 dragleave/drop 判定 */
+  pointer-events: none;
 }
 
 .app-list {
@@ -3758,10 +3773,10 @@ button.batch-remote-tile-tag:disabled.active {
                   </div>
                   <div
                     class="card-body"
-                    style="padding: 0;"
+                    style="padding: 0; position: relative;"
                     :class="{ 'apk-drag-over': apkDragOver }"
                     @dragover.prevent="apkDragOver = true"
-                    @dragleave.prevent="apkDragOver = false"
+                    @dragleave="onApkDragLeave"
                     @drop.prevent="onApkDrop($event)"
                   >
                     <div v-if="apkDragOver" class="apk-drop-hint">松开鼠标安装 APK</div>
