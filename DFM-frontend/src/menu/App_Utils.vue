@@ -984,12 +984,19 @@ const installApp = async (event: Event) => {
   input.click()
 }
 
-// 应用管理卡片：拖入 APK 直接安装
+// 全页拖入 APK 安装：选中设备后，页面任意位置都可拖入
 const apkDragOver = ref(false)
 
+// 拖拽经过页面：仅拖的是文件且已选设备时亮提示
+const onPageDragOver = (event: DragEvent) => {
+  const types = event.dataTransfer?.types
+  if (!types || !Array.from(types).includes('Files') || !selectedDevice.value) return
+  apkDragOver.value = true
+}
+
 const onApkDragLeave = (event: DragEvent) => {
-  // 移动到卡片内部的子元素（列表项等）也会触发父级 dragleave，
-  // relatedTarget 还在卡片内时不算真正离开，避免提示反复闪烁
+  // 移动到页面内部的子元素也会触发父级 dragleave，
+  // relatedTarget 还在页面内时不算真正离开，避免提示反复闪烁
   const el = event.currentTarget as HTMLElement
   if (event.relatedTarget && el.contains(event.relatedTarget as Node)) return
   apkDragOver.value = false
@@ -997,7 +1004,10 @@ const onApkDragLeave = (event: DragEvent) => {
 
 const onApkDrop = async (event: DragEvent) => {
   apkDragOver.value = false
-  if (!selectedDevice.value) return
+  if (!selectedDevice.value) {
+    showNotification('请先选择一个设备再拖入 APK', 'error')
+    return
+  }
 
   const file = event.dataTransfer?.files?.[0]
   if (!file) return
@@ -2506,28 +2516,29 @@ onUnmounted(() => {
   transform: translateY(0);
 }
 
-/* APK 拖拽安装 */
-.apk-drag-over {
-  outline: 2px dashed #4caf50;
-  outline-offset: -2px;
-  background: rgba(76, 175, 80, 0.06);
+/* APK 全页拖拽安装覆盖层 */
+.apk-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(46, 125, 50, 0.08);
+  border: 3px dashed #4caf50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 覆盖层不接收鼠标事件：不干扰 dragleave/drop 的事件序列 */
+  pointer-events: none;
 }
 
-.apk-drop-hint {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 10;
-  padding: 16px;
-  text-align: center;
-  color: #4caf50;
-  font-size: 13px;
+.apk-drop-overlay-box {
+  padding: 24px 48px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #a5d6a7;
+  border-radius: 12px;
+  color: #2e7d32;
+  font-size: 18px;
   font-weight: 600;
-  background: rgba(76, 175, 80, 0.12);
-  border-bottom: 1px solid rgba(76, 175, 80, 0.3);
-  /* 覆盖层不接收鼠标事件：不挤动布局，也不干扰 dragleave/drop 判定 */
-  pointer-events: none;
+  box-shadow: 0 8px 32px rgba(46, 125, 50, 0.25);
 }
 
 .app-list {
@@ -3515,7 +3526,16 @@ button.batch-remote-tile-tag:disabled.active {
 
 </style>
 <template>
-  <div class="app">
+  <div
+    class="app"
+    @dragover.prevent="onPageDragOver"
+    @dragleave="onApkDragLeave"
+    @drop.prevent="onApkDrop($event)"
+  >
+    <!-- 全页拖入 APK 提示覆盖层（已选设备时显示） -->
+    <div v-if="apkDragOver" class="apk-drop-overlay">
+      <div class="apk-drop-overlay-box">松开鼠标安装 APK</div>
+    </div>
     <button class="back-button" @click="goHome">&lt;</button>
     <main>
       <div class="container">
@@ -3773,13 +3793,9 @@ button.batch-remote-tile-tag:disabled.active {
                   </div>
                   <div
                     class="card-body"
-                    style="padding: 0; position: relative;"
-                    :class="{ 'apk-drag-over': apkDragOver }"
-                    @dragover.prevent="apkDragOver = true"
-                    @dragleave="onApkDragLeave"
-                    @drop.prevent="onApkDrop($event)"
+                    style="padding: 0;"
                   >
-                    <div v-if="apkDragOver" class="apk-drop-hint">松开鼠标安装 APK</div>
+                    <div v-if="appLoading" class="loading-text" style="padding: 24px; text-align: center;">加载应用列表中...</div>
                     <div v-if="appLoading" class="loading-text" style="padding: 24px; text-align: center;">加载应用列表中...</div>
                     <div v-else-if="apps.length === 0" class="loading-text" style="padding: 24px; text-align: center;">无应用</div>
                     <div v-else class="app-list">
