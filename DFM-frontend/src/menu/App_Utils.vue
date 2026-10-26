@@ -1281,26 +1281,44 @@ const openDeviceShell = async () => {
   }
 }
 
-const exportingLogs = ref(false)
+const capturingLogs = ref(false)
 
-const exportDeviceLogs = async () => {
-  if (!selectedDevice.value || exportingLogs.value) return
-  
-  exportingLogs.value = true
+const startLogCapture = async () => {
+  if (!selectedDevice.value || capturingLogs.value) return
+
   try {
-    const response = await axios.post(`${API_BASE.value}/api/device/logs/export`, {
+    const response = await axios.post(`${API_BASE.value}/api/device/logs/capture/start`, {
       deviceId: selectedDevice.value
     })
     if (response.data.code === 200) {
-      showNotification(`日志已导出：${response.data.data.path}`, 'success')
+      capturingLogs.value = true
+      showNotification(`开始抓取日志：${response.data.data.path}`, 'success')
     } else {
-      showNotification('导出日志失败: ' + (response.data.message || '未知错误'), 'error')
+      showNotification('开始抓取失败: ' + (response.data.message || '未知错误'), 'error')
     }
   } catch (error: any) {
-    console.error('导出日志失败:', error)
-    showNotification('导出日志失败: ' + error.message, 'error')
+    console.error('开始抓取日志失败:', error)
+    showNotification('开始抓取日志失败: ' + error.message, 'error')
+  }
+}
+
+const stopLogCapture = async () => {
+  if (!selectedDevice.value || !capturingLogs.value) return
+
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/logs/capture/stop`, {
+      deviceId: selectedDevice.value
+    })
+    if (response.data.code === 200) {
+      showNotification(`日志已保存：${response.data.data.path}`, 'success')
+    } else {
+      showNotification('结束抓取失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    console.error('结束抓取日志失败:', error)
+    showNotification('结束抓取日志失败: ' + error.message, 'error')
   } finally {
-    exportingLogs.value = false
+    capturingLogs.value = false
   }
 }
 
@@ -2365,7 +2383,7 @@ onUnmounted(() => {
 /* ===== 功能区按钮 ===== */
 .feature-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 8px;
 }
 
@@ -2405,6 +2423,43 @@ onUnmounted(() => {
   border-color: #ffcc80;
   color: #e65100;
   box-shadow: 0 3px 10px rgba(255, 152, 0, 0.12);
+}
+
+/* 抓取中状态：红色提示，悬停显示"结束抓取" */
+.feature-btn.capturing {
+  background: #ffebee;
+  border-color: #ef9a9a;
+  color: #c62828;
+  animation: capturePulse 1.6s ease-in-out infinite;
+}
+
+.feature-btn.capturing svg {
+  color: #c62828;
+}
+
+.capture-stop-label {
+  display: none;
+}
+
+.feature-btn.capturing:hover {
+  background: #ffcdd2;
+  border-color: #e57373;
+  color: #b71c1c;
+  animation: none;
+  transform: translateY(-1px);
+}
+
+.feature-btn.capturing:hover .capture-stop-label {
+  display: inline;
+}
+
+.feature-btn.capturing:hover .capture-status-label {
+  display: none;
+}
+
+@keyframes capturePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 83, 80, 0.25); }
+  50% { box-shadow: 0 0 0 5px rgba(239, 83, 80, 0.08); }
 }
 
 .feature-btn svg {
@@ -3660,13 +3715,21 @@ button.batch-remote-tile-tag:disabled.active {
                         </svg>
                         <span>Shell窗口</span>
                       </button>
-                      <button class="feature-btn" @click="exportDeviceLogs" :disabled="exportingLogs">
+                      <button
+                        class="feature-btn"
+                        :class="{ capturing: capturingLogs }"
+                        @click="capturingLogs ? stopLogCapture() : startLogCapture()"
+                      >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
                           <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
                           <polyline points="7 10 12 15 17 10"/>
                           <line x1="12" y1="15" x2="12" y2="3"/>
                         </svg>
-                        <span>{{ exportingLogs ? '导出中...' : '导出日志' }}</span>
+                        <span v-if="!capturingLogs">导出日志</span>
+                        <template v-else>
+                          <span class="capture-status-label">抓取中...</span>
+                          <span class="capture-stop-label">结束抓取</span>
+                        </template>
                       </button>
                       <button class="feature-btn danger" @click="rebootToLoader">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
