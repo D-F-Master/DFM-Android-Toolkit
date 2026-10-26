@@ -1241,7 +1241,21 @@ def export_logs(request: DeviceIdRequest):
     try:
         device_id = request.deviceId
 
-        # 1. 获取设备名称（与 /device/info 的 deviceName 字段一致），失败回退用 deviceId
+        # 1. 先检查设备是否在线：adb logcat 对不存在的设备会无限挂起，
+        #    且 subprocess 超时只能杀掉 shell 而杀不掉孙子进程 adb.exe，
+        #    所以必须先拦截离线设备，不能依赖超时
+        devices_result = execute_adb_command("adb devices")
+        device_online = False
+        if devices_result["success"]:
+            for line in devices_result["stdout"].split('\n')[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0] == device_id and parts[1] == "device":
+                    device_online = True
+                    break
+        if not device_online:
+            return {"code": 400, "message": f"设备 {device_id} 不在线，无法导出日志", "data": None}
+
+        # 2. 获取设备名称（与 /device/info 的 deviceName 字段一致），失败回退用 deviceId
         device_name = device_id
         props_result = execute_adb_command(
             f"adb -s {device_id} shell getprop ro.product.name"
@@ -1253,20 +1267,20 @@ def export_logs(request: DeviceIdRequest):
             if name:
                 device_name = name
 
-        # 2. 生成保存路径：D:\log\{设备名}\{yyyyMMdd_HHmmss}.log
+        # 3. 生成保存路径：D:\log\{设备名}\{yyyyMMdd_HHmmss}.log
         log_root = r"D:\log"
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         save_dir = os.path.join(log_root, device_name)
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f"{timestamp}.log")
 
-        # 3. 导出当前 logcat 缓冲区（-d 导出后立即退出，不会挂起）
+        # 4. 导出当前 logcat 缓冲区（-d 导出后立即退出，不会挂起；设备已在线校验过）
         result = execute_adb_command(
             f'adb -s {device_id} logcat -d',
             timeout=60,
         )
 
-        # 4. 写入文件（用二进制模式写入，避免平台换行符差异和编码二次转换）
+        # 5. 写入文件（用二进制模式写入，避免平台换行符差异和编码二次转换）
         log_content = result.get("stdout", "") or ""
         with open(save_path, "w", encoding="utf-8", errors="replace") as f:
             f.write(log_content)
