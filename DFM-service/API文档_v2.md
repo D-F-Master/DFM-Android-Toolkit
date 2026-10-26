@@ -1,4 +1,4 @@
-# 工具通用服务器 API 文档 v2.0
+﻿# 工具通用服务器 API 文档 v2.0
 
 ## 基础信息
 
@@ -382,7 +382,35 @@
 {"deviceId": "device_serial_number"}
 ```
 
-### 23. 打开Shell窗口
+### 23. 导出设备日志
+**接口**: `POST /api/device/logs/export`  
+**描述**: 导出设备logcat缓冲区日志到本地 `D:\log\{设备名}\{时间}.log`  
+**请求体**:
+```json
+{"deviceId": "device_serial_number"}
+```
+**响应**:
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "path": "D:\\log\\设备名\\20260101_120000.log",
+    "deviceName": "设备名",
+    "size": 10240
+  }
+}
+```
+**参数说明**:
+- `deviceId`: 设备ID（必填）
+
+**注意**:
+- 设备名取自 `ro.product.name`，获取失败时回退使用 deviceId 作为目录名
+- 设备名中的文件名非法字符（`\ / : * ? " < > |`）会替换为下划线
+- 使用 `logcat -d` 导出当前缓冲区后立即返回，不会持续抓取
+- 目录不存在时自动创建
+
+### 24. 打开Shell窗口
 **接口**: `POST /api/device/shell`  
 **描述**: 在新窗口中打开ADB Shell交互界面  
 **请求体**:
@@ -390,7 +418,7 @@
 {"deviceId": "device_serial_number"}
 ```
 
-### 24. 控制音量
+### 25. 控制音量
 **接口**: `POST /api/device/volume`  
 **描述**: 控制设备音量（增加/减小/静音/取消静音）  
 **请求体**:
@@ -436,7 +464,7 @@
 }
 ```
 
-### 25. 获取音量状态
+### 26. 获取音量状态
 **接口**: `POST /api/device/volume/status`  
 **描述**: 获取设备当前音量状态  
 **请求体**:
@@ -466,7 +494,7 @@
 
 ---
 
-### 26. 断开全部ADB连接
+### 27. 断开全部ADB连接
 **接口**: `POST /api/device/disconnect/all`  
 **描述**: 断开所有通过网络连接的ADB设备（deviceId 形如 ip:端口），逐台并发执行 adb disconnect  
 **请求体**: 无（POST 空请求体 `{}` 即可）
@@ -503,7 +531,7 @@
 
 ---
 
-### 27. 获取设备性能快照
+### 28. 获取设备性能快照
 **接口**: `POST /api/device/monitor`  
 **描述**: 获取设备内存占用、CPU 频率、磁盘使用情况  
 **请求体**:
@@ -562,7 +590,7 @@
 
 ---
 
-### 28. 获取设备实时速率
+### 29. 获取设备实时速率
 **接口**: `POST /api/device/monitor/rate`  
 **描述**: 获取设备 CPU 占用率、网络上传/下载速率  
 **请求体**:
@@ -941,6 +969,9 @@
 ---
 
 ## 更新日志
+
+### v2.4.0
+- 新增导出设备日志接口 `POST /api/device/logs/export`（保存到 D:\log\{设备名}\{时间}.log）
 
 ### v2.3.0
 - 新增创建文件接口 `POST /api/device/files/create`

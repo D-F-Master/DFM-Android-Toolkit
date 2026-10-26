@@ -1232,6 +1232,66 @@ def open_logs(request: DeviceIdRequest):
         return {"code": 500, "message": f"获取失败: {str(e)}", "data": None}
 
 
+# 导出设备日志到本地文件
+@router.post("/device/logs/export")
+def export_logs(request: DeviceIdRequest):
+    """
+    导出设备 logcat 缓冲区日志到 D:\log\{设备名}\{时间}.log
+    """
+    try:
+        device_id = request.deviceId
+
+        # 1. 获取设备名称（与 /device/info 的 deviceName 字段一致），失败回退用 deviceId
+        device_name = device_id
+        props_result = execute_adb_command(
+            f"adb -s {device_id} shell getprop ro.product.name"
+        )
+        if props_result["success"] and props_result["stdout"].strip():
+            name = props_result["stdout"].strip()
+            # 清理文件名非法字符
+            name = re.sub(r'[\\/:*?"<>|]', '_', name)
+            if name:
+                device_name = name
+
+        # 2. 生成保存路径：D:\log\{设备名}\{yyyyMMdd_HHmmss}.log
+        log_root = r"D:\log"
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        save_dir = os.path.join(log_root, device_name)
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"{timestamp}.log")
+
+        # 3. 导出当前 logcat 缓冲区（-d 导出后立即退出，不会挂起）
+        result = execute_adb_command(
+            f'adb -s {device_id} logcat -d',
+            timeout=60,
+        )
+
+        # 4. 写入文件（用二进制模式写入，避免平台换行符差异和编码二次转换）
+        log_content = result.get("stdout", "") or ""
+        with open(save_path, "w", encoding="utf-8", errors="replace") as f:
+            f.write(log_content)
+
+        if not result["success"]:
+            return {
+                "code": 500,
+                "message": f"日志导出失败: {result.get('error', '未知错误')}",
+                "data": None,
+            }
+
+        logger.info(f"Logs exported to {save_path}, {len(log_content)} chars")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "path": save_path,
+                "deviceName": device_name,
+                "size": len(log_content),
+            },
+        }
+    except Exception as e:
+        return {"code": 500, "message": f"导出日志失败: {str(e)}", "data": None}
+
+
 # 打开设备 shell 窗口
 @router.post("/device/shell")
 def open_shell(request: DeviceIdRequest):
