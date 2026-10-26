@@ -1232,18 +1232,77 @@ def open_logs(request: DeviceIdRequest):
         return {"code": 500, "message": f"获取失败: {str(e)}", "data": None}
 
 
-# 导出设备日志到本地文件
-@router.post("/device/logs/export")
-def export_logs(request: DeviceIdRequest):
+# ========== 持续抓取日志会话管理 ==========
+# 会话表：deviceId -> {"proc": Popen, "path": str, "started": float}
+_log_capture_sessions: dict = {}
+
+
+def _get_foreground_pid(device_id: str) -> Optional[int]:
+    """获取当前前台应用的 PID（复用 /device/logs 的前台包名识别逻辑）"""
+    package_name = None
+    result = execute_adb_command(f"adb -s {device_id} shell dumpsys window")
+    if result["success"] and result["stdout"]:
+        for line in result["stdout"].split('\n'):
+            if 'mCurrentFocus' in line or 'mFocusedApp' in line:
+                match = re.search(r'u0\s+([^/\s]+)', line)
+                if match:
+                    package_name = match.group(1).strip().replace('{', '').replace('}', '').strip()
+                    break
+    if not package_name:
+        alt_result = execute_adb_command(f"adb -s {device_id} shell dumpsys activity top")
+        if alt_result["success"] and alt_result["stdout"]:
+            for line in alt_result["stdout"].split('\n'):
+                if 'Run #0' in line or 'ACTIVITY' in line:
+                    match = re.search(r'u0\s+([^/\s]+)', line)
+                    if match:
+                        package_name = match.group(1).strip().replace('{', '').replace('}', '').strip()
+                        break
+    if not package_name:
+        return None
+    pid_result = execute_adb_command(f"adb -s {device_id} shell pidof {package_name}")
+    if pid_result["success"] and pid_result["stdout"].strip():
+        pids = pid_result["stdout"].strip().split()
+        if pids:
+            return int(pids[0])
+    return None
+
+
+def _kill_capture_process(session: dict):
+    """终止抓取进程（Windows 下 cmd /c 启动的进程树需要 taskkill 整树清理）"""
+    proc = session.get("proc")
+    if proc is None:
+        return
+    if proc.poll() is None:
+        if os.name == 'nt':
+            subprocess.run(
+                f'taskkill /PID {proc.pid} /T /F',
+                shell=True, capture_output=True, timeout=10,
+            )
+        else:
+            proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+@router.post("/device/logs/capture/start")
+def start_log_capture(request: DeviceIdRequest):
     """
-    导出设备 logcat 缓冲区日志到 D:\log\{设备名}\{时间}.log
+    开始持续抓取当前前台应用日志到 D:\log\{SN}\{时间}.log
     """
     try:
         device_id = request.deviceId
 
-        # 1. 先检查设备是否在线：adb logcat 对不存在的设备会无限挂起，
-        #    且 subprocess 超时只能杀掉 shell 而杀不掉孙子进程 adb.exe，
-        #    所以必须先拦截离线设备，不能依赖超时
+        # 已在抓取中则直接返回（幂等）
+        if device_id in _log_capture_sessions:
+            session = _log_capture_sessions[device_id]
+            if session["proc"].poll() is None:
+                return {"code": 200, "message": "已在抓取中", "data": {"path": session["path"]}}
+            # 进程已死，清理残留会话
+            _kill_capture_process(_log_capture_sessions.pop(device_id))
+
+        # 1. 校验设备在线：adb logcat 对不存在的设备会无限挂起，必须先拦截
         devices_result = execute_adb_command("adb devices")
         device_online = False
         if devices_result["success"]:
@@ -1253,57 +1312,86 @@ def export_logs(request: DeviceIdRequest):
                     device_online = True
                     break
         if not device_online:
-            return {"code": 400, "message": f"设备 {device_id} 不在线，无法导出日志", "data": None}
+            return {"code": 400, "message": f"设备 {device_id} 不在线，无法抓取日志", "data": None}
 
-        # 2. 获取设备名称（与 /device/info 的 deviceName 字段一致），失败回退用 deviceId
-        device_name = device_id
-        props_result = execute_adb_command(
-            f"adb -s {device_id} shell getprop ro.product.name"
-        )
-        if props_result["success"] and props_result["stdout"].strip():
-            name = props_result["stdout"].strip()
-            # 清理文件名非法字符
-            name = re.sub(r'[\\/:*?"<>|]', '_', name)
-            if name:
-                device_name = name
+        # 2. 获取前台应用 PID（抓取运行中程序的日志）；获取不到则退化为全量日志
+        pid = _get_foreground_pid(device_id)
 
-        # 3. 生成保存路径：D:\log\{设备名}\{yyyyMMdd_HHmmss}.log
+        # 3. 获取设备 SN 作为目录名（失败回退 deviceId）
+        sn = device_id
+        sn_result = execute_adb_command(f"adb -s {device_id} shell getprop ro.serialno")
+        if sn_result["success"] and sn_result["stdout"].strip():
+            sn = sn_result["stdout"].strip()
+        sn = re.sub(r'[\\/:*?"<>|]', '_', sn)
+
+        # 4. 生成保存路径：D:\log\{SN}\{yyyyMMdd_HHmmss}.log
         log_root = r"D:\log"
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        save_dir = os.path.join(log_root, device_name)
+        save_dir = os.path.join(log_root, sn)
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, f"{timestamp}.log")
 
-        # 4. 导出当前 logcat 缓冲区（-d 导出后立即退出，不会挂起；设备已在线校验过）
-        result = execute_adb_command(
-            f'adb -s {device_id} logcat -d',
-            timeout=60,
+        # 5. 启动后台 logcat 进程持续写入文件
+        adb_exe = get_adb_path()
+        cmd = [adb_exe, '-s', device_id, 'logcat']
+        if pid is not None:
+            cmd.append(f'--pid={pid}')
+        log_file = open(save_path, 'w', encoding='utf-8', errors='replace')
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )
 
-        # 5. 写入文件（用二进制模式写入，避免平台换行符差异和编码二次转换）
-        log_content = result.get("stdout", "") or ""
-        with open(save_path, "w", encoding="utf-8", errors="replace") as f:
-            f.write(log_content)
+        # 6. 短暂等待后确认进程没有立即退出（设备中途掉线等异常）
+        time.sleep(1)
+        if proc.poll() is not None:
+            log_file.close()
+            os.remove(save_path) if os.path.exists(save_path) and os.path.getsize(save_path) == 0 else None
+            return {"code": 500, "message": "日志抓取进程启动失败，请检查设备连接", "data": None}
 
-        if not result["success"]:
-            return {
-                "code": 500,
-                "message": f"日志导出失败: {result.get('error', '未知错误')}",
-                "data": None,
-            }
-
-        logger.info(f"Logs exported to {save_path}, {len(log_content)} chars")
+        _log_capture_sessions[device_id] = {"proc": proc, "path": save_path, "file": log_file}
+        logger.info(f"Log capture started for {device_id} (pid={pid}) -> {save_path}")
         return {
             "code": 200,
             "message": "success",
-            "data": {
-                "path": save_path,
-                "deviceName": device_name,
-                "size": len(log_content),
-            },
+            "data": {"path": save_path, "pid": pid, "sn": sn},
         }
     except Exception as e:
-        return {"code": 500, "message": f"导出日志失败: {str(e)}", "data": None}
+        return {"code": 500, "message": f"启动日志抓取失败: {str(e)}", "data": None}
+
+
+@router.post("/device/logs/capture/stop")
+def stop_log_capture(request: DeviceIdRequest):
+    """
+    结束日志抓取，返回日志文件路径和大小
+    """
+    try:
+        device_id = request.deviceId
+        session = _log_capture_sessions.pop(device_id, None)
+        if session is None:
+            return {"code": 400, "message": "该设备没有正在进行的日志抓取", "data": None}
+
+        _kill_capture_process(session)
+        log_file = session.get("file")
+        if log_file:
+            try:
+                log_file.close()
+            except Exception:
+                pass
+
+        save_path = session["path"]
+        size = os.path.getsize(save_path) if os.path.exists(save_path) else 0
+        logger.info(f"Log capture stopped for {device_id}, file={save_path}, size={size}")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"path": save_path, "size": size},
+        }
+    except Exception as e:
+        return {"code": 500, "message": f"结束日志抓取失败: {str(e)}", "data": None}
 
 
 # 打开设备 shell 窗口

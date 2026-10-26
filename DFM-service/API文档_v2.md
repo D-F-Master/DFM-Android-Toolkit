@@ -382,9 +382,9 @@
 {"deviceId": "device_serial_number"}
 ```
 
-### 23. 导出设备日志
-**接口**: `POST /api/device/logs/export`  
-**描述**: 导出设备logcat缓冲区日志到本地 `D:\log\{设备名}\{时间}.log`  
+### 23. 开始抓取日志
+**接口**: `POST /api/device/logs/capture/start`  
+**描述**: 开始持续抓取当前前台应用的 logcat 日志到本地 `D:\log\{SN}\{时间}.log`，直到调用停止接口  
 **请求体**:
 ```json
 {"deviceId": "device_serial_number"}
@@ -395,8 +395,35 @@
   "code": 200,
   "message": "success",
   "data": {
-    "path": "D:\\log\\设备名\\20260101_120000.log",
-    "deviceName": "设备名",
+    "path": "D:\\log\\SN号\\20260101_120000.log",
+    "pid": 1234,
+    "sn": "设备SN号"
+  }
+}
+```
+**参数说明**:
+- `deviceId`: 设备ID（必填）
+
+**注意**:
+- 只抓取当前前台应用（通过 PID 过滤），获取不到前台应用时退化为全量日志
+- 目录名取设备 SN 号（`ro.serialno`），获取失败时回退使用 deviceId
+- 设备不在线时返回 400；重复调用幂等，返回已存在的抓取路径
+- 抓取中服务端会保持一个后台 logcat 进程，需调用停止接口结束并落盘
+
+### 24. 停止抓取日志
+**接口**: `POST /api/device/logs/capture/stop`  
+**描述**: 结束指定设备的日志抓取，终止后台 logcat 进程  
+**请求体**:
+```json
+{"deviceId": "device_serial_number"}
+```
+**响应**:
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "path": "D:\\log\\SN号\\20260101_120000.log",
     "size": 10240
   }
 }
@@ -405,12 +432,10 @@
 - `deviceId`: 设备ID（必填）
 
 **注意**:
-- 设备名取自 `ro.product.name`，获取失败时回退使用 deviceId 作为目录名
-- 设备名中的文件名非法字符（`\ / : * ? " < > |`）会替换为下划线
-- 使用 `logcat -d` 导出当前缓冲区后立即返回，不会持续抓取
-- 目录不存在时自动创建
+- 没有进行中的抓取时返回 400
+- 停止后立即返回文件路径和文件大小（字节）
 
-### 24. 打开Shell窗口
+### 25. 打开Shell窗口
 **接口**: `POST /api/device/shell`  
 **描述**: 在新窗口中打开ADB Shell交互界面  
 **请求体**:
@@ -418,7 +443,7 @@
 {"deviceId": "device_serial_number"}
 ```
 
-### 25. 控制音量
+### 26. 控制音量
 **接口**: `POST /api/device/volume`  
 **描述**: 控制设备音量（增加/减小/静音/取消静音）  
 **请求体**:
@@ -464,7 +489,7 @@
 }
 ```
 
-### 26. 获取音量状态
+### 27. 获取音量状态
 **接口**: `POST /api/device/volume/status`  
 **描述**: 获取设备当前音量状态  
 **请求体**:
@@ -494,7 +519,7 @@
 
 ---
 
-### 27. 断开全部ADB连接
+### 28. 断开全部ADB连接
 **接口**: `POST /api/device/disconnect/all`  
 **描述**: 断开所有通过网络连接的ADB设备（deviceId 形如 ip:端口），逐台并发执行 adb disconnect  
 **请求体**: 无（POST 空请求体 `{}` 即可）
@@ -531,7 +556,7 @@
 
 ---
 
-### 28. 获取设备性能快照
+### 29. 获取设备性能快照
 **接口**: `POST /api/device/monitor`  
 **描述**: 获取设备内存占用、CPU 频率、磁盘使用情况  
 **请求体**:
@@ -590,7 +615,7 @@
 
 ---
 
-### 29. 获取设备实时速率
+### 30. 获取设备实时速率
 **接口**: `POST /api/device/monitor/rate`  
 **描述**: 获取设备 CPU 占用率、网络上传/下载速率  
 **请求体**:
@@ -971,7 +996,7 @@
 ## 更新日志
 
 ### v2.4.0
-- 新增导出设备日志接口 `POST /api/device/logs/export`（保存到 D:\log\{设备名}\{时间}.log）
+- 新增日志抓取接口 `POST /api/device/logs/capture/start` / `stop`（持续抓取前台应用日志，保存到 D:\log\{SN}\{时间}.log）
 
 ### v2.3.0
 - 新增创建文件接口 `POST /api/device/files/create`
