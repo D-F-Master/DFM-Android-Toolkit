@@ -6,6 +6,55 @@
     </header>
 
     <main class="page-body">
+      <!-- ==================== Button ==================== -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Button</h2>
+          <span class="card-tag">按钮</span>
+        </div>
+        <p class="card-desc">
+          五种变体、三档尺寸，支持 loading、禁用与图标插槽；配色取首页设计令牌（薄荷绿 <code>--accent</code>）。
+        </p>
+
+        <div class="demo-row">
+          <Button @click="logClick('primary')">主要按钮</Button>
+          <Button variant="secondary" @click="logClick('secondary')">次要按钮</Button>
+          <Button variant="success" @click="logClick('success')">成功</Button>
+          <Button variant="warning" @click="logClick('warning')">警告</Button>
+          <Button variant="danger" @click="logClick('danger')">危险</Button>
+        </div>
+
+        <div class="demo-row">
+          <Button size="sm">小号</Button>
+          <Button size="md">中号</Button>
+          <Button size="lg">大号</Button>
+        </div>
+
+        <div class="demo-row">
+          <Button :loading="btnLoading" @click="simulateLoading">
+            {{ btnLoading ? '提交中...' : '点击模拟加载' }}
+          </Button>
+          <Button disabled>禁用状态</Button>
+          <Button variant="secondary" disabled>禁用次要</Button>
+          <Button variant="secondary">
+            <template #icon>
+              <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor" aria-hidden="true">
+                <path d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" />
+              </svg>
+            </template>带图标</Button>
+        </div>
+
+        <div class="result-line">
+          <span class="result-label">最近点击</span>
+          <code class="result-value">{{ clickLog }}</code>
+        </div>
+
+        <details class="usage">
+          <summary>用法</summary>
+          <pre>{{ buttonUsage }}</pre>
+        </details>
+      </section>
+
       <!-- ==================== ModalDialog ==================== -->
       <section class="card">
         <div class="card-head">
@@ -92,11 +141,29 @@
 
 <script lang="ts" setup>
 import { reactive, ref } from 'vue'
+import Button from './components/Button.vue'
 import ModalDialog from './components/ModalDialog.vue'
 import FileEditorDialog from './components/FileEditorDialog.vue'
 
 type ModalType = 'message' | 'confirm' | 'prompt' | 'notification'
 type ModalVariant = 'success' | 'error' | 'info'
+
+// ==================== Button ====================
+const clickLog = ref('—')
+const btnLoading = ref(false)
+
+const logClick = (variant: string) => {
+  clickLog.value = `${variant} @ ${new Date().toLocaleTimeString('zh-CN')}`
+}
+
+// 模拟一次 1.5 秒的异步提交
+const simulateLoading = () => {
+  clickLog.value = `loading @ ${new Date().toLocaleTimeString('zh-CN')}`
+  btnLoading.value = true
+  window.setTimeout(() => {
+    btnLoading.value = false
+  }, 1500)
+}
 
 // ==================== ModalDialog ====================
 const lastEvent = ref('—')
@@ -200,6 +267,15 @@ const onEditorSave = (text: string) => {
 }
 
 // ==================== 用法片段 ====================
+const buttonUsage = `<Button @click="onSave">主要按钮</Button>
+<Button variant="secondary" size="sm">次要小号</Button>
+<Button variant="danger" :loading="submitting">删除</Button>
+<Button disabled>禁用</Button>
+<Button>
+  <template #icon><svg>…</svg></template>
+  带图标
+</Button>`
+
 const modalUsage = `<ModalDialog
   :visible="visible"
   type="confirm"
@@ -276,8 +352,8 @@ const editorUsage = `<FileEditorDialog
 .card-tag {
   padding: 2px 8px;
   border-radius: 10px;
-  background: #e6f4ff;
-  color: #1890ff;
+  background: var(--accent-light);
+  color: var(--accent);
   font-size: 11px;
   font-weight: 500;
 }
@@ -309,19 +385,19 @@ const editorUsage = `<FileEditorDialog
 }
 
 .demo-btn:hover {
-  border-color: #1890ff;
-  color: #1890ff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .demo-btn.primary {
-  background: #1890ff;
-  border-color: #1890ff;
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
 }
 
 .demo-btn.primary:hover {
-  background: #40a9ff;
-  border-color: #40a9ff;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
   color: #fff;
 }
 
@@ -341,7 +417,7 @@ const editorUsage = `<FileEditorDialog
 .result-value {
   font-family: Consolas, Monaco, monospace;
   font-size: 12px;
-  color: #4caf50;
+  color: var(--accent);
 }
 
 .result-value.muted {
