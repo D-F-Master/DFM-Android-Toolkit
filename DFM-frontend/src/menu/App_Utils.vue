@@ -2521,7 +2521,7 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 9999;
-  background: rgba(46, 125, 50, 0.08);
+  background: rgba(46, 125, 50, 0.15);
   border: 3px dashed #4caf50;
   display: flex;
   align-items: center;
@@ -2532,13 +2532,13 @@ onUnmounted(() => {
 
 .apk-drop-overlay-box {
   padding: 24px 48px;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid #a5d6a7;
-  border-radius: 12px;
-  color: #2e7d32;
-  font-size: 18px;
-  font-weight: 600;
-  box-shadow: 0 8px 32px rgba(46, 125, 50, 0.25);
+  background: transparent;
+  border: none;
+  color: #1b5e20;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.6);
 }
 
 .app-list {
