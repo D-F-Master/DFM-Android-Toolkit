@@ -580,10 +580,10 @@ def _stream_status(device_id: str, device: str, prefix: str) -> dict:
 
 # 设备端 pty-inject 日志
 PTY_LOG = f"{DEVICE_BIN_DIR}/pty-inject.log"
-# 循环注入的帧间隔（毫秒）
-PINJECT_INTERVAL_MS = 1500
-# 默认注入帧（数字 1，键值 2）
-DEFAULT_INJECT_FRAME = "5503050207"
+# 注入源文件：tail -f 盯着它，追加内容即被转发到 pty master 端
+PTY_INJECT_FILE = f"{DEVICE_BIN_DIR}/pty-inject.in"
+# 注入通道 FIFO：pty-inject 从它读 stdin
+PTY_INJECT_FIFO = f"{DEVICE_BIN_DIR}/pty-inject.fifo"
 
 # 可注入的按键名 -> App 内部键值（与 keyinject 的 KEYS 表一致）
 KEY_VALUES = {
@@ -710,44 +710,86 @@ def _pty_status(device_id: str, device: str, prefix: str) -> dict:
     }
 
 
-def _find_sleep_pids(device_id: str, prefix: str) -> List[str]:
-    """查找为撑住 pty-inject stdin 而启动的 sleep 进程 pid"""
-    result = _run_adb(device_id, ["shell", f"{prefix}ps -A -o PID,ARGS"], timeout=10)
-    if not result["stdout"].strip():
-        return []
-    pids = []
-    for line in result["stdout"].splitlines():
-        parts = line.strip().split()
-        # 形如 " 29245 sleep 86400"
-        if len(parts) >= 2 and parts[1] == "sleep" and parts[2] == "86400":
-            pids.append(parts[0])
-    return pids
-
-
-def _start_pty_inject(device_id: str, device: str, prefix: str, frames: List[str]) -> dict:
+def _start_pty_inject(device_id: str, device: str, prefix: str) -> dict:
     """
-    启动 pty-inject 并循环注入指定帧
+    启动 pty 替换，并把注入源接到 FIFO
 
-    pty 替换与注入必须在同一进程内完成：pty-inject 退出时会把设备节点
-    恢复成真实串口，App 握着的 fd 就失效了。
+    架构（两个独立进程，避免 sh -c 嵌套管道破坏 mount）：
+      进程A: tail -f 注入文件 > FIFO      只做数据供给
+      进程B: pty-inject --dev X < FIFO   单独执行，pty 替换稳定生效
+
+    pty-inject 不带注入参数时会把 stdin 的字节转发到 pty master 端，
+    正是 App 读的那一端：
+      - 追加内容即被实时转发，注入任意帧无需重启 pty-inject
+      - pty-inject 进程不变 => 设备节点不变 => App 握着的 fd 始终有效，
+        注入按键不会导致 App 重启
     """
     _stop_pty(device_id, device, prefix)
     time.sleep(0.3)
 
-    cmd = [
-        DEVICE_PTY_INJECT,
-        "--dev", device,
-        "--inject-list", ",".join(frames),
-        "--interval", str(PINJECT_INTERVAL_MS),
-    ]
-    shell_cmd = " ".join(cmd)
-    if prefix:
-        shell_cmd = f"{prefix}{shell_cmd}"
-    full_cmd = f"{shell_cmd} > {PTY_LOG} 2>&1 < /dev/null &"
-    _run_adb(device_id, ["shell", full_cmd], timeout=15)
+    # 重建注入文件与 FIFO
+    _run_adb(
+        device_id,
+        ["shell", f"{prefix}rm -f {PTY_INJECT_FILE} {PTY_INJECT_FIFO}; "
+                  f"{prefix}touch {PTY_INJECT_FILE}; "
+                  f"{prefix}mkfifo -m 666 {PTY_INJECT_FIFO}"],
+        timeout=10,
+    )
+
+    # 进程A：tail -f 供给 FIFO。先启动它，FIFO 才有 writer，
+    # 进程B 的 open(FIFO) 才不会阻塞。
+    _run_adb(
+        device_id,
+        ["shell", f"{prefix}sh -c 'tail -f {PTY_INJECT_FILE} > {PTY_INJECT_FIFO}' "
+                  f"> /dev/null 2>&1 &"],
+        timeout=10,
+    )
     time.sleep(1.5)
 
+    # 进程B：pty-inject 读 FIFO。这里刻意不套 sh -c，
+    # 因为 su 0 sh -c 'A | B' 的管道会让 pty-inject 的 bind mount 失效。
+    _run_adb(
+        device_id,
+        ["shell", f"{prefix}{DEVICE_PTY_INJECT} --dev {device} < {PTY_INJECT_FIFO} "
+                  f"> {PTY_LOG} 2>&1 &"],
+        timeout=15,
+    )
+    time.sleep(2.0)
+
     return _pty_status(device_id, device, prefix)
+
+
+def _write_inject_frames(device_id: str, frames: List[str], prefix: str) -> dict:
+    """
+    把帧追加到注入文件，tail -f 会实时转发到 pty master 端
+
+    每帧单独一条命令：App 的读线程是「半包即丢」，一帧必须一次 write 送达，
+    所以不能把多帧拼在一条 append 里。
+
+    载荷用 printf 的八进制转义写入：adb shell 是 PTY，直传二进制会被换行转码，
+    而文本转义不受影响（设备上的 xxd -r -p 行为异常，不可用）。
+    """
+    if not frames:
+        return {"success": False, "message": "没有要注入的帧"}
+
+    last_error = ""
+    for frame in frames:
+        try:
+            raw = bytes.fromhex(frame)
+        except ValueError as e:
+            return {"success": False, "message": f"帧格式错误: {frame} ({e})"}
+
+        # 每字节转成三位八进制转义，如 55 -> \125
+        octal = "".join(f"\\{b:03o}" for b in raw)
+        result = _run_adb(
+            device_id,
+            ["shell", f"{prefix}printf '{octal}' >> {PTY_INJECT_FILE}"],
+            timeout=20,
+        )
+        if not result["success"]:
+            last_error = (result["stderr"] or result["stdout"] or "").strip()
+
+    return {"success": True, "message": last_error}
 
 
 def _stop_pty(device_id: str, device: str, prefix: str) -> dict:
@@ -756,6 +798,13 @@ def _stop_pty(device_id: str, device: str, prefix: str) -> dict:
 
     pty-inject 由 `sleep 86400 | pty-inject` 管道启动，停止时要一并干掉
     撑住 stdin 的 sleep 进程，否则会留下孤儿进程。
+    """
+def _stop_pty(device_id: str, device: str, prefix: str) -> dict:
+    """
+    停止 pty-inject 并清理可能的残留挂载
+
+    注入通道由 tail -f 供给，停止时要一并干掉 tail 进程，
+    否则它会一直占着 FIFO，pty-inject 下次启动时 open 阻塞。
     """
     pids = _find_pty_pids(device_id, prefix)
     for pid in pids:
@@ -767,9 +816,13 @@ def _stop_pty(device_id: str, device: str, prefix: str) -> dict:
         if not _find_pty_pids(device_id, prefix):
             break
 
-    # 清理撑住 stdin 的 sleep 进程（pty-inject 退出后管道会断，但 sleep 仍在）
-    for pid in _find_sleep_pids(device_id, prefix):
-        _run_adb(device_id, ["shell", f"{prefix}kill -TERM {pid}"], timeout=10)
+    # 清理注入通道的 tail 进程
+    _run_adb(
+        device_id,
+        ["shell", f"{prefix}pkill -f 'tail -f {PTY_INJECT_FILE}' 2>/dev/null"],
+        timeout=10,
+    )
+    time.sleep(0.3)
 
     # 兜底清理残留挂载（异常退出时 pty-inject 来不及 umount）
     name = device.rsplit("/", 1)[-1]
@@ -869,10 +922,8 @@ def pty_control(request: SerialPtyRequest):
                 if not deploy_result["success"]:
                     return {"code": 500, "message": deploy_result["message"], "data": None}
 
-            # 启动注入进程（pty 替换与注入必须同一进程：
-            # pty-inject 一旦退出，设备节点就恢复成真实串口）
-            status = _start_pty_inject(
-                request.deviceId, request.device, prefix, [DEFAULT_INJECT_FRAME])
+            # 启动 pty 替换（pty-inject 进程常驻，注入通道接 FIFO）
+            status = _start_pty_inject(request.deviceId, request.device, prefix)
             if not status["running"]:
                 return {
                     "code": 500,
@@ -1022,25 +1073,29 @@ def inject_keys(request: SerialKeyRequest):
         if not frames:
             return {"code": 400, "message": "未指定按键", "data": None}
 
-        # 重启注入进程（pty 重建后 App 的 fd 会失效，必须一并重启 App）
-        status = _start_pty_inject(
-            request.deviceId, request.device, prefix, frames)
-        if not status["running"]:
+        # pty 替换未启动时先启动（pty-inject 常驻，注入通道接 FIFO）
+        status = _pty_status(request.deviceId, request.device, prefix)
+        if not status["running"] or status["nodeType"] != "pty":
+            status = _start_pty_inject(request.deviceId, request.device, prefix)
+            if not status["running"] or status["nodeType"] != "pty":
+                return {
+                    "code": 500,
+                    "message": "pty 替换未生效，请先启动 pty 替换",
+                    "data": {**status, "frames": frames},
+                }
+
+        # 追加帧到注入文件，tail -f 实时转发到 pty master 端。
+        # pty-inject 进程不变 => 设备节点不变 => App 的 fd 仍有效，
+        # 所以注入按键不需要重启 App。
+        write_result = _write_inject_frames(
+            request.deviceId, frames, prefix)
+        if not write_result["success"]:
             return {
                 "code": 500,
-                "message": "注入进程启动失败",
-                "data": {**status, "frames": frames},
-            }
-        if status["nodeType"] != "pty":
-            return {
-                "code": 500,
-                "message": "pty 替换未生效，设备节点仍是真实串口",
-                "data": {**status, "frames": frames},
+                "message": f"写入注入帧失败: {write_result['message']}",
+                "data": {"frames": frames},
             }
 
-        restart_info = _restart_app(
-            request.deviceId, DEFAULT_TARGET_APP, DEFAULT_APP_ACTIVITY)
-        time.sleep(4)
         status = _pty_status(request.deviceId, request.device, prefix)
 
         return {
@@ -1052,7 +1107,6 @@ def inject_keys(request: SerialKeyRequest):
                 "pid": status["pid"],
                 "nodeType": status["nodeType"],
                 "appHolds": status["appHolds"],
-                "appRestart": restart_info,
             },
         }
     except Exception as e:
