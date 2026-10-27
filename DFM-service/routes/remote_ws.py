@@ -26,7 +26,7 @@ import threading
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from config import logger
-from routes.batch_remote import DeviceSession
+from routes.batch_remote import DeviceSession  # noqa: F401 (类型引用)
 
 router = APIRouter()
 
@@ -37,6 +37,56 @@ def _find_free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+# 跨连接的共享会话注册表：deviceId -> DeviceSession
+# 同设备只保留一个存活会话：批量投屏/模拟脚本预览/脚本执行共用，
+# 避免重复起 scrcpy server（第二个会话启动时 pkill 会杀掉第一个）。
+# 引用计数归零或会话死亡时从表中移除。
+_shared_sessions: dict = {}
+_shared_sessions_lock = threading.Lock()
+
+
+def acquire_session(device_id: str):
+    """
+    获取（或创建）设备的共享会话；返回 None 表示启动失败。
+
+    调用方用完后必须调用 release_session(device_id)。
+    """
+    with _shared_sessions_lock:
+        session = _shared_sessions.get(device_id)
+        if session is not None and session.running:
+            session._refcount = getattr(session, "_refcount", 1) + 1
+            return session
+
+    # 表内无会话或已死：新建（先清掉死会话条目）
+    with _shared_sessions_lock:
+        old = _shared_sessions.get(device_id)
+        if old is not None and not old.running:
+            old.stop()
+            del _shared_sessions[device_id]
+
+    session = DeviceSession(device_id, _find_free_port(), kill_server_on_start=False)
+    if not session.start():
+        return None
+    session._refcount = 1
+    with _shared_sessions_lock:
+        _shared_sessions[device_id] = session
+    return session
+
+
+def release_session(device_id: str, session):
+    """归还共享会话：引用计数归零时销毁"""
+    with _shared_sessions_lock:
+        ref = getattr(session, "_refcount", 1) - 1
+        session._refcount = ref
+        if ref <= 0 and _shared_sessions.get(device_id) is session:
+            del _shared_sessions[device_id]
+            destroy = True
+        else:
+            destroy = False
+    if destroy:
+        session.stop()
 
 
 class RemoteHub:
@@ -63,9 +113,8 @@ class RemoteHub:
             t.join(timeout=30)
 
     def _start_one(self, device_id: str):
-        session = DeviceSession(device_id, _find_free_port())
-        ok = session.start()
-        if ok:
+        session = acquire_session(device_id)
+        if session is not None:
             with self._lock:
                 self.sessions[device_id] = session
                 self.device_order.append(device_id)
@@ -123,8 +172,10 @@ class RemoteHub:
         self._try_send_json({"type": "closed", "deviceId": session.device_id})
 
     def stop_all(self):
-        for s in list(self.sessions.values()):
-            s.stop()
+        # 会话是共享资源（可能同时被脚本执行等其他连接使用），
+        # 这里只归还引用，引用归零才真正销毁
+        for did, s in list(self.sessions.items()):
+            release_session(did, s)
         with self._lock:
             self.sessions.clear()
             self.device_order.clear()

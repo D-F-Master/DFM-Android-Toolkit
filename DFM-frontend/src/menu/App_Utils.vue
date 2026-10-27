@@ -651,7 +651,10 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
     scriptSendTouch(0, p)
     return
   }
-  // 录制模式：开始判定点/拖/长按
+  // 录制模式：事件照常注入设备（记录的同时真实生效），并开始判定手势类型
+  try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+  scriptRemotePressing = true
+  scriptSendTouch(0, p)
   scriptPointerActive = true
   scriptMoved = false
   scriptPressStart = { x: p.x, y: p.y, time: Date.now() }
@@ -672,11 +675,9 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
 const scriptOnPointerMove = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
-  if (!scriptRecording.value) {
-    // 远控模式：移动事件注入（按下期间才有意义）
-    if (scriptRemotePressing) scriptSendTouch(2, p)
-    return
-  }
+  if (!scriptRemotePressing) return
+  // 移动事件注入（远控与录制模式都需要，录制时靠它让设备产生真实滑动）
+  if (!scriptRecording.value || scriptPointerActive) scriptSendTouch(2, p)
   if (!scriptPointerActive) return
   const dist = Math.hypot(p.x - scriptPressStart.x, p.y - scriptPressStart.y)
   if (dist > 30) {
@@ -688,12 +689,10 @@ const scriptOnPointerMove = (ev: PointerEvent) => {
 const scriptOnPointerUp = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
-  if (!scriptRecording.value) {
-    // 远控模式：抬起注入
-    if (scriptRemotePressing) scriptSendTouch(1, p)
-    scriptRemotePressing = false
-    return
-  }
+  // 抬起事件注入（远控与录制模式都需要）
+  if (scriptRemotePressing) scriptSendTouch(1, p)
+  scriptRemotePressing = false
+  if (!scriptRecording.value) return
   if (!scriptPointerActive) return
   clearTimeout(scriptLongPressTimer)
   scriptPointerActive = false

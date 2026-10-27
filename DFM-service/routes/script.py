@@ -34,7 +34,6 @@ from typing import Optional, List
 from config import logger
 from utils.tool_manager import get_data_path
 from routes.adb_utils import execute_adb_command
-from routes.batch_remote import DeviceSession
 
 router = APIRouter(
     prefix="/api",
@@ -163,22 +162,18 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     在设备上回放脚本（阻塞，运行于 task_queue 工作线程）
 
-    临时起 scrcpy 会话只用于注入（不取视频流），跑完销毁。
+    复用共享 scrcpy 会话注入（与屏幕预览/批量投屏共用同一会话，
+    避免重复启动 server 互相干扰），跑完归还引用。
     """
-    from config.queue_config import task_queue
-    import socket as socket_mod
+    from routes.remote_ws import acquire_session, release_session
 
-    # 找空闲端口
-    s = socket_mod.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-
-    session = DeviceSession(device_id, port)
-    if not session.start():
+    session = acquire_session(device_id)
+    if session is None:
         raise RuntimeError("设备会话启动失败")
 
     try:
+        # 用会话真实分辨率做坐标归一化基准（与录屏预览一致）
+        w, h = session.video_width, session.video_height
         steps = script.get("steps", [])
         for round_no in range(1, repeat + 1):
             logger.info(f"Script run round {round_no}/{repeat} on {device_id}")
@@ -188,28 +183,28 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 interval = max(0, int(step.get("interval", 0)))
                 for i in range(count):
                     if stype == "tap":
-                        session.inject_touch(0, step["x1"], step["y1"], 1080, 2340)
-                        session.inject_touch(1, step["x1"], step["y1"], 1080, 2340)
+                        session.inject_touch(0, step["x1"], step["y1"], w, h)
+                        session.inject_touch(1, step["x1"], step["y1"], w, h)
                         time.sleep(0.05)
                     elif stype == "longpress":
-                        session.inject_touch(0, step["x1"], step["y1"], 1080, 2340)
+                        session.inject_touch(0, step["x1"], step["y1"], w, h)
                         time.sleep(max(0.1, step.get("duration", 800)) / 1000)
-                        session.inject_touch(1, step["x1"], step["y1"], 1080, 2340)
+                        session.inject_touch(1, step["x1"], step["y1"], w, h)
                     elif stype == "swipe":
                         # 滑动：down → 多段 move → up，模拟真实手势
                         x1, y1 = step["x1"], step["y1"]
                         x2, y2 = step.get("x2", x1), step.get("y2", y1)
                         seg = 10
-                        session.inject_touch(0, x1, y1, 1080, 2340)
+                        session.inject_touch(0, x1, y1, w, h)
                         for k in range(1, seg + 1):
                             session.inject_touch(
                                 2,
                                 x1 + (x2 - x1) * k / seg,
                                 y1 + (y2 - y1) * k / seg,
-                                1080, 2340,
+                                w, h,
                             )
                             time.sleep(0.01)
-                        session.inject_touch(1, x2, y2, 1080, 2340)
+                        session.inject_touch(1, x2, y2, w, h)
                     else:
                         logger.warning(f"Unknown step type: {stype}")
                         break
@@ -219,7 +214,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 if idx < len(steps) - 1:
                     time.sleep(interval / 1000)
     finally:
-        session.stop()
+        release_session(device_id, session)
         logger.info(f"Script run finished on {device_id}")
 
 

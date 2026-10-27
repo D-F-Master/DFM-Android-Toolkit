@@ -81,9 +81,10 @@ def _run_adb(args: str, timeout: int = 15):
 class DeviceSession:
     """单台设备的 scrcpy 会话：视频流接收 + 控制注入"""
 
-    def __init__(self, device_id: str, local_port: int):
+    def __init__(self, device_id: str, local_port: int, kill_server_on_start: bool = True):
         self.device_id = device_id
         self.local_port = local_port
+        self._kill_server_on_start = kill_server_on_start
         # socket 名由 scid 生成（scrcpy_%08x），与 server 端 getSocketName 一致
         # scid：8 位零填充 hex 且首字符必须是数字（1-7 开头）——
         # adb shell 传参时字母开头的值会被远端 shell 当作选项吞掉，
@@ -151,8 +152,13 @@ class DeviceSession:
             server_path = get_server_path()
 
             # 先清理设备端可能残留的旧 server（上一次会话异常退出时
-            # 只杀了本机 cmd 包装进程，adb shell 会话可能仍在设备上存活）
-            _run_adb(f'-s {self.device_id} shell "pkill -f app_process"')
+            # 只杀了本机 cmd 包装进程，adb shell 会话可能仍在设备上存活）。
+            # kill_server=False（共享模式）时跳过：避免杀掉同设备正在
+            # 服务的其他会话（如屏幕预览会话被脚本执行会话误杀）
+            if not self._kill_server_on_start:
+                pass
+            else:
+                _run_adb(f'-s {self.device_id} shell "pkill -f app_process"')
 
             rc, _, err = _run_adb(
                 f'-s {self.device_id} push "{server_path}" {SERVER_PUSH_PATH}'
@@ -463,13 +469,15 @@ class DeviceSession:
                      f"localabstract:{self.socket_name}", timeout=5)
         except Exception:
             pass
-        # cleanup=false 时需手动清理设备端进程
-        try:
-            _run_adb(
-                f'-s {self.device_id} shell "ps -A | grep app_process | grep -v grep '
-                f'| awk \'{{print $2}}\' | xargs -r kill"',
-                timeout=8,
-            )
-        except Exception:
-            pass
+        # cleanup=false 时需手动清理设备端进程；
+        # 共享模式（kill_server_on_start=False）不清理，避免误杀其他会话的 server
+        if self._kill_server_on_start:
+            try:
+                _run_adb(
+                    f'-s {self.device_id} shell "ps -A | grep app_process | grep -v grep '
+                    f'| awk \'{{print $2}}\' | xargs -r kill"',
+                    timeout=8,
+                )
+            except Exception:
+                pass
         logger.info(f"[{self.device_id}] session stopped")
