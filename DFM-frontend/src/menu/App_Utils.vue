@@ -2581,6 +2581,155 @@ const serialStream = async (action: 'start' | 'stop' | 'status') => {
     serialStreamBusy.value = false
   }
 }
+
+// ---------- 模拟串口：方案 B（pty 替换 + 按键注入） ----------
+
+const serialScheme = ref<'loop' | 'pty'>('loop')
+
+// pty 状态
+const ptyRunning = ref(false)
+const ptyPid = ref('')
+const ptyNodeType = ref('')
+const ptyAppHolds = ref(false)
+const ptyLeftover = ref('')
+const ptyLog = ref('')
+const ptyBusy = ref(false)
+
+// 按键
+const keyList = ref<Array<{ name: string; value: number }>>([])
+const keyFrame = ref('5503050207')
+const keyInjectBusy = ref(false)
+const keyInjectOutput = ref('')
+
+const KEY_LABELS: Record<string, string> = {
+  '0': '0', '1': '1', '2': '2', '3': '3', '4': '4',
+  '5': '5', '6': '6', '7': '7', '8': '8', '9': '9',
+  dot: '.', add: '+', enter: '确认', menu: '菜单', sub: '-',
+  f1: 'F1', f2: '设置', up: '上', down: '下', esc: '取消'
+}
+
+// 按键名 -> 协议帧（55 | 03 | 05 | KEY | CRC，CRC=(0x05+KEY)&0xFF）
+const buildKeyFrame = (keyValue: number) => {
+  const bytes = [0x55, 0x03, 0x05, keyValue & 0xFF, (0x05 + keyValue) & 0xFF]
+  return bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join('')
+}
+
+// pty 设备节点（与方案 A 独立，避免混淆）
+const ptyDevice = ref('/dev/ttyS7')
+
+const loadKeyList = async () => {
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/keys/list`, {
+      deviceId: selectedDevice.value || ''
+    })
+    if (res.data.code === 200) {
+      keyList.value = res.data.data.keys || []
+    }
+  } catch (e) {
+    console.error('获取按键列表失败:', e)
+  }
+}
+
+const loadPtyStatus = async () => {
+  if (!selectedDevice.value) return
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/pty/status`, {
+      deviceId: selectedDevice.value,
+      device: ptyDevice.value
+    })
+    if (res.data.code === 200) {
+      const d = res.data.data
+      ptyRunning.value = !!d.running
+      ptyPid.value = d.pid || ''
+      ptyNodeType.value = d.nodeType || ''
+      ptyAppHolds.value = !!d.appHolds
+      ptyLeftover.value = d.leftoverMount || ''
+      ptyLog.value = d.log || ''
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '查询 pty 状态失败'
+    serialMessageType.value = 'err'
+  }
+}
+
+const deployPtyTools = async () => {
+  if (!selectedDevice.value) return
+  ptyBusy.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/pty/deploy`, {
+      deviceId: selectedDevice.value
+    })
+    serialMessage.value = res.data.code === 200 ? 'pty 工具已部署到设备' : (res.data.message || '部署失败')
+    serialMessageType.value = res.data.code === 200 ? 'ok' : 'err'
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '部署失败'
+    serialMessageType.value = 'err'
+  } finally {
+    ptyBusy.value = false
+  }
+}
+
+const controlPty = async (action: 'start' | 'stop') => {
+  if (!selectedDevice.value) return
+  ptyBusy.value = true
+  serialMessage.value = ''
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/pty/control`, {
+      deviceId: selectedDevice.value,
+      device: ptyDevice.value,
+      action,
+      frames: keyFrame.value,
+      interval: 1200,
+      restartApp: true
+    })
+    const d = res.data.data || {}
+    ptyRunning.value = !!d.running
+    ptyPid.value = d.pid || ''
+    ptyNodeType.value = d.nodeType || ''
+    ptyAppHolds.value = !!d.appHolds
+    ptyLeftover.value = d.leftoverMount || ''
+    ptyLog.value = d.log || ''
+    serialMessage.value = res.data.message || ''
+    serialMessageType.value = res.data.code === 200 ? 'ok' : 'err'
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '操作失败'
+    serialMessageType.value = 'err'
+  } finally {
+    ptyBusy.value = false
+  }
+}
+
+const injectKey = async (keyName: string) => {
+  if (!selectedDevice.value) return
+  keyInjectBusy.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/keys`, {
+      deviceId: selectedDevice.value,
+      device: ptyDevice.value,
+      keys: keyName,
+      baud: 38400,
+      delay: 300,
+      repeat: 1
+    })
+    keyInjectOutput.value = (res.data.data?.output || '').trim()
+    if (res.data.code !== 200) {
+      serialMessage.value = res.data.message || '按键注入失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '按键注入失败'
+    serialMessageType.value = 'err'
+  } finally {
+    keyInjectBusy.value = false
+  }
+}
+
+// 切换方案 / 首次进入时加载按键表
+watch(serialScheme, async (scheme) => {
+  if (scheme !== 'pty') return
+  if (keyList.value.length === 0) await loadKeyList()
+  if (selectedDevice.value) await loadPtyStatus()
+})
 </script>
 <style scoped>
 .sidebar {
@@ -4648,6 +4797,139 @@ button.batch-remote-tile-tag:disabled.active {
   font-weight: 500;
 }
 
+/* ===== 方案切换 ===== */
+.serial-scheme-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.serial-scheme-btn {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  background: #f5f7fa;
+  color: #555;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.serial-scheme-btn:hover {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+.serial-scheme-btn.active {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: #fff;
+  font-weight: 600;
+}
+
+.serial-input-lg {
+  width: 200px;
+}
+
+.serial-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+.serial-hint-block {
+  display: block;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 8px;
+  line-height: 1.6;
+}
+
+.serial-subtitle {
+  margin: 16px 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+/* ===== pty 状态条 ===== */
+.pty-state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: #f8f9fb;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #666;
+}
+
+.pty-state-item b.ok {
+  color: #2e7d32;
+}
+
+.pty-state-item b.warn {
+  color: #ef6c00;
+}
+
+.pty-state-item.err {
+  color: #c62828;
+}
+
+/* ===== 按键面板 ===== */
+.key-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 8px;
+}
+
+.key-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 10px 4px;
+  background: #f5f7fa;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.key-cell:hover:not(:disabled) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(76, 175, 80, 0.12);
+}
+
+.key-cell:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.key-cell-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+}
+
+.key-cell-value {
+  font-size: 10px;
+  color: #999;
+}
+
 .serial-output {
   margin: 0 0 10px;
   padding: 10px 12px;
@@ -4677,13 +4959,15 @@ button.batch-remote-tile-tag:disabled.active {
   }
 
   .serial-mode-btn,
-  .serial-mini-btn {
+  .serial-mini-btn,
+  .serial-scheme-btn {
     background: #3a3d45;
     border-color: #555;
     color: #ccc;
   }
 
-  .serial-mode-btn.active {
+  .serial-mode-btn.active,
+  .serial-scheme-btn.active {
     background: #66bb6a;
     border-color: #66bb6a;
     color: #1a1d23;
@@ -4703,6 +4987,23 @@ button.batch-remote-tile-tag:disabled.active {
   .serial-msg.err {
     background: #3a2426;
     color: #ef9a9a;
+  }
+
+  .pty-state {
+    background: #33363e;
+    border-color: #40434a;
+  }
+
+  .key-cell {
+    background: #3a3d45;
+    border-color: #555;
+    color: #e0e0e0;
+  }
+
+  .key-cell:hover:not(:disabled) {
+    background: #2e3d31;
+    border-color: #66bb6a;
+    color: #81c784;
   }
 }
 
@@ -5476,6 +5777,22 @@ button.batch-remote-tile-tag:disabled.active {
                     <span v-else class="serial-tool-missing">工具未部署</span>
                   </div>
                   <div class="card-body">
+                    <!-- 方案切换 -->
+                    <div class="serial-scheme-group">
+                      <button
+                        class="serial-scheme-btn"
+                        :class="{ active: serialScheme === 'loop' }"
+                        @click="serialScheme = 'loop'"
+                      >方案 A · 串口写入（回环注入）</button>
+                      <button
+                        class="serial-scheme-btn"
+                        :class="{ active: serialScheme === 'pty' }"
+                        @click="serialScheme = 'pty'"
+                      >方案 B · 键盘模拟（pty 替换）</button>
+                    </div>
+
+                    <!-- ============ 方案 A：串口写入 ============ -->
+                    <template v-if="serialScheme === 'loop'">
                     <!-- 端口选择 -->
                     <div class="serial-row">
                       <label class="serial-label">串口设备</label>
@@ -5565,6 +5882,79 @@ button.batch-remote-tile-tag:disabled.active {
 
                     <pre v-if="serialOutput" class="serial-output">{{ serialOutput }}</pre>
                     <pre v-if="serialStreamLog" class="serial-output">{{ serialStreamLog }}</pre>
+                    </template>
+
+                    <!-- ============ 方案 B：键盘模拟（pty 替换） ============ -->
+                    <template v-else>
+                      <div class="serial-row">
+                        <label class="serial-label">目标串口</label>
+                        <input
+                          type="text"
+                          v-model="ptyDevice"
+                          class="serial-input serial-input-lg"
+                          placeholder="/dev/ttyS7"
+                        />
+                        <button class="serial-mini-btn" @click="loadPtyStatus" :disabled="ptyBusy">查询状态</button>
+                        <button class="serial-mini-btn" @click="deployPtyTools" :disabled="ptyBusy">部署工具</button>
+                      </div>
+
+                      <!-- pty 状态 -->
+                      <div class="pty-state">
+                        <span class="pty-state-item">
+                          节点类型：
+                          <b :class="ptyNodeType === 'pty' ? 'ok' : (ptyNodeType === 'serial' ? 'warn' : '')">
+                            {{ ptyNodeType === 'pty' ? 'pty（已替换）' : (ptyNodeType === 'serial' ? '真实串口' : '未知') }}
+                          </b>
+                        </span>
+                        <span class="pty-state-item">注入进程：{{ ptyRunning ? '运行中 ' + ptyPid : '未运行' }}</span>
+                        <span class="pty-state-item">App 持有：{{ ptyAppHolds ? '是' : '否' }}</span>
+                        <span v-if="ptyLeftover" class="pty-state-item err">残留挂载：{{ ptyLeftover }}</span>
+                      </div>
+
+                      <div class="serial-row">
+                        <label class="serial-label">循环注入帧</label>
+                        <input
+                          type="text"
+                          v-model="keyFrame"
+                          class="serial-input serial-input-lg"
+                          placeholder="5503050207"
+                        />
+                        <span class="serial-hint">逗号分隔多个帧，如 5503050207,5503051116</span>
+                      </div>
+
+                      <div class="serial-actions">
+                        <button
+                          class="serial-stream-btn"
+                          :class="{ active: ptyRunning }"
+                          @click="controlPty(ptyRunning ? 'stop' : 'start')"
+                          :disabled="ptyBusy || !selectedDevice"
+                        >{{ ptyRunning ? '停止 pty 替换' : '启动 pty 替换' }}</button>
+                      </div>
+
+                      <div class="serial-hint serial-hint-block">
+                        提示：pty 替换对已打开的串口无效，启动时会自动重启目标 App，
+                        让它重新打开串口拿到 pty。停止后设备节点自动恢复为真实串口。
+                      </div>
+
+                      <!-- 按键面板 -->
+                      <div class="serial-subtitle">按键注入</div>
+                      <div class="key-grid">
+                        <button
+                          v-for="k in keyList"
+                          :key="k.name"
+                          class="key-cell"
+                          :disabled="keyInjectBusy || !selectedDevice"
+                          @click="injectKey(k.name)"
+                          :title="`键值 ${k.value} · 帧 ${buildKeyFrame(k.value)}`"
+                        >
+                          <span class="key-cell-label">{{ KEY_LABELS[k.name] || k.name }}</span>
+                          <span class="key-cell-value">{{ k.value }}</span>
+                        </button>
+                      </div>
+
+                      <pre v-if="keyInjectOutput" class="serial-output">{{ keyInjectOutput }}</pre>
+                      <pre v-if="ptyLog" class="serial-output">{{ ptyLog }}</pre>
+                    </template>
                   </div>
                 </div>
               </div>
