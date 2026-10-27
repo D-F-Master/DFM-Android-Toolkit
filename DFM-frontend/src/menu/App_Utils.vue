@@ -2596,16 +2596,9 @@ const ptyLog = ref('')
 const ptyBusy = ref(false)
 
 // 按键
-const keyList = ref<Array<{ name: string; value: number }>>([])
+const keyList = ref<Array<{ name: string; value: number; label?: string; desc?: string }>>([])
 const keyInjectBusy = ref(false)
 const keyInjectOutput = ref('')
-
-const KEY_LABELS: Record<string, string> = {
-  '0': '0', '1': '1', '2': '2', '3': '3', '4': '4',
-  '5': '5', '6': '6', '7': '7', '8': '8', '9': '9',
-  dot: '.', add: '+', enter: '确认', menu: '菜单', sub: '-',
-  f1: 'F1', f2: '设置', up: '上', down: '下', esc: '取消'
-}
 
 // 按键名 -> 协议帧（55 | 03 | 05 | KEY | CRC，CRC=(0x05+KEY)&0xFF）
 const buildKeyFrame = (keyValue: number) => {
@@ -2696,22 +2689,31 @@ const controlPty = async (action: 'start' | 'stop') => {
   }
 }
 
-// 选中的按键（多选，按面板点击顺序）
-const selectedKeys = ref<string[]>([])
+// 按键序列：每次点击追加一个，同一个键可以重复按多次
+const keySequence = ref<string[]>([])
 
-const toggleKey = (keyName: string) => {
-  const idx = selectedKeys.value.indexOf(keyName)
-  if (idx >= 0) {
-    selectedKeys.value.splice(idx, 1)
-  } else {
-    selectedKeys.value.push(keyName)
-  }
+const appendKey = (keyName: string) => {
+  keySequence.value.push(keyName)
+}
+
+const removeKeyAt = (index: number) => {
+  keySequence.value.splice(index, 1)
+}
+
+const clearKeySequence = () => {
+  keySequence.value = []
+}
+
+// 序列对应的显示文字（数字键直接显示数字，符号键显示功能名）
+const keyFunctionText = (keyName: string) => {
+  const found = keyList.value.find(k => k.name === keyName)
+  return found?.label || keyName
 }
 
 const applyKeys = async () => {
   if (!selectedDevice.value) return
-  if (selectedKeys.value.length === 0) {
-    serialMessage.value = '请先选择按键'
+  if (keySequence.value.length === 0) {
+    serialMessage.value = '请先点击按键添加序列'
     serialMessageType.value = 'err'
     return
   }
@@ -2721,7 +2723,7 @@ const applyKeys = async () => {
     const res = await axios.post(`${API_BASE.value}/api/device/serial/keys`, {
       deviceId: selectedDevice.value,
       device: ptyDevice.value,
-      keys: selectedKeys.value.join(','),
+      keys: keySequence.value.join(','),
       interval: 1500
     })
     const d = res.data.data || {}
@@ -4861,6 +4863,7 @@ button.batch-remote-tile-tag:disabled.active {
 .serial-hint {
   font-size: 12px;
   color: #999;
+  line-height: 1.6;
 }
 
 .serial-hint-block {
@@ -4871,13 +4874,6 @@ button.batch-remote-tile-tag:disabled.active {
   border: 1px solid #ffe082;
   border-radius: 8px;
   line-height: 1.6;
-}
-
-.serial-subtitle {
-  margin: 16px 0 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #333;
 }
 
 /* ===== pty 状态条 ===== */
@@ -4906,69 +4902,112 @@ button.batch-remote-tile-tag:disabled.active {
   color: #c62828;
 }
 
-/* ===== 按键面板 ===== */
-.key-grid {
+/* ===== 按键序列 ===== */
+.serial-key-grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 8px;
 }
 
-.key-cell {
+.serial-key-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 10px 4px;
+  gap: 4px;
+  padding: 10px 6px;
   background: #f5f7fa;
   border: 1px solid #e8eaed;
   border-radius: 8px;
   cursor: pointer;
   font-family: inherit;
-  transition: all 0.2s ease;
+  transition: all 0.25s ease;
 }
 
-.key-cell:hover:not(:disabled) {
+.serial-key-btn:hover:not(:disabled) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   transform: translateY(-1px);
   box-shadow: 0 3px 10px rgba(76, 175, 80, 0.12);
 }
 
-.key-cell:disabled {
+.serial-key-btn:active:not(:disabled) {
+  transform: translateY(0);
+  background: #c8e6c9;
+}
+
+.serial-key-btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.key-cell.selected {
-  background: #4caf50;
-  border-color: #4caf50;
-}
-
-.key-cell.selected .key-cell-label {
-  color: #fff;
-}
-
-.key-cell.selected .key-cell-value {
-  color: rgba(255, 255, 255, 0.75);
-}
-
-.serial-subtitle-hint {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 400;
-  color: #999;
-}
-
-.key-cell-label {
+.serial-key-btn-label {
   font-size: 13px;
   font-weight: 600;
   color: #444;
 }
 
-.key-cell-value {
+.serial-key-btn-value {
   font-size: 10px;
   color: #999;
+}
+
+/* 已输入的按键序列 */
+.serial-seq-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: #f8f9fb;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+}
+
+.serial-seq-empty {
+  font-size: 12px;
+  color: #999;
+}
+
+.serial-seq-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #2e7d32;
+}
+
+.serial-seq-item .serial-seq-idx {
+  font-size: 10px;
+  color: #66bb6a;
+  font-weight: 700;
+}
+
+.serial-seq-del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #81c784;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.serial-seq-del:hover {
+  background: #ffebee;
+  color: #c62828;
 }
 
 .serial-output {
@@ -5035,30 +5074,34 @@ button.batch-remote-tile-tag:disabled.active {
     border-color: #40434a;
   }
 
-  .key-cell {
+  .serial-key-btn {
     background: #3a3d45;
     border-color: #555;
+  }
+
+  .serial-key-btn:hover:not(:disabled) {
+    background: #2e3d31;
+    border-color: #66bb6a;
+  }
+
+  .serial-key-btn-label {
     color: #e0e0e0;
   }
 
-  .key-cell:hover:not(:disabled) {
+  .serial-seq-list {
+    background: #33363e;
+    border-color: #40434a;
+  }
+
+  .serial-seq-item {
     background: #2e3d31;
     border-color: #66bb6a;
     color: #81c784;
   }
 
-  .key-cell.selected,
-  .key-cell.selected:hover:not(:disabled) {
-    background: #66bb6a;
-    border-color: #66bb6a;
-  }
-
-  .key-cell.selected .key-cell-label {
-    color: #1a1d23;
-  }
-
-  .key-cell.selected .key-cell-value {
-    color: rgba(26, 29, 35, 0.7);
+  .serial-seq-del:hover {
+    background: #3a2426;
+    color: #ef9a9a;
   }
 }
 
@@ -5838,19 +5881,36 @@ button.batch-remote-tile-tag:disabled.active {
                         class="serial-scheme-btn"
                         :class="{ active: serialScheme === 'loop' }"
                         @click="serialScheme = 'loop'"
-                      >方案 A · 串口写入（回环注入）</button>
+                      >串口写入</button>
                       <button
                         class="serial-scheme-btn"
                         :class="{ active: serialScheme === 'pty' }"
                         @click="serialScheme = 'pty'"
-                      >方案 B · 键盘模拟（pty 替换）</button>
+                      >键盘模拟</button>
                     </div>
+                    <div class="serial-hint">
+                      串口写入：向设备串口发送数据，通过 UART 内部回环让读取该串口的程序收到。
+                      键盘模拟：把串口替换为 pty，向实体键盘协议注入按键帧。
+                    </div>
+                  </div>
+                </div>
 
-                    <!-- ============ 方案 A：串口写入 ============ -->
-                    <template v-if="serialScheme === 'loop'">
-                    <!-- 端口选择 -->
+                <!-- ============ 方案 A：串口写入 ============ -->
+                <template v-if="serialScheme === 'loop'">
+                <!-- 卡片: 串口选择 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <rect x="2" y="3" width="20" height="14" rx="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                      </svg>
+                    </span>
+                    <span>串口设备</span>
+                  </div>
+                  <div class="card-body">
                     <div class="serial-row">
-                      <label class="serial-label">串口设备</label>
                       <select v-model="serialDevice" class="serial-select" :disabled="serialPortsLoading">
                         <option v-for="p in serialPorts" :key="p.device" :value="p.device">
                           {{ p.device }}{{ p.majorMinor ? ` (${p.majorMinor})` : '' }}
@@ -5866,7 +5926,21 @@ button.batch-remote-tile-tag:disabled.active {
 
                     <div v-if="serialPortsLoading" class="loading-text">加载串口列表中...</div>
                     <div v-else-if="serialPorts.length === 0" class="loading-text">该设备未发现串口节点</div>
+                  </div>
+                </div>
 
+                <!-- 卡片: 数据发送 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <polyline points="4 17 10 11 4 5"/>
+                        <line x1="12" y1="19" x2="20" y2="19"/>
+                      </svg>
+                    </span>
+                    <span>数据发送</span>
+                  </div>
+                  <div class="card-body">
                     <!-- 载荷配置 -->
                     <div class="serial-row">
                       <label class="serial-label">载荷类型</label>
@@ -5899,7 +5973,6 @@ button.batch-remote-tile-tag:disabled.active {
                     </div>
 
                     <div class="serial-row">
-                      <label class="serial-label">回环注入</label>
                       <label class="serial-check">
                         <input type="checkbox" v-model="serialLoop" />
                         <span>开启 UART 内部回环（让读取该串口的程序收到数据）</span>
@@ -5930,94 +6003,145 @@ button.batch-remote-tile-tag:disabled.active {
                     <div v-if="serialStreamRunning" class="serial-stream-state">
                       持续发送运行中（pid {{ serialStreamPid }}）
                     </div>
+                  </div>
+                </div>
+                </template>
 
-                    <pre v-if="serialOutput" class="serial-output">{{ serialOutput }}</pre>
-                    <pre v-if="serialStreamLog" class="serial-output">{{ serialStreamLog }}</pre>
-                    </template>
+                <!-- ============ 方案 B：键盘模拟 ============ -->
+                <template v-else>
+                <!-- 卡片: pty 替换 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16"/>
+                        <path d="M4 20l4.586-4.586a2 2 0 012.828 0L16 20"/>
+                        <path d="M15 7h3a2 2 0 012 2v9a2 2 0 01-2 2h-3"/>
+                        <rect x="2" y="10" width="4" height="6" rx="1"/>
+                      </svg>
+                    </span>
+                    <span>键盘模拟 · pty 替换</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="serial-row">
+                      <label class="serial-label">目标串口</label>
+                      <input
+                        type="text"
+                        v-model="ptyDevice"
+                        class="serial-input serial-input-lg"
+                        placeholder="/dev/ttyS7"
+                      />
+                      <button class="serial-mini-btn" @click="loadPtyStatus" :disabled="ptyBusy">查询状态</button>
+                      <button class="serial-mini-btn" @click="deployPtyTools" :disabled="ptyBusy">部署工具</button>
+                    </div>
 
-                    <!-- ============ 方案 B：键盘模拟（pty 替换） ============ -->
-                    <template v-else>
-                      <div class="serial-row">
-                        <label class="serial-label">目标串口</label>
-                        <input
-                          type="text"
-                          v-model="ptyDevice"
-                          class="serial-input serial-input-lg"
-                          placeholder="/dev/ttyS7"
-                        />
-                        <button class="serial-mini-btn" @click="loadPtyStatus" :disabled="ptyBusy">查询状态</button>
-                        <button class="serial-mini-btn" @click="deployPtyTools" :disabled="ptyBusy">部署工具</button>
-                      </div>
+                    <!-- pty 状态 -->
+                    <div class="pty-state">
+                      <span class="pty-state-item">
+                        节点类型：
+                        <b :class="ptyNodeType === 'pty' ? 'ok' : (ptyNodeType === 'serial' ? 'warn' : '')">
+                          {{ ptyNodeType === 'pty' ? 'pty（已替换）' : (ptyNodeType === 'serial' ? '真实串口' : '未知') }}
+                        </b>
+                      </span>
+                      <span class="pty-state-item">注入进程：{{ ptyRunning ? '运行中 ' + ptyPid : '未运行' }}</span>
+                      <span class="pty-state-item">App 持有：{{ ptyAppHolds ? '是' : '否' }}</span>
+                      <span v-if="ptyLeftover" class="pty-state-item err">残留挂载：{{ ptyLeftover }}</span>
+                    </div>
 
-                      <!-- pty 状态 -->
-                      <div class="pty-state">
-                        <span class="pty-state-item">
-                          节点类型：
-                          <b :class="ptyNodeType === 'pty' ? 'ok' : (ptyNodeType === 'serial' ? 'warn' : '')">
-                            {{ ptyNodeType === 'pty' ? 'pty（已替换）' : (ptyNodeType === 'serial' ? '真实串口' : '未知') }}
-                          </b>
-                        </span>
-                        <span class="pty-state-item">注入进程：{{ ptyRunning ? '运行中 ' + ptyPid : '未运行' }}</span>
-                        <span class="pty-state-item">App 持有：{{ ptyAppHolds ? '是' : '否' }}</span>
-                        <span v-if="ptyLeftover" class="pty-state-item err">残留挂载：{{ ptyLeftover }}</span>
-                      </div>
+                    <div class="serial-actions">
+                      <button
+                        class="serial-stream-btn"
+                        :class="{ active: ptyRunning }"
+                        @click="controlPty(ptyRunning ? 'stop' : 'start')"
+                        :disabled="ptyBusy || !selectedDevice"
+                      >{{ ptyBusy ? '处理中...' : (ptyRunning ? '停止 pty 替换' : '启动 pty 替换') }}</button>
+                    </div>
 
-                      <div class="serial-actions">
-                        <button
-                          class="serial-stream-btn"
-                          :class="{ active: ptyRunning }"
-                          @click="controlPty(ptyRunning ? 'stop' : 'start')"
-                          :disabled="ptyBusy || !selectedDevice"
-                        >{{ ptyBusy ? '处理中...' : (ptyRunning ? '停止 pty 替换' : '启动 pty 替换') }}</button>
-                      </div>
+                    <div class="serial-hint serial-hint-block">
+                      提示：pty 替换对已打开的串口无效，启动时会自动重启目标 App，
+                      让它重新打开串口拿到 pty。启动后再点按键注入不会重启 App。
+                      停止后设备节点自动恢复为真实串口。
+                    </div>
+                  </div>
+                </div>
 
-                      <div class="serial-hint serial-hint-block">
-                        提示：pty 替换对已打开的串口无效，启动时会自动重启目标 App，
-                        让它重新打开串口拿到 pty。启动后再点按键注入不会重启 App。
-                        停止后设备节点自动恢复为真实串口。
-                      </div>
+                <!-- 卡片: 按键注入 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <rect x="2" y="6" width="20" height="12" rx="2"/>
+                        <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>
+                      </svg>
+                    </span>
+                    <span>按键注入</span>
+                  </div>
+                  <div class="card-body">
+                    <!-- 序列显示 -->
+                    <div class="serial-seq-list">
+                      <span v-if="keySequence.length === 0" class="serial-seq-empty">
+                        点击下方按键即可依次加入序列，可重复点击同一个键
+                      </span>
+                      <span
+                        v-for="(k, idx) in keySequence"
+                        :key="idx"
+                        class="serial-seq-item"
+                      >
+                        <span class="serial-seq-idx">{{ idx + 1 }}</span>
+                        <span>{{ keyFunctionText(k) }}</span>
+                        <button class="serial-seq-del" @click="removeKeyAt(idx)">×</button>
+                      </span>
+                    </div>
 
-                      <!-- 按键面板 -->
-                      <div class="serial-subtitle">
-                        按键注入
-                        <span class="serial-subtitle-hint">点击选择（可多选），再点「应用按键」</span>
-                      </div>
-                      <div class="key-grid">
-                        <button
-                          v-for="k in keyList"
-                          :key="k.name"
-                          class="key-cell"
-                          :class="{ selected: selectedKeys.includes(k.name) }"
-                          :disabled="keyInjectBusy || !selectedDevice"
-                          @click="toggleKey(k.name)"
-                          :title="`键值 ${k.value} · 帧 ${buildKeyFrame(k.value)}`"
-                        >
-                          <span class="key-cell-label">{{ KEY_LABELS[k.name] || k.name }}</span>
-                          <span class="key-cell-value">{{ k.value }}</span>
-                        </button>
-                      </div>
+                    <div class="serial-key-grid">
+                      <button
+                        v-for="k in keyList"
+                        :key="k.name"
+                        class="serial-key-btn"
+                        :disabled="keyInjectBusy || !selectedDevice"
+                        @click="appendKey(k.name)"
+                        :title="`${k.desc || k.name} · 键值 ${k.value} · 帧 ${buildKeyFrame(k.value)}`"
+                      >
+                        <span class="serial-key-btn-label">{{ k.label || k.name }}</span>
+                        <span class="serial-key-btn-value">{{ k.desc || k.name }}</span>
+                      </button>
+                    </div>
 
-                      <div class="serial-actions">
-                        <button
-                          class="check-button"
-                          @click="applyKeys"
-                          :disabled="keyInjectBusy || !selectedDevice || selectedKeys.length === 0"
-                        >{{ keyInjectBusy ? '注入中...' : '应用按键' }}</button>
-                        <button
-                          class="serial-mini-btn"
-                          @click="selectedKeys = []"
-                          :disabled="keyInjectBusy || selectedKeys.length === 0"
-                        >清空选择</button>
-                      </div>
+                    <div class="serial-actions">
+                      <button
+                        class="check-button"
+                        @click="applyKeys"
+                        :disabled="keyInjectBusy || !selectedDevice || keySequence.length === 0"
+                      >{{ keyInjectBusy ? '注入中...' : '注入序列' }}</button>
+                      <button
+                        class="serial-mini-btn"
+                        @click="clearKeySequence"
+                        :disabled="keyInjectBusy || keySequence.length === 0"
+                      >清空序列</button>
+                    </div>
+                  </div>
+                </div>
+                </template>
 
-                      <pre v-if="keyInjectOutput" class="serial-output">{{ keyInjectOutput }}</pre>
-                      <pre v-if="ptyLog" class="serial-output">{{ ptyLog }}</pre>
-                    </template>
-
-                    <!-- 提示（两个方案共用） -->
+                <!-- 卡片: 执行日志 -->
+                <div v-if="serialOutput || serialStreamLog || keyInjectOutput || ptyLog || serialMessage" class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <polyline points="4 17 10 11 4 5"/>
+                        <line x1="12" y1="19" x2="20" y2="19"/>
+                      </svg>
+                    </span>
+                    <span>执行日志</span>
+                  </div>
+                  <div class="card-body">
                     <div v-if="serialMessage" class="serial-msg" :class="serialMessageType">
                       {{ serialMessage }}
                     </div>
+                    <pre v-if="serialOutput" class="serial-output">{{ serialOutput }}</pre>
+                    <pre v-if="serialStreamLog" class="serial-output">{{ serialStreamLog }}</pre>
+                    <pre v-if="keyInjectOutput" class="serial-output">{{ keyInjectOutput }}</pre>
+                    <pre v-if="ptyLog" class="serial-output">{{ ptyLog }}</pre>
                   </div>
                 </div>
               </div>
