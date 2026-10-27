@@ -489,6 +489,7 @@ let scriptDecoder: VideoDecoder | null = null
 let scriptCodecConfig: Uint8Array | null = null
 let scriptMeta = { width: 1080, height: 2340 }
 let scriptPointerActive = false
+let scriptRemotePressing = false
 let scriptPressStart = { x: 0, y: 0, time: 0 }
 let scriptLongPressTimer: any = null
 let scriptMoved = false
@@ -614,7 +615,7 @@ watch(selectedDevice, async (deviceId) => {
   }
 })
 
-// ---------- 录制：点/拖/长按自动分类 ----------
+// ---------- 录制：点/拖/长按自动分类；非录制：触控直接注入设备 ----------
 
 const canvasPoint = (ev: PointerEvent) => {
   const cv = scriptCanvasRef.value!
@@ -625,12 +626,34 @@ const canvasPoint = (ev: PointerEvent) => {
   }
 }
 
+// 非录制模式下把触控事件直接同步到设备（走 mirror 通道，同批量投屏）
+const scriptSendTouch = (action: number, p: { x: number; y: number }) => {
+  if (scriptWs && scriptWs.readyState === WebSocket.OPEN) {
+    scriptWs.send(JSON.stringify({
+      type: 'mirror',
+      event: {
+        kind: 'touch', action,
+        x: p.x, y: p.y,
+        w: scriptMeta.width, h: scriptMeta.height,
+      },
+    }))
+  }
+}
+
 const scriptOnPointerDown = (ev: PointerEvent) => {
-  if (!scriptRecording.value || !scriptStreaming.value) return
+  if (!scriptStreaming.value) return
   ev.preventDefault()
+  const p = canvasPoint(ev)
+  if (!scriptRecording.value) {
+    // 远控模式：直接注入
+    try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+    scriptRemotePressing = true
+    scriptSendTouch(0, p)
+    return
+  }
+  // 录制模式：开始判定点/拖/长按
   scriptPointerActive = true
   scriptMoved = false
-  const p = canvasPoint(ev)
   scriptPressStart = { x: p.x, y: p.y, time: Date.now() }
   // 长按计时：600ms 未移动且未松开 → 长按步骤
   scriptLongPressTimer = setTimeout(() => {
@@ -647,8 +670,14 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
 }
 
 const scriptOnPointerMove = (ev: PointerEvent) => {
-  if (!scriptPointerActive) return
+  if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
+  if (!scriptRecording.value) {
+    // 远控模式：移动事件注入（按下期间才有意义）
+    if (scriptRemotePressing) scriptSendTouch(2, p)
+    return
+  }
+  if (!scriptPointerActive) return
   const dist = Math.hypot(p.x - scriptPressStart.x, p.y - scriptPressStart.y)
   if (dist > 30) {
     scriptMoved = true
@@ -657,10 +686,17 @@ const scriptOnPointerMove = (ev: PointerEvent) => {
 }
 
 const scriptOnPointerUp = (ev: PointerEvent) => {
+  if (!scriptStreaming.value) return
+  const p = canvasPoint(ev)
+  if (!scriptRecording.value) {
+    // 远控模式：抬起注入
+    if (scriptRemotePressing) scriptSendTouch(1, p)
+    scriptRemotePressing = false
+    return
+  }
   if (!scriptPointerActive) return
   clearTimeout(scriptLongPressTimer)
   scriptPointerActive = false
-  const p = canvasPoint(ev)
   const elapsed = Date.now() - scriptPressStart.time
   if (scriptMoved) {
     // 拖动 → 滑动步骤
@@ -3938,6 +3974,7 @@ button.batch-remote-tile-tag:disabled.active {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  cursor: pointer;
 }
 
 .script-canvas.recording {
