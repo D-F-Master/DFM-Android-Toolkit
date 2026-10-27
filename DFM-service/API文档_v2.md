@@ -975,6 +975,87 @@
 
 ---
 
+## 四、模拟脚本接口
+
+脚本保存为 JSON 文件（`data/scripts/{name}.json`），数据结构：
+
+```json
+{
+  "name": "脚本名",
+  "repeat": 1,
+  "steps": [
+    {
+      "type": "tap",
+      "x1": 540, "y1": 960,
+      "x2": 540, "y2": 1200,
+      "duration": 800,
+      "interval": 500,
+      "count": 1
+    }
+  ]
+}
+```
+
+**步骤字段说明**:
+- `type`: 操作类型 — `tap`（点击）/ `swipe`（滑动）/ `longpress`（长按）
+- `x1, y1`: 起点（或点击点）设备坐标；`x2, y2`: 滑动终点（仅 swipe）
+- `duration`: 长按时长 ms（仅 longpress）
+- `interval`: 该步执行间隔 ms（步与步之间、同一步多次之间的等待）
+- `count`: 该步执行次数
+
+### 1. 保存脚本
+**接口**: `POST /api/device/script/save`  
+**描述**: 保存脚本到服务端  
+**请求体**:
+```json
+{"name": "脚本名", "repeat": 1, "steps": []}
+```
+**响应**:
+```json
+{"code": 200, "message": "success", "data": {"name": "脚本名", "path": "..."}}
+```
+**注意**: 步骤为空返回 400；脚本名会做文件名安全过滤
+
+### 2. 脚本列表
+**接口**: `POST /api/device/script/list`  
+**描述**: 列出所有已保存脚本  
+**请求体**: 无  
+**响应**:
+```json
+{"code": 200, "message": "success", "data": [{"name": "脚本名", "repeat": 1, "stepCount": 3}]}
+```
+
+### 3. 读取脚本
+**接口**: `POST /api/device/script/load`  
+**描述**: 读取单个脚本完整内容  
+**请求体**: `{"name": "脚本名"}`  
+**响应**: `{"code": 200, "message": "success", "data": {完整脚本JSON}}`  
+**注意**: 不存在返回 404
+
+### 4. 删除脚本
+**接口**: `POST /api/device/script/delete`  
+**描述**: 删除指定脚本  
+**请求体**: `{"name": "脚本名"}`
+
+### 5. 执行脚本
+**接口**: `POST /api/device/script/run`  
+**描述**: 在指定设备上回放脚本（异步入队，立即返回）  
+**请求体**:
+```json
+{"deviceId": "device_serial_number", "name": "脚本名", "repeat": 3}
+```
+**参数说明**:
+- `deviceId`: 设备ID（必填）
+- `name`: 脚本名（必填）
+- `repeat`: 重复轮数（可选，不传用脚本保存的 repeat）
+
+**注意**:
+- 执行时临时建立 scrcpy 注入会话，跑完自动销毁
+- 设备不在线返回 400，脚本不存在返回 404
+- 回放顺序：步骤顺序 → 每步 count 次（步间 interval）→ 共 repeat 轮
+
+---
+
 ## 注意事项
 
 1. **所有接口均使用POST方法**
@@ -997,6 +1078,7 @@
 
 ### v2.4.0
 - 新增日志抓取接口 `POST /api/device/logs/capture/start` / `stop`（持续抓取前台应用日志，保存到 D:\log\{SN}\{时间}.log）
+- 新增模拟脚本接口：`POST /api/device/script/save|list|load|delete|run`（脚本保存/回放执行）
 
 ### v2.3.0
 - 新增创建文件接口 `POST /api/device/files/create`
