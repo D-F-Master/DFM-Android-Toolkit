@@ -550,12 +550,13 @@ const startScriptStream = () => {
   if (!selectedDevice.value || scriptWs) return
   scriptWsStatus.value = '连接中'
   const wsUrl = API_BASE.value.replace(/^http/, 'ws') + '/ws/remote'
-  scriptWs = new WebSocket(wsUrl)
-  scriptWs.binaryType = 'arraybuffer'
-  scriptWs.onopen = () => {
-    scriptWs!.send(JSON.stringify({ type: 'start', devices: [selectedDevice.value] }))
+  const thisWs = new WebSocket(wsUrl)
+  scriptWs = thisWs
+  thisWs.binaryType = 'arraybuffer'
+  thisWs.onopen = () => {
+    thisWs.send(JSON.stringify({ type: 'start', devices: [selectedDevice.value] }))
   }
-  scriptWs.onmessage = (ev) => {
+  thisWs.onmessage = (ev) => {
     if (typeof ev.data === 'string') {
       const msg = JSON.parse(ev.data)
       if (msg.type === 'ready' && msg.devices?.length) {
@@ -573,10 +574,14 @@ const startScriptStream = () => {
       scriptHandleBinary(ev.data as ArrayBuffer)
     }
   }
-  scriptWs.onclose = () => {
-    scriptStreaming.value = false
-    scriptWsStatus.value = '未连接'
-    scriptWs = null
+  thisWs.onclose = () => {
+    // 只有当前连接断开才算真断开：切设备时旧 ws 的 close 是异步触发的，
+    // 可能晚于新 ws 创建，不能把新连接的引用/状态误清掉
+    if (scriptWs === thisWs) {
+      scriptStreaming.value = false
+      scriptWsStatus.value = '未连接'
+      scriptWs = null
+    }
   }
 }
 
@@ -609,6 +614,12 @@ watch(activeTab, async (tab) => {
 // 切换设备时重连屏幕流
 watch(selectedDevice, async (deviceId) => {
   stopScriptStream()
+  // 清掉旧设备残留画面，避免新流接入前显示上一台设备的内容
+  const cv = scriptCanvasRef.value
+  if (cv) {
+    const ctx = cv.getContext('2d')
+    ctx?.clearRect(0, 0, cv.width, cv.height)
+  }
   if (deviceId && activeTab.value === 'script') {
     await nextTick()
     startScriptStream()
