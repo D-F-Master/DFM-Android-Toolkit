@@ -4149,6 +4149,12 @@ button.batch-remote-tile-tag:disabled.active {
   overflow: hidden;
 }
 
+/* 步骤列表弹性占满剩余空间，底栏（保存/执行/重复）始终贴底 */
+.script-list-section .script-actions {
+  margin-top: auto;
+  padding-top: 10px;
+}
+
 .script-list-header {
   display: flex;
   align-items: center;
@@ -4184,8 +4190,7 @@ button.batch-remote-tile-tag:disabled.active {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  /* 步骤多时固定区域内部滚动，列表不把面板和底栏撑走 */
-  max-height: 260px;
+  /* 步骤多时内部滚动，列表不把面板和底栏撑走 */
   scrollbar-width: thin;
 }
 
