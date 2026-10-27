@@ -107,16 +107,13 @@ class SerialPtyRequest(BaseModel):
     deviceId: str
     device: str = "/dev/ttyS7"
     action: str = "status"      # start | stop | status
-    frames: str = ""            # 逗号分隔的 hex 帧序列，如 5503050207,5503051116
-    interval: int = 1200        # 帧间隔（毫秒）
-    count: int = 0              # 循环轮数，0 = 无限
     restartApp: bool = True     # 启动后是否重启目标 App（pty 替换必须重启才生效）
     packageName: str = DEFAULT_TARGET_APP
     activity: str = DEFAULT_APP_ACTIVITY
 
 
 class SerialKeyRequest(BaseModel):
-    """方案 B：按键注入（keyinject 直接写 pty slave）"""
+    """方案 B：按键注入（重启 pty-inject 循环注入指定帧）"""
     deviceId: str
     device: str = "/dev/ttyS7"
     keys: str = ""              # 逗号分隔的按键名/键值，如 1,menu,enter
@@ -125,6 +122,7 @@ class SerialKeyRequest(BaseModel):
     baud: int = 38400
     delay: int = 300
     repeat: int = 1
+    interval: int = 1000        # 帧注入间隔（毫秒）
 
 
 def _get_local_writer_path() -> str:
@@ -582,6 +580,10 @@ def _stream_status(device_id: str, device: str, prefix: str) -> dict:
 
 # 设备端 pty-inject 日志
 PTY_LOG = f"{DEVICE_BIN_DIR}/pty-inject.log"
+# 循环注入的帧间隔（毫秒）
+PINJECT_INTERVAL_MS = 1500
+# 默认注入帧（数字 1，键值 2）
+DEFAULT_INJECT_FRAME = "5503050207"
 
 # 可注入的按键名 -> App 内部键值（与 keyinject 的 KEYS 表一致）
 KEY_VALUES = {
@@ -708,8 +710,53 @@ def _pty_status(device_id: str, device: str, prefix: str) -> dict:
     }
 
 
+def _find_sleep_pids(device_id: str, prefix: str) -> List[str]:
+    """查找为撑住 pty-inject stdin 而启动的 sleep 进程 pid"""
+    result = _run_adb(device_id, ["shell", f"{prefix}ps -A -o PID,ARGS"], timeout=10)
+    if not result["stdout"].strip():
+        return []
+    pids = []
+    for line in result["stdout"].splitlines():
+        parts = line.strip().split()
+        # 形如 " 29245 sleep 86400"
+        if len(parts) >= 2 and parts[1] == "sleep" and parts[2] == "86400":
+            pids.append(parts[0])
+    return pids
+
+
+def _start_pty_inject(device_id: str, device: str, prefix: str, frames: List[str]) -> dict:
+    """
+    启动 pty-inject 并循环注入指定帧
+
+    pty 替换与注入必须在同一进程内完成：pty-inject 退出时会把设备节点
+    恢复成真实串口，App 握着的 fd 就失效了。
+    """
+    _stop_pty(device_id, device, prefix)
+    time.sleep(0.3)
+
+    cmd = [
+        DEVICE_PTY_INJECT,
+        "--dev", device,
+        "--inject-list", ",".join(frames),
+        "--interval", str(PINJECT_INTERVAL_MS),
+    ]
+    shell_cmd = " ".join(cmd)
+    if prefix:
+        shell_cmd = f"{prefix}{shell_cmd}"
+    full_cmd = f"{shell_cmd} > {PTY_LOG} 2>&1 < /dev/null &"
+    _run_adb(device_id, ["shell", full_cmd], timeout=15)
+    time.sleep(1.5)
+
+    return _pty_status(device_id, device, prefix)
+
+
 def _stop_pty(device_id: str, device: str, prefix: str) -> dict:
-    """停止 pty-inject 并清理可能的残留挂载"""
+    """
+    停止 pty-inject 并清理可能的残留挂载
+
+    pty-inject 由 `sleep 86400 | pty-inject` 管道启动，停止时要一并干掉
+    撑住 stdin 的 sleep 进程，否则会留下孤儿进程。
+    """
     pids = _find_pty_pids(device_id, prefix)
     for pid in pids:
         _run_adb(device_id, ["shell", f"{prefix}kill -TERM {pid}"], timeout=10)
@@ -719,6 +766,10 @@ def _stop_pty(device_id: str, device: str, prefix: str) -> dict:
         time.sleep(0.2)
         if not _find_pty_pids(device_id, prefix):
             break
+
+    # 清理撑住 stdin 的 sleep 进程（pty-inject 退出后管道会断，但 sleep 仍在）
+    for pid in _find_sleep_pids(device_id, prefix):
+        _run_adb(device_id, ["shell", f"{prefix}kill -TERM {pid}"], timeout=10)
 
     # 兜底清理残留挂载（异常退出时 pty-inject 来不及 umount）
     name = device.rsplit("/", 1)[-1]
@@ -818,26 +869,10 @@ def pty_control(request: SerialPtyRequest):
                 if not deploy_result["success"]:
                     return {"code": 500, "message": deploy_result["message"], "data": None}
 
-            # 已有实例先停掉，避免挂载冲突
-            _stop_pty(request.deviceId, request.device, prefix)
-            time.sleep(0.3)
-
-            frames = [f.strip() for f in (request.frames or "").split(",") if f.strip()]
-            cmd = [DEVICE_PTY_INJECT, "--dev", request.device]
-            if frames:
-                cmd += ["--inject-list", ",".join(frames)]
-            cmd += ["--interval", str(max(0, request.interval))]
-            if request.count > 0:
-                cmd += ["--count", str(request.count)]
-
-            shell_cmd = " ".join(cmd)
-            if prefix:
-                shell_cmd = f"{prefix}{shell_cmd}"
-            full_cmd = f"{shell_cmd} > {PTY_LOG} 2>&1 < /dev/null &"
-            _run_adb(request.deviceId, ["shell", full_cmd], timeout=15)
-            time.sleep(1.5)
-
-            status = _pty_status(request.deviceId, request.device, prefix)
+            # 启动注入进程（pty 替换与注入必须同一进程：
+            # pty-inject 一旦退出，设备节点就恢复成真实串口）
+            status = _start_pty_inject(
+                request.deviceId, request.device, prefix, [DEFAULT_INJECT_FRAME])
             if not status["running"]:
                 return {
                     "code": 500,
@@ -876,12 +911,98 @@ def pty_control(request: SerialPtyRequest):
         return {"code": 500, "message": f"pty 控制失败: {str(e)}", "data": None}
 
 
+def _build_key_frame(key_value: int) -> str:
+    """
+    构造键盘协议帧：55 | LEN(03) | 05 | KEY | CRC
+
+    CRC = (0x05 + KEY) & 0xFF（接收侧不校验，但长度判断依赖它）
+    """
+    key = key_value & 0xFF
+    return "".join([
+        "55", "03", "05",
+        f"{key:02X}",
+        f"{(0x05 + key) & 0xFF:02X}",
+    ])
+
+
+def _lookup_key(raw: str) -> Optional[int]:
+    """按键名或键值 -> 内部键值，无法识别返回 None"""
+    name = raw.strip()
+    if not name:
+        return None
+    if name.lower() in KEY_VALUES:
+        return KEY_VALUES[name.lower()]
+    # 纯数字：1..244 直接当键值；0..9 按键名处理
+    if name.isdigit():
+        value = int(name)
+        if 0 <= value <= 9:
+            return KEY_VALUES[name]
+        if 1 <= value <= 244:
+            return value
+    if name.lower().startswith("0x"):
+        try:
+            value = int(name, 16)
+            if 0 <= value <= 255:
+                return value
+        except ValueError:
+            return None
+    return None
+
+
+def _key_frames_from_request(request: SerialKeyRequest) -> List[str]:
+    """把按键参数转成协议帧列表"""
+    if request.keys:
+        frames = []
+        for token in request.keys.split(","):
+            value = _lookup_key(token)
+            if value is None:
+                raise ValueError(f"未知按键: {token.strip()}")
+            frames.append(_build_key_frame(value))
+        return frames
+
+    if request.seq:
+        try:
+            if "-" in request.seq:
+                lo_str, hi_str = request.seq.split("-", 1)
+                lo, hi = int(lo_str), int(hi_str)
+            else:
+                lo = hi = int(request.seq)
+        except ValueError:
+            raise ValueError(f"键值范围格式错误: {request.seq}")
+        return [_build_key_frame(v) for v in range(lo, hi + 1) if 0 <= v <= 255]
+
+    if request.mapFile:
+        # 布局文件由设备端 keyinject 解析，这里先读取内容自行构造帧
+        result = _run_adb(
+            request.deviceId,
+            ["shell", f"cat {request.mapFile}"],
+            timeout=15,
+        )
+        if not result["success"] or not result["stdout"].strip():
+            raise ValueError(f"无法读取布局文件: {request.mapFile}")
+        frames = []
+        for line in result["stdout"].splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            for token in line.replace(",", " ").split():
+                value = _lookup_key(token)
+                if value is None:
+                    raise ValueError(f"布局文件中的按键无效: {token}")
+                frames.append(_build_key_frame(value))
+        return frames
+
+    raise ValueError("未指定按键（keys / mapFile / seq）")
+
+
 @router.post("/device/serial/keys")
 def inject_keys(request: SerialKeyRequest):
     """
-    注入按键帧（keyinject）
+    注入按键帧
 
-    走 keyinject 直接写 pty slave，App 只要还握着该 pty 就能收到，无需重启。
+    实现方式：重启 pty-inject 的循环注入（--inject-list），由它写 pty master 端。
+    注意不能直接用 keyinject 写 pty slave —— 那是同一端的两端，
+    App 读的是 slave，写 slave 的数据到不了 App（实测 keyBack 无输出）。
     """
     try:
         if not request.deviceId:
@@ -889,49 +1010,49 @@ def inject_keys(request: SerialKeyRequest):
 
         prefix = _root_prefix(request.deviceId)
 
-        if not _tool_exists(request.deviceId, DEVICE_KEYINJECT):
+        if not _tool_exists(request.deviceId, DEVICE_PTY_INJECT):
             deploy_result = _deploy_pty_tools(request.deviceId)
             if not deploy_result["success"]:
                 return {"code": 500, "message": deploy_result["message"], "data": None}
 
-        cmd = [DEVICE_KEYINJECT, "--dev", request.device]
-        cmd += ["--baud", str(request.baud)]
-        cmd += ["--delay", str(max(0, request.delay))]
-        cmd += ["--repeat", str(max(1, request.repeat))]
+        try:
+            frames = _key_frames_from_request(request)
+        except ValueError as e:
+            return {"code": 400, "message": str(e), "data": None}
+        if not frames:
+            return {"code": 400, "message": "未指定按键", "data": None}
 
-        if request.mapFile:
-            cmd += ["--map", request.mapFile]
-        elif request.seq:
-            cmd += ["--seq", request.seq]
-        elif request.keys:
-            cmd += ["--keys", request.keys]
-        else:
-            return {"code": 400, "message": "未指定按键（keys / mapFile / seq）", "data": None}
+        # 重启注入进程（pty 重建后 App 的 fd 会失效，必须一并重启 App）
+        status = _start_pty_inject(
+            request.deviceId, request.device, prefix, frames)
+        if not status["running"]:
+            return {
+                "code": 500,
+                "message": "注入进程启动失败",
+                "data": {**status, "frames": frames},
+            }
+        if status["nodeType"] != "pty":
+            return {
+                "code": 500,
+                "message": "pty 替换未生效，设备节点仍是真实串口",
+                "data": {**status, "frames": frames},
+            }
 
-        shell_cmd = " ".join(cmd)
-        if prefix:
-            shell_cmd = f"{prefix}{shell_cmd}"
-
-        result = _run_adb(request.deviceId, ["shell", shell_cmd], timeout=60)
-        output = (result["stdout"] or "") + (result["stderr"] or "")
-        exit_code = result["exitCode"]
-
-        # keyinject 退出码：2=用法错误(未知按键) 3=打开串口失败 5=写入失败
-        if result["success"]:
-            code, message = 200, "success"
-        elif exit_code == 2:
-            code, message = 400, "按键参数无效（未知按键名或键值超出范围）"
-        elif exit_code == 3:
-            code, message = 400, "打开串口失败，请确认 pty 替换已生效"
-        else:
-            code, message = 500, "按键注入失败"
+        restart_info = _restart_app(
+            request.deviceId, DEFAULT_TARGET_APP, DEFAULT_APP_ACTIVITY)
+        time.sleep(4)
+        status = _pty_status(request.deviceId, request.device, prefix)
 
         return {
-            "code": code,
-            "message": message,
+            "code": 200,
+            "message": f"已注入 {len(frames)} 个按键帧",
             "data": {
-                "output": output.strip(),
-                "exitCode": exit_code,
+                "frames": frames,
+                "running": True,
+                "pid": status["pid"],
+                "nodeType": status["nodeType"],
+                "appHolds": status["appHolds"],
+                "appRestart": restart_info,
             },
         }
     except Exception as e:
