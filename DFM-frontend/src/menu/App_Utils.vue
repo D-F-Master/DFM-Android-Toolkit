@@ -4414,6 +4414,13 @@ button.batch-remote-tile-tag:disabled.active {
               </button>
               <button 
                 class="tab-button" 
+                :class="{ active: activeTab === 'serial' }"
+                @click="activeTab = 'serial'"
+              >
+                模拟串口
+              </button>
+              <button 
+                class="tab-button" 
                 :class="{ active: activeTab === 'monitor' }"
                 @click="activeTab = 'monitor'"
               >
@@ -5044,6 +5051,24 @@ button.batch-remote-tile-tag:disabled.active {
                         <button class="script-action-btn" @click="repeatRun" :disabled="scriptRunning || scriptSaving">重复</button>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="activeTab === 'serial'" class="keys-page">
+                <!-- 模拟串口页：功能占位，后续添加 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2z"/>
+                      </svg>
+                    </span>
+                    <span>模拟串口</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="loading-text" style="padding: 48px 24px; text-align: center;">功能开发中，敬请期待</div>
                   </div>
                 </div>
               </div>
