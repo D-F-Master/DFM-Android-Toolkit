@@ -593,6 +593,24 @@ KEY_VALUES = {
     "f1": 240, "f2": 241, "up": 242, "down": 243, "esc": 244,
 }
 
+# 按键名 -> 显示文字（数字键直接显示数字，符号键显示符号或功能名）
+# 注意数字键的键值是错位的：键值 1 对应数字 0，键值 10 对应数字 9
+KEY_LABELS = {
+    "0": "0", "1": "1", "2": "2", "3": "3", "4": "4",
+    "5": "5", "6": "6", "7": "7", "8": "8", "9": "9",
+    "dot": ".", "add": "+", "enter": "确认", "menu": "菜单", "sub": "-",
+    "f1": "F1", "f2": "设置", "up": "上", "down": "下", "esc": "取消",
+}
+
+# 按键名 -> 功能说明（来自 com.yqsh.consume 的 KeyFeilds 常量表）
+KEY_DESCRIPTIONS = {
+    "0": "数字0", "1": "数字1", "2": "数字2", "3": "数字3", "4": "数字4",
+    "5": "数字5", "6": "数字6", "7": "数字7", "8": "数字8", "9": "数字9",
+    "dot": "小数点", "add": "加号", "enter": "确认/提交", "menu": "维护菜单",
+    "sub": "减号/退格", "f1": "F1（无动作）", "f2": "设置菜单",
+    "up": "上翻页", "down": "下翻页", "esc": "取消/返回",
+}
+
 
 def _get_local_tool(name: str) -> str:
     """获取 lib/serial/ 下指定工具的完整路径"""
@@ -1122,7 +1140,15 @@ def list_keys(request: SerialPortsRequest):
             "code": 200,
             "message": "success",
             "data": {
-                "keys": [{"name": name, "value": value} for name, value in KEY_VALUES.items()],
+                "keys": [
+                    {
+                        "name": name,
+                        "value": value,
+                        "label": KEY_LABELS.get(name, name),
+                        "desc": KEY_DESCRIPTIONS.get(name, name),
+                    }
+                    for name, value in KEY_VALUES.items()
+                ],
             },
         }
     except Exception as e:
