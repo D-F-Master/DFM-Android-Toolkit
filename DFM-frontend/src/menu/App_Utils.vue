@@ -3918,7 +3918,11 @@ button.batch-remote-tile-tag:disabled.active {
 .script-layout {
   display: flex;
   gap: 12px;
-  height: 100%;
+  /* 锁定视口高度：内容不撑开外层滚动容器，避免窗口变小时组件抖动 */
+  height: calc(100vh - 220px);
+  min-height: 400px;
+  padding-bottom: 10px;
+  box-sizing: border-box;
 }
 
 .script-screen-panel {
@@ -3929,6 +3933,8 @@ button.batch-remote-tile-tag:disabled.active {
   border: 1px solid #e8eaed;
   border-radius: 12px;
   overflow: hidden;
+  /* 面板高度稳定，内部 canvas 不随内容波动 */
+  min-width: 0;
 }
 
 .script-screen-header {
@@ -3967,11 +3973,16 @@ button.batch-remote-tile-tag:disabled.active {
   background: #1a1f2e;
   position: relative;
   overflow: hidden;
+  /* 锁最小高度，canvas 在剩余空间内等比缩放，不触发布局抖动 */
+  min-height: 0;
 }
 
 .script-canvas {
+  /* 视口内完整可见：宽高都限制在容器内，保持比例 */
   max-width: 100%;
   max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   cursor: pointer;
 }
@@ -3994,9 +4005,11 @@ button.batch-remote-tile-tag:disabled.active {
 
 .script-side-panel {
   width: 300px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
 }
 
 .script-section {
@@ -4107,6 +4120,8 @@ button.batch-remote-tile-tag:disabled.active {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 列表区不收缩到底部按钮被挤出可视区 */
+  overflow: hidden;
 }
 
 .script-list-header {
@@ -4144,6 +4159,18 @@ button.batch-remote-tile-tag:disabled.active {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
+  /* 步骤多时固定区域内部滚动，列表不把面板和底栏撑走 */
+  max-height: 260px;
+  scrollbar-width: thin;
+}
+
+.script-steps-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.script-steps-list::-webkit-scrollbar-thumb {
+  background: #d0d5db;
+  border-radius: 3px;
 }
 
 .script-empty {
