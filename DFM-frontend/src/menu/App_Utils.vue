@@ -459,6 +459,355 @@ const stopBatchRemote = () => {
   batchRemoteStatus.value = ''
 }
 
+// ==================== 模拟脚本 ====================
+
+const scriptCanvasRef = ref<HTMLCanvasElement | null>(null)
+const scriptStreaming = ref(false)
+const scriptWsStatus = ref('未连接')
+const scriptRecording = ref(false)
+const scriptSteps = ref<Array<{
+  type: 'tap' | 'swipe' | 'longpress';
+  x1: number; y1: number;
+  x2?: number; y2?: number;
+  duration?: number;
+  interval: number;
+  count: number;
+}>>([])
+const scriptRunning = ref(false)
+// 每类操作的默认配置（录制时快照进步骤）
+const scriptOpConfig = ref<Record<'tap' | 'swipe' | 'longpress', { interval: number; count: number }>>({
+  tap: { interval: 500, count: 1 },
+  swipe: { interval: 500, count: 1 },
+  longpress: { interval: 500, count: 1 },
+})
+const expandedOpConfig = ref<'tap' | 'swipe' | 'longpress' | null>(null)
+const scriptRepeat = ref(1)
+const scriptSaving = ref(false)
+
+let scriptWs: WebSocket | null = null
+let scriptDecoder: VideoDecoder | null = null
+let scriptCodecConfig: Uint8Array | null = null
+let scriptMeta = { width: 1080, height: 2340 }
+let scriptPointerActive = false
+let scriptPressStart = { x: 0, y: 0, time: 0 }
+let scriptLongPressTimer: any = null
+let scriptMoved = false
+
+const SCRIPT_LONGPRESS_MS = 600
+
+const scriptStepLabel = (step: any): string => {
+  if (step.type === 'tap') return `点击 (${step.x1}, ${step.y1})`
+  if (step.type === 'longpress') return `长按 (${step.x1}, ${step.y1}) ${step.duration}ms`
+  return `滑动 (${step.x1}, ${step.y1}) → (${step.x2}, ${step.y2})`
+}
+
+// ---------- 屏幕流（复用 /ws/remote，单设备） ----------
+
+const scriptHandleBinary = (buf: ArrayBuffer) => {
+  const view = new DataView(buf)
+  const kind = view.getUint8(1)
+  const payload = new Uint8Array(buf, 2)
+  const cv = scriptCanvasRef.value
+  if (!cv) return
+
+  if (kind === 1) {
+    scriptCodecConfig = payload
+    if (scriptDecoder) {
+      try { scriptDecoder.close() } catch { /* ignore */ }
+    }
+    scriptDecoder = new VideoDecoder({
+      output: (frame) => {
+        if (cv.width !== frame.displayWidth) cv.width = frame.displayWidth
+        if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
+        const ctx = cv.getContext('2d')!
+        ctx.drawImage(frame, 0, 0)
+        scriptMeta = { width: frame.displayWidth, height: frame.displayHeight }
+        frame.close()
+      },
+      error: (e) => { scriptWsStatus.value = `解码错误: ${e.message}` },
+    })
+    const codec = batchRemoteCodecFromSps(payload)
+    try {
+      scriptDecoder.configure({ codec, optimizeForLatency: true })
+    } catch { /* codec 异常时等错误回调报 */ }
+  } else if (kind === 2) {
+    const dec = scriptDecoder
+    if (dec && dec.state === 'configured') {
+      const isKey = batchRemoteIsKeyframe(payload)
+      const data = isKey && scriptCodecConfig ? concatU8(scriptCodecConfig, payload) : payload
+      const chunk = new EncodedVideoChunk({
+        type: isKey ? 'key' : 'delta',
+        timestamp: performance.now() * 1000,
+        data,
+      })
+      try { dec.decode(chunk) } catch { /* 队列满时丢弃 */ }
+    }
+  }
+}
+
+const startScriptStream = () => {
+  if (!selectedDevice.value || scriptWs) return
+  scriptWsStatus.value = '连接中'
+  const wsUrl = API_BASE.value.replace(/^http/, 'ws') + '/ws/remote'
+  scriptWs = new WebSocket(wsUrl)
+  scriptWs.binaryType = 'arraybuffer'
+  scriptWs.onopen = () => {
+    scriptWs!.send(JSON.stringify({ type: 'start', devices: [selectedDevice.value] }))
+  }
+  scriptWs.onmessage = (ev) => {
+    if (typeof ev.data === 'string') {
+      const msg = JSON.parse(ev.data)
+      if (msg.type === 'ready' && msg.devices?.length) {
+        scriptMeta = { width: msg.devices[0].width, height: msg.devices[0].height }
+        scriptStreaming.value = true
+        scriptWsStatus.value = '实时'
+      } else if (msg.type === 'meta') {
+        scriptMeta = { width: msg.width, height: msg.height }
+        scriptStreaming.value = true
+        scriptWsStatus.value = '实时'
+      } else if (msg.type === 'error') {
+        scriptWsStatus.value = `错误: ${msg.message}`
+      }
+    } else {
+      scriptHandleBinary(ev.data as ArrayBuffer)
+    }
+  }
+  scriptWs.onclose = () => {
+    scriptStreaming.value = false
+    scriptWsStatus.value = '未连接'
+    scriptWs = null
+  }
+}
+
+const stopScriptStream = () => {
+  if (scriptWs) {
+    try { scriptWs.send(JSON.stringify({ type: 'stop' })) } catch { /* ignore */ }
+    scriptWs.close()
+    scriptWs = null
+  }
+  if (scriptDecoder) {
+    try { scriptDecoder.close() } catch { /* ignore */ }
+    scriptDecoder = null
+  }
+  scriptCodecConfig = null
+  scriptStreaming.value = false
+  scriptWsStatus.value = '未连接'
+  scriptRecording.value = false
+}
+
+// 进入/离开 Tab 时开关屏幕流
+watch(activeTab, async (tab) => {
+  if (tab === 'script') {
+    await nextTick()
+    if (selectedDevice.value) startScriptStream()
+  } else {
+    stopScriptStream()
+  }
+})
+
+// 切换设备时重连屏幕流
+watch(selectedDevice, async (deviceId) => {
+  stopScriptStream()
+  if (deviceId && activeTab.value === 'script') {
+    await nextTick()
+    startScriptStream()
+  }
+})
+
+// ---------- 录制：点/拖/长按自动分类 ----------
+
+const canvasPoint = (ev: PointerEvent) => {
+  const cv = scriptCanvasRef.value!
+  const rect = cv.getBoundingClientRect()
+  return {
+    x: Math.round((ev.clientX - rect.left) * scriptMeta.width / rect.width),
+    y: Math.round((ev.clientY - rect.top) * scriptMeta.height / rect.height),
+  }
+}
+
+const scriptOnPointerDown = (ev: PointerEvent) => {
+  if (!scriptRecording.value || !scriptStreaming.value) return
+  ev.preventDefault()
+  scriptPointerActive = true
+  scriptMoved = false
+  const p = canvasPoint(ev)
+  scriptPressStart = { x: p.x, y: p.y, time: Date.now() }
+  // 长按计时：600ms 未移动且未松开 → 长按步骤
+  scriptLongPressTimer = setTimeout(() => {
+    if (scriptPointerActive && !scriptMoved) {
+      scriptPointerActive = false
+      addScriptStep({
+        type: 'longpress',
+        x1: p.x, y1: p.y,
+        duration: SCRIPT_LONGPRESS_MS + 400,
+        ...scriptOpConfig.value.longpress,
+      })
+    }
+  }, SCRIPT_LONGPRESS_MS)
+}
+
+const scriptOnPointerMove = (ev: PointerEvent) => {
+  if (!scriptPointerActive) return
+  const p = canvasPoint(ev)
+  const dist = Math.hypot(p.x - scriptPressStart.x, p.y - scriptPressStart.y)
+  if (dist > 30) {
+    scriptMoved = true
+    clearTimeout(scriptLongPressTimer)
+  }
+}
+
+const scriptOnPointerUp = (ev: PointerEvent) => {
+  if (!scriptPointerActive) return
+  clearTimeout(scriptLongPressTimer)
+  scriptPointerActive = false
+  const p = canvasPoint(ev)
+  const elapsed = Date.now() - scriptPressStart.time
+  if (scriptMoved) {
+    // 拖动 → 滑动步骤
+    addScriptStep({
+      type: 'swipe',
+      x1: scriptPressStart.x, y1: scriptPressStart.y,
+      x2: p.x, y2: p.y,
+      ...scriptOpConfig.value.swipe,
+    })
+  } else if (elapsed < SCRIPT_LONGPRESS_MS) {
+    // 快速点按 → 点击步骤
+    addScriptStep({
+      type: 'tap',
+      x1: scriptPressStart.x, y1: scriptPressStart.y,
+      ...scriptOpConfig.value.tap,
+    })
+  }
+  // elapsed >= 600ms 且未移动的长按已在 timer 里记录
+}
+
+const addScriptStep = (step: any) => {
+  scriptSteps.value.push(step)
+  showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
+}
+
+const removeScriptStep = (idx: number) => {
+  scriptSteps.value.splice(idx, 1)
+}
+
+const clearScriptSteps = () => {
+  scriptSteps.value = []
+}
+
+const toggleRecording = () => {
+  if (!scriptStreaming.value) {
+    showMessage('屏幕流未连接，无法录制', '提示')
+    return
+  }
+  scriptRecording.value = !scriptRecording.value
+  if (scriptRecording.value) {
+    showNotification('录制已开始：单击记录点击，拖动记录滑动，长按记录长按', 'info')
+  }
+}
+
+// ---------- 操作配置 ----------
+
+const toggleOpConfig = (op: 'tap' | 'swipe' | 'longpress') => {
+  expandedOpConfig.value = expandedOpConfig.value === op ? null : op
+}
+
+// ---------- 保存 / 执行 / 重复 ----------
+
+const saveScript = async () => {
+  if (scriptSteps.value.length === 0) {
+    showMessage('没有步骤可保存，请先录制', '提示')
+    return
+  }
+  showPrompt('请输入脚本名称', async (name?: string) => {
+    if (!name || !name.trim()) return
+    scriptSaving.value = true
+    try {
+      const response = await axios.post(`${API_BASE.value}/api/device/script/save`, {
+        name: name.trim(),
+        repeat: scriptRepeat.value,
+        steps: scriptSteps.value,
+      })
+      if (response.data.code === 200) {
+        showNotification(`脚本「${response.data.data.name}」已保存`, 'success')
+      } else {
+        showNotification('保存失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+    } catch (error: any) {
+      showNotification('保存失败: ' + error.message, 'error')
+    } finally {
+      scriptSaving.value = false
+    }
+  }, '', '保存脚本')
+}
+
+const runScript = async (name?: string, repeat?: number) => {
+  if (!selectedDevice.value) {
+    showMessage('请先选择设备', '提示')
+    return
+  }
+  if (!name) {
+    showMessage('没有可执行的脚本，请先保存', '提示')
+    return
+  }
+  if (scriptRunning.value) {
+    showNotification('已有脚本在执行中', 'error')
+    return
+  }
+  scriptRunning.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/run`, {
+      deviceId: selectedDevice.value,
+      name,
+      repeat,
+    })
+    if (response.data.code === 200) {
+      showNotification(`脚本「${name}」已开始执行（${response.data.data.repeat} 轮）`, 'success')
+    } else {
+      showNotification('执行失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    showNotification('执行失败: ' + error.message, 'error')
+  } finally {
+    scriptRunning.value = false
+  }
+}
+
+// 执行当前未保存的步骤：先自动保存再执行
+const runCurrentSteps = async () => {
+  if (scriptSteps.value.length === 0) {
+    showMessage('没有步骤可执行，请先录制', '提示')
+    return
+  }
+  scriptSaving.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/save`, {
+      name: `_current_${Date.now()}`,
+      repeat: scriptRepeat.value,
+      steps: scriptSteps.value,
+    })
+    if (response.data.code !== 200) {
+      showNotification('临时保存失败: ' + (response.data.message || '未知错误'), 'error')
+      return
+    }
+    await runScript(response.data.data.name, scriptRepeat.value)
+  } finally {
+    scriptSaving.value = false
+  }
+}
+
+// 重复按钮：输入轮数后执行当前步骤
+const repeatRun = () => {
+  showPrompt('请输入重复执行的轮数', (input?: string) => {
+    const n = parseInt(input || '', 10)
+    if (!n || n < 1) {
+      showNotification('请输入大于 0 的整数', 'error')
+      return
+    }
+    scriptRepeat.value = n
+    runCurrentSteps()
+  }, '', '重复执行')
+}
+
 const batchRebootLoading = ref(false)
 const batchInstallLoading = ref(false)
 
@@ -2031,6 +2380,8 @@ onUnmounted(() => {
   disposeMonitorCharts()
   // 关闭批量投屏会话
   stopBatchRemote()
+  // 关闭模拟脚本屏幕流
+  stopScriptStream()
 })
 </script>
 <style scoped>
@@ -3528,6 +3879,334 @@ button.batch-remote-tile-tag:disabled.active {
   }
 }
 
+/* ==================== 模拟脚本页 ==================== */
+.script-layout {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+}
+
+.script-screen-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.script-screen-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e8eaed;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+.script-ws-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: #999;
+}
+
+.script-ws-status.live {
+  color: #2e7d32;
+}
+
+.script-rec-tag {
+  color: #e53935;
+  font-size: 12px;
+  font-weight: 700;
+  animation: capturePulse 1.2s ease-in-out infinite;
+}
+
+.script-screen-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1f2e;
+  position: relative;
+  overflow: hidden;
+}
+
+.script-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.script-canvas.recording {
+  cursor: crosshair;
+  outline: 2px solid #e53935;
+  outline-offset: -2px;
+}
+
+.script-screen-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+}
+
+.script-side-panel {
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.script-section {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.script-record-btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  color: #fff;
+  background: #e53935;
+  transition: all 0.2s ease;
+}
+
+.script-record-btn:hover {
+  background: #d32f2f;
+}
+
+.script-record-btn.active {
+  background: #c62828;
+  animation: capturePulse 1.2s ease-in-out infinite;
+}
+
+.script-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.script-op-row {
+  display: flex;
+  gap: 8px;
+}
+
+.script-op-btn {
+  flex: 1;
+  padding: 8px 0;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  background: #f5f7fa;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  color: #444;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.script-op-btn:hover {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+.script-op-btn.expanded {
+  background: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
+}
+
+.script-op-config {
+  padding: 10px;
+  background: #f8faf8;
+  border: 1px solid #e0e8e0;
+  border-radius: 8px;
+}
+
+.script-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #555;
+}
+
+.script-config-row:last-of-type {
+  margin-bottom: 0;
+}
+
+.script-config-input {
+  width: 90px;
+  padding: 4px 8px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: right;
+}
+
+.script-config-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #999;
+}
+
+.script-list-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.script-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.script-mini-btn {
+  padding: 3px 10px;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  color: #666;
+  cursor: pointer;
+}
+
+.script-mini-btn:hover:not(:disabled) {
+  border-color: #ef9a9a;
+  color: #c62828;
+}
+
+.script-mini-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.script-steps-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.script-empty {
+  padding: 24px 8px;
+  text-align: center;
+  color: #999;
+  font-size: 12px;
+}
+
+.script-step-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.script-step-item:hover {
+  background: #f5f7fa;
+}
+
+.script-step-idx {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.script-step-desc {
+  flex: 1;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.script-step-meta {
+  flex-shrink: 0;
+  color: #999;
+  font-size: 11px;
+}
+
+.script-step-del {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #bbb;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.script-step-del:hover {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.script-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.script-action-btn {
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  border-radius: 8px;
+  background: #4caf50;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.script-action-btn:hover:not(:disabled) {
+  background: #43a047;
+}
+
+.script-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 </style>
 <template>
   <div
@@ -4174,19 +4853,104 @@ button.batch-remote-tile-tag:disabled.active {
               </div>
 
               <div v-if="activeTab === 'script'" class="keys-page">
-                <!-- 模拟脚本页：功能占位，后续添加 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polyline points="4 17 10 11 4 5"/>
-                        <line x1="12" y1="19" x2="20" y2="19"/>
-                      </svg>
-                    </span>
-                    <span>模拟脚本</span>
+                <div class="script-layout">
+                  <!-- 左：屏幕流 -->
+                  <div class="script-screen-panel">
+                    <div class="script-screen-header">
+                      <span>屏幕预览</span>
+                      <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
+                      <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
+                    </div>
+                    <div class="script-screen-body">
+                      <canvas
+                        ref="scriptCanvasRef"
+                        class="script-canvas"
+                        :class="{ recording: scriptRecording }"
+                        @pointerdown="scriptOnPointerDown"
+                        @pointermove="scriptOnPointerMove"
+                        @pointerup="scriptOnPointerUp"
+                        @pointercancel="scriptOnPointerUp"
+                      ></canvas>
+                      <div v-if="!scriptStreaming" class="script-screen-placeholder">
+                        {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
+                      </div>
+                    </div>
                   </div>
-                  <div class="card-body">
-                    <div class="loading-text" style="padding: 48px 24px; text-align: center;">功能开发中，敬请期待</div>
+
+                  <!-- 右：控制区 -->
+                  <div class="script-side-panel">
+                    <!-- 上：录制控制 -->
+                    <div class="script-section">
+                      <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
+                        {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
+                      </button>
+                    </div>
+
+                    <!-- 中：操作按钮 + 配置 -->
+                    <div class="script-section script-ops">
+                      <div class="script-op-row">
+                        <button
+                          class="script-op-btn"
+                          :class="{ expanded: expandedOpConfig === 'tap' }"
+                          @click="toggleOpConfig('tap')"
+                        >点击 ▾</button>
+                        <button
+                          class="script-op-btn"
+                          :class="{ expanded: expandedOpConfig === 'swipe' }"
+                          @click="toggleOpConfig('swipe')"
+                        >滑动 ▾</button>
+                        <button
+                          class="script-op-btn"
+                          :class="{ expanded: expandedOpConfig === 'longpress' }"
+                          @click="toggleOpConfig('longpress')"
+                        >长按 ▾</button>
+                      </div>
+                      <div v-if="expandedOpConfig" class="script-op-config">
+                        <div class="script-config-row">
+                          <span>执行间隔(ms)</span>
+                          <input
+                            type="number"
+                            min="0"
+                            class="script-config-input"
+                            v-model.number="scriptOpConfig[expandedOpConfig].interval"
+                          >
+                        </div>
+                        <div class="script-config-row">
+                          <span>执行次数</span>
+                          <input
+                            type="number"
+                            min="1"
+                            class="script-config-input"
+                            v-model.number="scriptOpConfig[expandedOpConfig].count"
+                          >
+                        </div>
+                        <div class="script-config-hint">修改后录制的步骤将使用该配置</div>
+                      </div>
+                    </div>
+
+                    <!-- 下：脚本列表 + 底部按钮 -->
+                    <div class="script-section script-list-section">
+                      <div class="script-list-header">
+                        <span>脚本步骤（{{ scriptSteps.length }}）</span>
+                        <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
+                      </div>
+                      <div class="script-steps-list">
+                        <div v-if="scriptSteps.length === 0" class="script-empty">
+                          录制模式下在左侧屏幕上操作即可记录步骤
+                        </div>
+                        <div v-for="(step, idx) in scriptSteps" :key="idx" class="script-step-item">
+                          <span class="script-step-idx">{{ idx + 1 }}</span>
+                          <span class="script-step-desc">{{ scriptStepLabel(step) }}</span>
+                          <span class="script-step-meta">{{ step.interval }}ms × {{ step.count }}次</span>
+                          <button class="script-step-del" @click="removeScriptStep(idx)">×</button>
+                        </div>
+                      </div>
+                      <div class="script-actions">
+                        <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
+                        <button class="script-action-btn" @click="runCurrentSteps" :disabled="scriptRunning || scriptSaving">执行</button>
+                        <button class="script-action-btn" @click="repeatRun" :disabled="scriptRunning || scriptSaving">重复</button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
