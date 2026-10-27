@@ -3240,6 +3240,14 @@ button.file-act-btn.delete:hover {
   min-height: 0;
 }
 
+/* 模拟脚本 Tab 需要确定高度的父级链，让 script-page/layout 能撑满剩余空间 */
+.tab-content:has(> .script-page) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .batch-page {
   display: flex;
   flex-direction: column;
@@ -3926,12 +3934,18 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* ==================== 模拟脚本页 ==================== */
+/* 脚本页专属：撑满 tab-content 高度（普通 keys-page 是自然流式布局） */
+.script-page {
+  height: 100%;
+}
+
 .script-layout {
   display: flex;
   gap: 12px;
-  /* 锁定视口高度：内容不撑开外层滚动容器，避免窗口变小时组件抖动 */
-  height: calc(100vh - 220px);
-  min-height: 400px;
+  /* 撑满 Tab 内容区剩余高度（不用 vh 魔法数字，避免底部空隙），
+     min-height 只防极小窗口下被压扁 */
+  flex: 1;
+  min-height: 380px;
   padding-bottom: 10px;
   box-sizing: border-box;
 }
@@ -4926,7 +4940,7 @@ button.batch-remote-tile-tag:disabled.active {
                 </div>
               </div>
 
-              <div v-if="activeTab === 'script'" class="keys-page">
+              <div v-if="activeTab === 'script'" class="keys-page script-page">
                 <div class="script-layout">
                   <!-- 左：屏幕流 -->
                   <div class="script-screen-panel">
