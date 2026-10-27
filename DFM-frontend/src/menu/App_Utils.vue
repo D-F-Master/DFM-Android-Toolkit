@@ -2597,7 +2597,6 @@ const ptyBusy = ref(false)
 
 // 按键
 const keyList = ref<Array<{ name: string; value: number }>>([])
-const keyFrame = ref('5503050207')
 const keyInjectBusy = ref(false)
 const keyInjectOutput = ref('')
 
@@ -2678,8 +2677,6 @@ const controlPty = async (action: 'start' | 'stop') => {
       deviceId: selectedDevice.value,
       device: ptyDevice.value,
       action,
-      frames: keyFrame.value,
-      interval: 1200,
       restartApp: true
     })
     const d = res.data.data || {}
@@ -2699,20 +2696,44 @@ const controlPty = async (action: 'start' | 'stop') => {
   }
 }
 
-const injectKey = async (keyName: string) => {
+// 选中的按键（多选，按面板点击顺序）
+const selectedKeys = ref<string[]>([])
+
+const toggleKey = (keyName: string) => {
+  const idx = selectedKeys.value.indexOf(keyName)
+  if (idx >= 0) {
+    selectedKeys.value.splice(idx, 1)
+  } else {
+    selectedKeys.value.push(keyName)
+  }
+}
+
+const applyKeys = async () => {
   if (!selectedDevice.value) return
+  if (selectedKeys.value.length === 0) {
+    serialMessage.value = '请先选择按键'
+    serialMessageType.value = 'err'
+    return
+  }
   keyInjectBusy.value = true
+  serialMessage.value = ''
   try {
     const res = await axios.post(`${API_BASE.value}/api/device/serial/keys`, {
       deviceId: selectedDevice.value,
       device: ptyDevice.value,
-      keys: keyName,
-      baud: 38400,
-      delay: 300,
-      repeat: 1
+      keys: selectedKeys.value.join(','),
+      interval: 1500
     })
-    keyInjectOutput.value = (res.data.data?.output || '').trim()
-    if (res.data.code !== 200) {
+    const d = res.data.data || {}
+    keyInjectOutput.value = (d.frames || []).join(', ')
+    if (res.data.code === 200) {
+      serialMessage.value = res.data.message || '按键已注入'
+      serialMessageType.value = 'ok'
+      ptyRunning.value = !!d.running
+      ptyPid.value = d.pid || ''
+      ptyNodeType.value = d.nodeType || ''
+      ptyAppHolds.value = !!d.appHolds
+    } else {
       serialMessage.value = res.data.message || '按键注入失败'
       serialMessageType.value = 'err'
     }
@@ -4919,6 +4940,26 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: default;
 }
 
+.key-cell.selected {
+  background: #4caf50;
+  border-color: #4caf50;
+}
+
+.key-cell.selected .key-cell-label {
+  color: #fff;
+}
+
+.key-cell.selected .key-cell-value {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.serial-subtitle-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #999;
+}
+
 .key-cell-label {
   font-size: 13px;
   font-weight: 600;
@@ -5004,6 +5045,20 @@ button.batch-remote-tile-tag:disabled.active {
     background: #2e3d31;
     border-color: #66bb6a;
     color: #81c784;
+  }
+
+  .key-cell.selected,
+  .key-cell.selected:hover:not(:disabled) {
+    background: #66bb6a;
+    border-color: #66bb6a;
+  }
+
+  .key-cell.selected .key-cell-label {
+    color: #1a1d23;
+  }
+
+  .key-cell.selected .key-cell-value {
+    color: rgba(26, 29, 35, 0.7);
   }
 }
 
@@ -5872,10 +5927,6 @@ button.batch-remote-tile-tag:disabled.active {
                       >{{ serialStreamRunning ? '停止持续发送' : '开始持续发送' }}</button>
                     </div>
 
-                    <div v-if="serialMessage" class="serial-msg" :class="serialMessageType">
-                      {{ serialMessage }}
-                    </div>
-
                     <div v-if="serialStreamRunning" class="serial-stream-state">
                       持续发送运行中（pid {{ serialStreamPid }}）
                     </div>
@@ -5911,40 +5962,33 @@ button.batch-remote-tile-tag:disabled.active {
                         <span v-if="ptyLeftover" class="pty-state-item err">残留挂载：{{ ptyLeftover }}</span>
                       </div>
 
-                      <div class="serial-row">
-                        <label class="serial-label">循环注入帧</label>
-                        <input
-                          type="text"
-                          v-model="keyFrame"
-                          class="serial-input serial-input-lg"
-                          placeholder="5503050207"
-                        />
-                        <span class="serial-hint">逗号分隔多个帧，如 5503050207,5503051116</span>
-                      </div>
-
                       <div class="serial-actions">
                         <button
                           class="serial-stream-btn"
                           :class="{ active: ptyRunning }"
                           @click="controlPty(ptyRunning ? 'stop' : 'start')"
                           :disabled="ptyBusy || !selectedDevice"
-                        >{{ ptyRunning ? '停止 pty 替换' : '启动 pty 替换' }}</button>
+                        >{{ ptyBusy ? '处理中...' : (ptyRunning ? '停止 pty 替换' : '启动 pty 替换') }}</button>
                       </div>
 
                       <div class="serial-hint serial-hint-block">
-                        提示：pty 替换对已打开的串口无效，启动时会自动重启目标 App，
+                        提示：pty 替换对已打开的串口无效，启动和注入时都会自动重启目标 App，
                         让它重新打开串口拿到 pty。停止后设备节点自动恢复为真实串口。
                       </div>
 
                       <!-- 按键面板 -->
-                      <div class="serial-subtitle">按键注入</div>
+                      <div class="serial-subtitle">
+                        按键注入
+                        <span class="serial-subtitle-hint">点击选择（可多选），再点「应用按键」</span>
+                      </div>
                       <div class="key-grid">
                         <button
                           v-for="k in keyList"
                           :key="k.name"
                           class="key-cell"
+                          :class="{ selected: selectedKeys.includes(k.name) }"
                           :disabled="keyInjectBusy || !selectedDevice"
-                          @click="injectKey(k.name)"
+                          @click="toggleKey(k.name)"
                           :title="`键值 ${k.value} · 帧 ${buildKeyFrame(k.value)}`"
                         >
                           <span class="key-cell-label">{{ KEY_LABELS[k.name] || k.name }}</span>
@@ -5952,9 +5996,27 @@ button.batch-remote-tile-tag:disabled.active {
                         </button>
                       </div>
 
+                      <div class="serial-actions">
+                        <button
+                          class="check-button"
+                          @click="applyKeys"
+                          :disabled="keyInjectBusy || !selectedDevice || selectedKeys.length === 0"
+                        >{{ keyInjectBusy ? '注入中...' : '应用按键' }}</button>
+                        <button
+                          class="serial-mini-btn"
+                          @click="selectedKeys = []"
+                          :disabled="keyInjectBusy || selectedKeys.length === 0"
+                        >清空选择</button>
+                      </div>
+
                       <pre v-if="keyInjectOutput" class="serial-output">{{ keyInjectOutput }}</pre>
                       <pre v-if="ptyLog" class="serial-output">{{ ptyLog }}</pre>
                     </template>
+
+                    <!-- 提示（两个方案共用） -->
+                    <div v-if="serialMessage" class="serial-msg" :class="serialMessageType">
+                      {{ serialMessage }}
+                    </div>
                   </div>
                 </div>
               </div>
