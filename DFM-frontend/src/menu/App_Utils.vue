@@ -5972,8 +5972,9 @@ button.batch-remote-tile-tag:disabled.active {
                       </div>
 
                       <div class="serial-hint serial-hint-block">
-                        提示：pty 替换对已打开的串口无效，启动和注入时都会自动重启目标 App，
-                        让它重新打开串口拿到 pty。停止后设备节点自动恢复为真实串口。
+                        提示：pty 替换对已打开的串口无效，启动时会自动重启目标 App，
+                        让它重新打开串口拿到 pty。启动后再点按键注入不会重启 App。
+                        停止后设备节点自动恢复为真实串口。
                       </div>
 
                       <!-- 按键面板 -->
