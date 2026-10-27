@@ -2429,6 +2429,158 @@ onUnmounted(() => {
   // 关闭模拟脚本屏幕流
   stopScriptStream()
 })
+
+// ---------- 模拟串口 ----------
+
+interface SerialPort {
+  device: string
+  majorMinor: string
+}
+
+const serialPorts = ref<SerialPort[]>([])
+const serialPortsLoading = ref(false)
+const serialToolDeployed = ref(true)
+const serialDevice = ref('/dev/ttyS3')
+const serialMode = ref<'text' | 'hex'>('text')
+const serialPayload = ref('HELLO-1234')
+const serialEnd = ref('none')
+const serialBaud = ref('')
+const serialLoop = ref(true)
+const serialSending = ref(false)
+const serialOutput = ref('')
+const serialMessage = ref('')
+const serialMessageType = ref<'ok' | 'err' | ''>('')
+const serialStreamRunning = ref(false)
+const serialStreamPid = ref('')
+const serialStreamLog = ref('')
+const serialStreamBusy = ref(false)
+
+// 切换设备后重新拉取串口列表
+watch(selectedDevice, async (deviceId) => {
+  serialPorts.value = []
+  serialStreamRunning.value = false
+  serialStreamPid.value = ''
+  serialStreamLog.value = ''
+  if (!deviceId) return
+  await nextTick()
+  await loadSerialPorts()
+})
+
+// 首次进入串口页时加载端口列表
+watch(activeTab, async (tab) => {
+  if (tab === 'serial' && selectedDevice.value && serialPorts.value.length === 0) {
+    await nextTick()
+    await loadSerialPorts()
+  }
+})
+
+const loadSerialPorts = async () => {
+  if (!selectedDevice.value) return
+  serialPortsLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/ports`, {
+      deviceId: selectedDevice.value
+    })
+    if (res.data.code === 200) {
+      serialPorts.value = res.data.data.ports || []
+      serialToolDeployed.value = !!res.data.data.toolDeployed
+      // 默认选中第一个串口
+      if (serialPorts.value.length && !serialPorts.value.some(p => p.device === serialDevice.value)) {
+        serialDevice.value = serialPorts.value[0].device
+      }
+    } else {
+      serialMessage.value = res.data.message || '获取串口列表失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '获取串口列表失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialPortsLoading.value = false
+  }
+}
+
+const deploySerialTool = async () => {
+  if (!selectedDevice.value) return
+  serialSending.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/deploy`, {
+      deviceId: selectedDevice.value
+    })
+    if (res.data.code === 200) {
+      serialMessage.value = '串口工具已部署到设备'
+      serialMessageType.value = 'ok'
+      serialToolDeployed.value = true
+    } else {
+      serialMessage.value = res.data.message || '部署失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '部署失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialSending.value = false
+  }
+}
+
+const sendSerialData = async () => {
+  if (!selectedDevice.value) return
+  serialSending.value = true
+  serialMessage.value = ''
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/send`, {
+      deviceId: selectedDevice.value,
+      device: serialDevice.value,
+      mode: serialMode.value,
+      payload: serialPayload.value,
+      end: serialEnd.value,
+      baud: serialBaud.value ? Number(serialBaud.value) : null,
+      loop: serialLoop.value
+    })
+    const data = res.data.data || {}
+    serialOutput.value = data.output || ''
+    if (res.data.code === 200) {
+      serialMessage.value = `发送成功（${data.sentBytes || 0} 字节）`
+      serialMessageType.value = 'ok'
+    } else {
+      serialMessage.value = res.data.message || '发送失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '发送失败'
+    serialMessageType.value = 'err'
+    serialOutput.value = ''
+  } finally {
+    serialSending.value = false
+  }
+}
+
+const serialStream = async (action: 'start' | 'stop' | 'status') => {
+  if (!selectedDevice.value) return
+  serialStreamBusy.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/stream`, {
+      deviceId: selectedDevice.value,
+      device: serialDevice.value,
+      baud: serialBaud.value ? Number(serialBaud.value) : 115200,
+      loop: serialLoop.value,
+      action
+    })
+    const data = res.data.data || {}
+    serialStreamRunning.value = !!data.running
+    serialStreamPid.value = data.pid || ''
+    serialStreamLog.value = data.log || ''
+    if (action !== 'status') {
+      serialMessage.value = res.data.message || ''
+      serialMessageType.value = res.data.code === 200 ? 'ok' : 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '操作失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialStreamBusy.value = false
+  }
+}
 </script>
 <style scoped>
 .sidebar {
@@ -4300,6 +4452,260 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: default;
 }
 
+/* ==================== 模拟串口页 ==================== */
+.serial-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.serial-label {
+  font-size: 13px;
+  color: #666;
+  white-space: nowrap;
+}
+
+.serial-select,
+.serial-input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: #333;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.serial-select:focus,
+.serial-input:focus {
+  outline: none;
+  border-color: #4caf50;
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+}
+
+.serial-select-sm,
+.serial-input-sm {
+  width: 90px;
+}
+
+.serial-mode-group {
+  display: flex;
+  gap: 4px;
+}
+
+.serial-mode-btn {
+  padding: 6px 16px;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  background: #f5f7fa;
+  color: #555;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.serial-mode-btn:hover {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+.serial-mode-btn.active {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: #fff;
+}
+
+.serial-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #666;
+  cursor: pointer;
+}
+
+.serial-mini-btn {
+  padding: 6px 12px;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  background: #f5f7fa;
+  color: #555;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.serial-mini-btn:hover:not(:disabled) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+.serial-mini-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.serial-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 88px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  resize: vertical;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.serial-textarea:focus {
+  outline: none;
+  border-color: #4caf50;
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+}
+
+.serial-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.serial-stream-btn {
+  height: 40px;
+  padding: 0 22px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px -4px rgba(33, 150, 243, 0.3);
+}
+
+.serial-stream-btn:hover:not(:disabled) {
+  background: #1976d2;
+  transform: translateY(-2px);
+}
+
+.serial-stream-btn.active {
+  background: #f44336;
+  box-shadow: 0 4px 14px -4px rgba(244, 67, 54, 0.3);
+}
+
+.serial-stream-btn:disabled {
+  background: #bdbdbd;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.serial-msg {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.serial-msg.ok {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.serial-msg.err {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.serial-stream-state {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #1976d2;
+}
+
+.serial-tool-missing {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #fff3e0;
+  color: #ef6c00;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.serial-output {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  background: #1a1f2e;
+  border-radius: 8px;
+  color: #c8d3e0;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: 'Consolas', 'Monaco', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .serial-select,
+  .serial-input {
+    background: #3a3d45;
+    border-color: #555;
+    color: #e0e0e0;
+  }
+
+  .serial-label,
+  .serial-check {
+    color: #b0b0b0;
+  }
+
+  .serial-mode-btn,
+  .serial-mini-btn {
+    background: #3a3d45;
+    border-color: #555;
+    color: #ccc;
+  }
+
+  .serial-mode-btn.active {
+    background: #66bb6a;
+    border-color: #66bb6a;
+    color: #1a1d23;
+  }
+
+  .serial-textarea {
+    background: #3a3d45;
+    border-color: #555;
+    color: #e0e0e0;
+  }
+
+  .serial-msg.ok {
+    background: #2e3d31;
+    color: #81c784;
+  }
+
+  .serial-msg.err {
+    background: #3a2426;
+    color: #ef9a9a;
+  }
+}
+
 </style>
 <template>
   <div
@@ -5056,7 +5462,7 @@ button.batch-remote-tile-tag:disabled.active {
               </div>
 
               <div v-if="activeTab === 'serial'" class="keys-page">
-                <!-- 模拟串口页：功能占位，后续添加 -->
+                <!-- 模拟串口页 -->
                 <div class="scrcpy-card">
                   <div class="card-header">
                     <span class="card-icon">
@@ -5066,9 +5472,99 @@ button.batch-remote-tile-tag:disabled.active {
                       </svg>
                     </span>
                     <span>模拟串口</span>
+                    <span v-if="serialToolDeployed" class="monitor-live-tag">工具已就绪</span>
+                    <span v-else class="serial-tool-missing">工具未部署</span>
                   </div>
                   <div class="card-body">
-                    <div class="loading-text" style="padding: 48px 24px; text-align: center;">功能开发中，敬请期待</div>
+                    <!-- 端口选择 -->
+                    <div class="serial-row">
+                      <label class="serial-label">串口设备</label>
+                      <select v-model="serialDevice" class="serial-select" :disabled="serialPortsLoading">
+                        <option v-for="p in serialPorts" :key="p.device" :value="p.device">
+                          {{ p.device }}{{ p.majorMinor ? ` (${p.majorMinor})` : '' }}
+                        </option>
+                      </select>
+                      <button class="serial-mini-btn" @click="loadSerialPorts" :disabled="serialPortsLoading">刷新</button>
+                      <button
+                        class="serial-mini-btn"
+                        @click="deploySerialTool"
+                        :disabled="serialSending"
+                      >部署工具</button>
+                    </div>
+
+                    <div v-if="serialPortsLoading" class="loading-text">加载串口列表中...</div>
+                    <div v-else-if="serialPorts.length === 0" class="loading-text">该设备未发现串口节点</div>
+
+                    <!-- 载荷配置 -->
+                    <div class="serial-row">
+                      <label class="serial-label">载荷类型</label>
+                      <div class="serial-mode-group">
+                        <button
+                          class="serial-mode-btn"
+                          :class="{ active: serialMode === 'text' }"
+                          @click="serialMode = 'text'"
+                        >文本</button>
+                        <button
+                          class="serial-mode-btn"
+                          :class="{ active: serialMode === 'hex' }"
+                          @click="serialMode = 'hex'"
+                        >HEX</button>
+                      </div>
+                      <label class="serial-label">波特率</label>
+                      <input
+                        type="text"
+                        v-model="serialBaud"
+                        class="serial-input serial-input-sm"
+                        placeholder="继承"
+                      />
+                      <label class="serial-label">结束符</label>
+                      <select v-model="serialEnd" class="serial-select serial-select-sm">
+                        <option value="none">无</option>
+                        <option value="cr">CR</option>
+                        <option value="lf">LF</option>
+                        <option value="crlf">CRLF</option>
+                      </select>
+                    </div>
+
+                    <div class="serial-row">
+                      <label class="serial-label">回环注入</label>
+                      <label class="serial-check">
+                        <input type="checkbox" v-model="serialLoop" />
+                        <span>开启 UART 内部回环（让读取该串口的程序收到数据）</span>
+                      </label>
+                    </div>
+
+                    <textarea
+                      v-model="serialPayload"
+                      class="serial-textarea"
+                      :placeholder="serialMode === 'hex' ? '例：01 03 00 00 或 5503050207' : '例：HELLO-1234，支持 \\r \\n \\t \\\\ \\0 \\xHH'"
+                      spellcheck="false"
+                    ></textarea>
+
+                    <div class="serial-actions">
+                      <button
+                        class="check-button"
+                        @click="sendSerialData"
+                        :disabled="serialSending || !selectedDevice"
+                      >{{ serialSending ? '发送中...' : '发送一次' }}</button>
+                      <button
+                        class="serial-stream-btn"
+                        :class="{ active: serialStreamRunning }"
+                        @click="serialStream(serialStreamRunning ? 'stop' : 'start')"
+                        :disabled="serialStreamBusy || !selectedDevice"
+                      >{{ serialStreamRunning ? '停止持续发送' : '开始持续发送' }}</button>
+                    </div>
+
+                    <div v-if="serialMessage" class="serial-msg" :class="serialMessageType">
+                      {{ serialMessage }}
+                    </div>
+
+                    <div v-if="serialStreamRunning" class="serial-stream-state">
+                      持续发送运行中（pid {{ serialStreamPid }}）
+                    </div>
+
+                    <pre v-if="serialOutput" class="serial-output">{{ serialOutput }}</pre>
+                    <pre v-if="serialStreamLog" class="serial-output">{{ serialStreamLog }}</pre>
                   </div>
                 </div>
               </div>
