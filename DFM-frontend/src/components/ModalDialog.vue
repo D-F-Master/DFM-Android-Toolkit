@@ -16,17 +16,42 @@
           @keyup.enter="handleEnter"
           ref="inputRef"
         />
+        <!-- 列表选择：脚本导入时选择已保存的脚本 -->
+        <div v-if="type === 'list'" class="list-body">
+          <div v-if="!listItems || listItems.length === 0" class="list-empty">
+            {{ emptyText || '暂无数据' }}
+          </div>
+          <div
+            v-for="item in listItems"
+            :key="item.value"
+            class="list-item"
+            :class="{ active: selectedListValue === item.value }"
+            @click="selectListItem(item.value)"
+          >
+            <span class="list-item-title">{{ item.label }}</span>
+            <span v-if="item.desc" class="list-item-desc">{{ item.desc }}</span>
+          </div>
+        </div>
       </div>
       <div v-if="type !== 'notification'" class="modal-footer">
         <button 
-          v-if="type === 'confirm' || type === 'prompt'" 
+          v-if="type === 'confirm' || type === 'prompt' || type === 'list'" 
           class="btn btn-cancel" 
           @click="handleCancel"
         >
           取消
         </button>
         <button 
+          v-if="type !== 'list'"
           class="btn btn-primary" 
+          @click="handleConfirm"
+        >
+          {{ confirmText }}
+        </button>
+        <button
+          v-else
+          class="btn btn-primary"
+          :disabled="!selectedListValue"
           @click="handleConfirm"
         >
           {{ confirmText }}
@@ -37,7 +62,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, watch, PropType } from 'vue';
 
 const props = defineProps({
   visible: {
@@ -47,7 +72,15 @@ const props = defineProps({
   type: {
     type: String,
     default: 'message',
-    validator: (value: string) => ['message', 'confirm', 'prompt', 'notification'].includes(value)
+    validator: (value: string) => ['message', 'confirm', 'prompt', 'notification', 'list'].includes(value)
+  },
+  listItems: {
+    type: Array as PropType<Array<{ value: string; label: string; desc?: string }>>,
+    default: () => []
+  },
+  emptyText: {
+    type: String,
+    default: ''
   },
   title: {
     type: String,
@@ -77,6 +110,11 @@ const emit = defineEmits(['close', 'confirm', 'cancel']);
 const inputValue = ref('');
 const inputRef = ref<HTMLInputElement | null>(null);
 const isLeaving = ref(false);
+const selectedListValue = ref('');
+
+const selectListItem = (value: string) => {
+  selectedListValue.value = value;
+};
 
 const close = () => {
   if (props.type === 'notification') {
@@ -97,7 +135,7 @@ const handleCancel = () => {
 };
 
 const handleConfirm = () => {
-  emit('confirm', inputValue.value);
+  emit('confirm', props.type === 'list' ? selectedListValue.value : inputValue.value);
   close();
 };
 
@@ -113,6 +151,8 @@ watch(() => props.visible, (newVal) => {
     setTimeout(() => {
       inputRef.value?.focus();
     }, 100);
+  } else if (newVal && props.type === 'list') {
+    selectedListValue.value = '';
   } else if (newVal && props.type === 'notification') {
     // 自动关闭通知
     setTimeout(() => {
@@ -216,6 +256,96 @@ watch(() => props.visible, (newVal) => {
   outline: none;
   border-color: #1890ff;
   box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+/* 列表选择 */
+.list-body {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.list-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
+}
+
+.list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.list-item:hover {
+  background: #f5f7fa;
+  border-color: #d9d9d9;
+}
+
+.list-item.active {
+  background: #e8f5e9;
+  border-color: #4caf50;
+}
+
+.list-item-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+}
+
+.list-item-desc {
+  font-size: 12px;
+  color: #999;
+}
+
+@media (prefers-color-scheme: dark) {
+  .modal-content {
+    background-color: #2d2f36;
+  }
+
+  .modal-header {
+    border-bottom-color: #40434a;
+  }
+
+  .modal-header h3,
+  .modal-body p,
+  .list-item-title {
+    color: #e0e0e0;
+  }
+
+  .modal-footer {
+    background-color: #33363e;
+    border-top-color: #40434a;
+  }
+
+  .btn-cancel {
+    background-color: #3a3d45;
+    border-color: #555;
+    color: #ccc;
+  }
+
+  .list-item {
+    border-color: #40434a;
+  }
+
+  .list-item:hover {
+    background: #33363e;
+  }
+
+  .list-item.active {
+    background: #2e3d31;
+    border-color: #66bb6a;
+  }
+
+  .list-item-desc {
+    color: #999;
+  }
 }
 
 .modal-footer {
