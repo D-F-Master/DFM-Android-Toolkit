@@ -786,6 +786,124 @@ const saveScript = async () => {
   }, '', '保存脚本')
 }
 
+// ---------- 导入脚本 ----------
+
+// 把已载入的步骤应用到当前脚本面板
+const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
+  scriptSteps.value = steps.map((s: any) => ({
+    type: s.type,
+    x1: s.x1,
+    y1: s.y1,
+    x2: s.x2,
+    y2: s.y2,
+    duration: s.duration,
+    interval: s.interval ?? 0,
+    count: s.count ?? 1,
+  }))
+  scriptRepeat.value = repeat
+  showNotification(`已导入脚本「${name}」，共 ${steps.length} 个步骤`, 'success')
+}
+
+// 从本地 JSON 文件导入：选择文件 -> 读内容 -> 调后端校验并保存 -> 载入面板
+const importScriptFromFile = () => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json,application/json'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    try {
+      const content = await file.text()
+      scriptSaving.value = true
+      const response = await axios.post(`${API_BASE.value}/api/device/script/import`, {
+        content,
+        name: file.name.replace(/\.json$/i, ''),
+      })
+      if (response.data.code !== 200) {
+        showNotification('导入失败: ' + (response.data.message || '未知错误'), 'error')
+        return
+      }
+      // 导入后从后端读回标准化的脚本，再载入面板
+      const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, {
+        name: response.data.data.name,
+      })
+      if (loaded.data.code !== 200) {
+        showNotification('导入后读取失败: ' + (loaded.data.message || '未知错误'), 'error')
+        return
+      }
+      applyImportedSteps(loaded.data.data.steps, loaded.data.data.repeat, loaded.data.data.name)
+    } catch (error: any) {
+      showNotification('导入失败: ' + (error?.response?.data?.message || error.message), 'error')
+    } finally {
+      scriptSaving.value = false
+    }
+  }
+  input.click()
+}
+
+// 从已保存脚本列表中载入
+const importScriptFromList = async () => {
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
+    if (response.data.code !== 200) {
+      showNotification('获取脚本列表失败: ' + (response.data.message || '未知错误'), 'error')
+      return
+    }
+    const scripts = response.data.data || []
+    // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
+    const items = scripts
+      .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
+      .map((s: any) => ({
+        value: s.name,
+        label: s.name,
+        desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+      }))
+
+    showList(items, async (name?: string) => {
+      if (!name) return
+      try {
+        scriptSaving.value = true
+        const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name })
+        if (loaded.data.code !== 200) {
+          showNotification('读取脚本失败: ' + (loaded.data.message || '未知错误'), 'error')
+          return
+        }
+        applyImportedSteps(
+          loaded.data.data.steps,
+          loaded.data.data.repeat,
+          loaded.data.data.name
+        )
+      } catch (error: any) {
+        showNotification('读取脚本失败: ' + error.message, 'error')
+      } finally {
+        scriptSaving.value = false
+      }
+    }, '选择已保存的脚本', '还没有保存过脚本', '载入')
+  } catch (error: any) {
+    showNotification('获取脚本列表失败: ' + error.message, 'error')
+  }
+}
+
+// 导入按钮：弹出选择（本地文件 / 已保存列表）
+const openImportMenu = () => {
+  showList(
+    [
+      { value: 'file', label: '从本地 JSON 文件导入', desc: '选择一个 .json 脚本文件' },
+      { value: 'saved', label: '从已保存脚本载入', desc: '载入 data/scripts 下已有的脚本' },
+    ],
+    (choice?: string) => {
+      if (choice === 'file') {
+        importScriptFromFile()
+      } else if (choice === 'saved') {
+        importScriptFromList()
+      }
+    },
+    '导入脚本',
+    '',
+    '确定'
+  )
+}
+
 const runScript = async (name?: string, repeat?: number) => {
   if (!selectedDevice.value) {
     showMessage('请先选择设备', '提示')
@@ -988,13 +1106,16 @@ const batchInstallApp = async () => {
 
 // 弹窗状态
 const modalVisible = ref(false)
-const modalType = ref('message') // message, confirm, prompt
+const modalType = ref('message') // message, confirm, prompt, list
 const modalTitle = ref('')
 const modalMessage = ref('')
 const modalPlaceholder = ref('')
 const modalConfirmText = ref('确定')
 const modalVariant = ref<'success' | 'error' | 'info'>('success')
 const modalCallback = ref<Function | null>(null)
+// list 类型弹窗的数据
+const modalListItems = ref<Array<{ value: string; label: string; desc?: string }>>([])
+const modalEmptyText = ref('')
 
 const fetchDevices = async () => {
   loading.value = true
@@ -1806,6 +1927,23 @@ const showPrompt = (message: string, callback: Function, placeholder: string = '
   modalTitle.value = title
   modalMessage.value = message
   modalPlaceholder.value = placeholder
+  modalVisible.value = true
+  modalCallback.value = callback
+};
+
+const showList = (
+  items: Array<{ value: string; label: string; desc?: string }>,
+  callback: Function,
+  title: string = '选择',
+  emptyText: string = '暂无数据',
+  confirmText: string = '确定'
+) => {
+  modalType.value = 'list'
+  modalTitle.value = title
+  modalMessage.value = ''
+  modalListItems.value = items
+  modalEmptyText.value = emptyText
+  modalConfirmText.value = confirmText
   modalVisible.value = true
   modalCallback.value = callback
 };
@@ -4489,6 +4627,11 @@ button.batch-remote-tile-tag:disabled.active {
   margin-bottom: 8px;
 }
 
+.script-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .script-mini-btn {
   padding: 3px 10px;
   border: 1px solid #e8eaed;
@@ -5837,7 +5980,14 @@ button.batch-remote-tile-tag:disabled.active {
                     <div class="script-section script-list-section">
                       <div class="script-list-header">
                         <span>脚本步骤（{{ scriptSteps.length }}）</span>
-                        <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
+                        <div class="script-header-actions">
+                          <button
+                            class="script-mini-btn"
+                            @click="openImportMenu"
+                            :disabled="scriptSaving || scriptRunning"
+                          >导入</button>
+                          <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
+                        </div>
                       </div>
                       <div class="script-steps-list">
                         <div v-if="scriptSteps.length === 0" class="script-empty">
@@ -6276,6 +6426,8 @@ button.batch-remote-tile-tag:disabled.active {
       :placeholder="modalPlaceholder"
       :confirm-text="modalConfirmText"
       :variant="modalVariant"
+      :list-items="modalListItems"
+      :empty-text="modalEmptyText"
       @close="modalVisible = false"
       @confirm="handleModalConfirm"
       @cancel="handleModalCancel"
