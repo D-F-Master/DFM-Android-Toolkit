@@ -507,6 +507,11 @@ const scriptStepLabel = (step: any): string => {
 // 是否在投屏画面上标出脚本步骤位置
 const scriptShowMarkers = ref(false)
 
+// 拖拽编辑：当前被拖动的标记 { stepIndex, part }，part 为 start/end
+const scriptDragging = ref<{ stepIndex: number; part: 'start' | 'end' } | null>(null)
+// 正在编辑配置的步骤索引（展开 interval/count 编辑项）
+const scriptEditingStep = ref<number | null>(null)
+
 // 步骤标记颜色（按类型区分）
 const SCRIPT_MARKER_COLORS: Record<string, string> = {
   tap: '#4caf50',
@@ -525,14 +530,28 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
     const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
     const x = step.x1
     const y = step.y1
+    // 选中的步骤加粗描边，便于辨认
+    const isSelected = scriptEditingStep.value === idx
+    const isDragging = scriptDragging.value?.stepIndex === idx
+    const lineWidth = Math.max(2, Math.round(scriptMeta.width / 300)) * (isSelected ? 2 : 1)
 
     // 点击/长按：画圆圈
     ctx.save()
     ctx.strokeStyle = color
-    ctx.lineWidth = Math.max(2, Math.round(scriptMeta.width / 300))
+    ctx.lineWidth = lineWidth
     ctx.beginPath()
     ctx.arc(x, y, radius, 0, Math.PI * 2)
     ctx.stroke()
+
+    // 正在拖动的点：外圈光晕提示可抓取
+    if (isDragging && scriptDragging.value?.part === 'start') {
+      ctx.globalAlpha = 0.35
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(x, y, radius * 1.8, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
 
     // 滑动：起点圆圈 + 起点到终点的箭头
     if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
@@ -542,6 +561,16 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
       ctx.beginPath()
       ctx.arc(x2, y2, radius, 0, Math.PI * 2)
       ctx.stroke()
+
+      // 正在拖动终点时的光晕
+      if (isDragging && scriptDragging.value?.part === 'end') {
+        ctx.globalAlpha = 0.35
+        ctx.fillStyle = color
+        ctx.beginPath()
+        ctx.arc(x2, y2, radius * 1.8, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.globalAlpha = 0.85
+      }
 
       // 箭头线
       ctx.beginPath()
@@ -610,6 +639,42 @@ const scriptRedrawMarkers = () => {
   const ctx = cv.getContext('2d')!
   ctx.drawImage(scriptFrameCanvas, 0, 0)
   scriptDrawMarkers(ctx)
+}
+
+// 标记命中半径（与绘制半径一致，另加一点余量便于点中）
+const scriptMarkerHitRadius = () => Math.max(18, Math.round(scriptMeta.width / 40))
+
+// 命中检测：找出点 (x, y) 命中的标记
+// 滑动步骤有两个可拖动点（起点/终点），后添加的优先命中
+const scriptHitTest = (x: number, y: number): { stepIndex: number; part: 'start' | 'end' } | null => {
+  if (!scriptShowMarkers.value) return null
+  const radius = scriptMarkerHitRadius()
+  // 容差按触屏考虑，放宽到 1.5 倍半径
+  const tolerance = radius * 1.5
+
+  for (let idx = scriptSteps.value.length - 1; idx >= 0; idx--) {
+    const step = scriptSteps.value[idx]
+    const d1 = Math.hypot(x - step.x1, y - step.y1)
+    if (d1 <= tolerance) return { stepIndex: idx, part: 'start' }
+    if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
+      const d2 = Math.hypot(x - step.x2, y - step.y2)
+      if (d2 <= tolerance) return { stepIndex: idx, part: 'end' }
+    }
+  }
+  return null
+}
+
+// 移动标记到新坐标
+const scriptMoveMarker = (target: { stepIndex: number; part: 'start' | 'end' }, x: number, y: number) => {
+  const step = scriptSteps.value[target.stepIndex]
+  if (!step) return
+  if (target.part === 'end' && step.type === 'swipe') {
+    step.x2 = x
+    step.y2 = y
+  } else {
+    step.x1 = x
+    step.y1 = y
+  }
 }
 
 // ---------- 屏幕流（复用 /ws/remote，单设备） ----------
@@ -773,6 +838,18 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   ev.preventDefault()
   const p = canvasPoint(ev)
+
+  // 显示步骤时优先命中标记：命中则进入拖拽编辑，不注入设备也不记录新步骤
+  if (scriptShowMarkers.value && !scriptRecording.value) {
+    const hit = scriptHitTest(p.x, p.y)
+    if (hit) {
+      try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+      scriptDragging.value = hit
+      scriptEditingStep.value = hit.stepIndex
+      return
+    }
+  }
+
   if (!scriptRecording.value) {
     // 远控模式：直接注入
     try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
@@ -804,6 +881,14 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
 const scriptOnPointerMove = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
+
+  // 拖拽标记：更新坐标并重绘
+  if (scriptDragging.value) {
+    scriptMoveMarker(scriptDragging.value, p.x, p.y)
+    scriptRedrawMarkers()
+    return
+  }
+
   if (!scriptRemotePressing) return
   // 移动事件注入（远控与录制模式都需要，录制时靠它让设备产生真实滑动）
   if (!scriptRecording.value || scriptPointerActive) scriptSendTouch(2, p)
@@ -818,6 +903,20 @@ const scriptOnPointerMove = (ev: PointerEvent) => {
 const scriptOnPointerUp = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
+
+  // 拖拽结束
+  if (scriptDragging.value) {
+    const moved = scriptSteps.value[scriptDragging.value.stepIndex]
+    scriptDragging.value = null
+    if (moved) {
+      showNotification(
+        `已调整第 ${scriptEditingStep.value! + 1} 步：${scriptStepLabel(moved)}`,
+        'info'
+      )
+    }
+    return
+  }
+
   // 抬起事件注入（远控与录制模式都需要）
   if (scriptRemotePressing) scriptSendTouch(1, p)
   scriptRemotePressing = false
@@ -845,6 +944,17 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
   // elapsed >= 600ms 且未移动的长按已在 timer 里记录
 }
 
+// 指针被中断（取消/离开窗口）：静默结束拖拽
+const scriptOnPointerCancel = () => {
+  if (scriptDragging.value) {
+    scriptDragging.value = null
+    return
+  }
+  scriptRemotePressing = false
+  scriptPointerActive = false
+  clearTimeout(scriptLongPressTimer)
+}
+
 const addScriptStep = (step: any) => {
   scriptSteps.value.push(step)
   showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
@@ -856,6 +966,11 @@ const removeScriptStep = (idx: number) => {
 
 const clearScriptSteps = () => {
   scriptSteps.value = []
+}
+
+// 点击步骤：选中并展开执行参数（再点一次收起）
+const toggleStepEdit = (idx: number) => {
+  scriptEditingStep.value = scriptEditingStep.value === idx ? null : idx
 }
 
 const toggleRecording = () => {
@@ -4657,6 +4772,15 @@ button.batch-remote-tile-tag:disabled.active {
   outline-offset: -2px;
 }
 
+/* 显示步骤时可拖拽标记 */
+.script-canvas.editing-markers {
+  cursor: grab;
+}
+
+.script-canvas.editing-markers.dragging {
+  cursor: grabbing;
+}
+
 .script-screen-placeholder {
   position: absolute;
   inset: 0;
@@ -4857,14 +4981,31 @@ button.batch-remote-tile-tag:disabled.active {
 .script-step-item {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 7px 8px;
   border-radius: 6px;
   font-size: 12px;
+  cursor: pointer;
 }
 
 .script-step-item:hover {
   background: #f5f7fa;
+}
+
+.script-step-item.selected {
+  background: #e8f5e9;
+  box-shadow: inset 0 0 0 1px #a5d6a7;
+}
+
+/* 展开的单步执行参数 */
+.script-step-config {
+  flex-basis: 100%;
+  margin-top: 6px;
+  padding: 10px;
+  background: #f8faf8;
+  border: 1px solid #e0e8e0;
+  border-radius: 8px;
 }
 
 .script-step-idx {
@@ -4942,6 +5083,27 @@ button.batch-remote-tile-tag:disabled.active {
 .script-action-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 模拟脚本页 暗色模式 */
+@media (prefers-color-scheme: dark) {
+  .script-step-item:hover {
+    background: #33363e;
+  }
+
+  .script-step-item.selected {
+    background: #2e3d31;
+    box-shadow: inset 0 0 0 1px #66bb6a;
+  }
+
+  .script-step-desc {
+    color: #e0e0e0;
+  }
+
+  .script-step-config {
+    background: #33363e;
+    border-color: #40434a;
+  }
 }
 
 /* ==================== 模拟串口页 ==================== */
@@ -6111,11 +6273,15 @@ button.batch-remote-tile-tag:disabled.active {
                       <canvas
                         ref="scriptCanvasRef"
                         class="script-canvas"
-                        :class="{ recording: scriptRecording }"
+                        :class="{
+                          recording: scriptRecording,
+                          'editing-markers': scriptShowMarkers && !scriptRecording,
+                          dragging: !!scriptDragging
+                        }"
                         @pointerdown="scriptOnPointerDown"
                         @pointermove="scriptOnPointerMove"
                         @pointerup="scriptOnPointerUp"
-                        @pointercancel="scriptOnPointerUp"
+                        @pointercancel="scriptOnPointerCancel"
                       ></canvas>
                       <div v-if="!scriptStreaming" class="script-screen-placeholder">
                         {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
@@ -6191,11 +6357,42 @@ button.batch-remote-tile-tag:disabled.active {
                         <div v-if="scriptSteps.length === 0" class="script-empty">
                           录制模式下在左侧屏幕上操作即可记录步骤
                         </div>
-                        <div v-for="(step, idx) in scriptSteps" :key="idx" class="script-step-item">
+                        <div
+                          v-for="(step, idx) in scriptSteps"
+                          :key="idx"
+                          class="script-step-item"
+                          :class="{ selected: scriptEditingStep === idx }"
+                          @click="toggleStepEdit(idx)"
+                        >
                           <span class="script-step-idx">{{ idx + 1 }}</span>
                           <span class="script-step-desc">{{ scriptStepLabel(step) }}</span>
                           <span class="script-step-meta">{{ step.interval }}ms × {{ step.count }}次</span>
-                          <button class="script-step-del" @click="removeScriptStep(idx)">×</button>
+                          <button class="script-step-del" @click.stop="removeScriptStep(idx)">×</button>
+
+                          <!-- 选中后展开该步的执行参数 -->
+                          <div v-if="scriptEditingStep === idx" class="script-step-config" @click.stop>
+                            <div class="script-config-row">
+                              <span>执行间隔(ms)</span>
+                              <input
+                                type="number"
+                                min="0"
+                                class="script-config-input"
+                                v-model.number="step.interval"
+                              >
+                            </div>
+                            <div class="script-config-row">
+                              <span>执行次数</span>
+                              <input
+                                type="number"
+                                min="1"
+                                class="script-config-input"
+                                v-model.number="step.count"
+                              >
+                            </div>
+                            <div class="script-config-hint">
+                              开启「显示步骤」后可在画面上拖动该步骤的位置
+                            </div>
+                          </div>
                         </div>
                       </div>
                       <div class="script-actions">
