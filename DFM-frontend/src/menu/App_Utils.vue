@@ -502,6 +502,116 @@ const scriptStepLabel = (step: any): string => {
   return `滑动 (${step.x1}, ${step.y1}) → (${step.x2}, ${step.y2})`
 }
 
+// ---------- 画面上的步骤标记 ----------
+
+// 是否在投屏画面上标出脚本步骤位置
+const scriptShowMarkers = ref(false)
+
+// 步骤标记颜色（按类型区分）
+const SCRIPT_MARKER_COLORS: Record<string, string> = {
+  tap: '#4caf50',
+  swipe: '#2196f3',
+  longpress: '#ff9800',
+}
+
+// 在画面上绘制脚本步骤标记（画布坐标系即设备分辨率）
+const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
+  if (!scriptShowMarkers.value || scriptSteps.value.length === 0) return
+
+  const radius = Math.max(18, Math.round(scriptMeta.width / 40))
+  const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
+
+  scriptSteps.value.forEach((step, idx) => {
+    const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
+    const x = step.x1
+    const y = step.y1
+
+    // 点击/长按：画圆圈
+    ctx.save()
+    ctx.strokeStyle = color
+    ctx.lineWidth = Math.max(2, Math.round(scriptMeta.width / 300))
+    ctx.beginPath()
+    ctx.arc(x, y, radius, 0, Math.PI * 2)
+    ctx.stroke()
+
+    // 滑动：起点圆圈 + 起点到终点的箭头
+    if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
+      const x2 = step.x2
+      const y2 = step.y2
+      ctx.globalAlpha = 0.85
+      ctx.beginPath()
+      ctx.arc(x2, y2, radius, 0, Math.PI * 2)
+      ctx.stroke()
+
+      // 箭头线
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.lineTo(x2, y2)
+      ctx.stroke()
+
+      // 箭头头部
+      const angle = Math.atan2(y2 - y, x2 - x)
+      const headLen = radius * 0.9
+      ctx.beginPath()
+      ctx.moveTo(x2, y2)
+      ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6))
+      ctx.moveTo(x2, y2)
+      ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6))
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
+    ctx.restore()
+
+    // 序号标签
+    const label = String(idx + 1)
+    ctx.save()
+    ctx.font = `bold ${fontSize}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const tagR = radius * 0.85
+    const tagX = x + radius * 1.1
+    const tagY = y - radius * 1.1
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.arc(tagX, tagY, tagR, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#fff'
+    ctx.fillText(label, tagX, tagY)
+    ctx.restore()
+  })
+}
+
+// 视频帧绘制后叠加标记
+const scriptDrawFrame = (ctx: CanvasRenderingContext2D, frame: any) => {
+  ctx.drawImage(frame, 0, 0)
+  // 缓存一份画面供重绘使用（frame 随即被 close，不能直接持有）
+  scriptCacheFrame(frame)
+  scriptDrawMarkers(ctx)
+}
+
+// 缓存当前画面到离屏 canvas
+let scriptFrameCanvas: HTMLCanvasElement | null = null
+const scriptCacheFrame = (frame: any) => {
+  if (!scriptFrameCanvas) {
+    scriptFrameCanvas = document.createElement('canvas')
+  }
+  if (scriptFrameCanvas.width !== frame.displayWidth || scriptFrameCanvas.height !== frame.displayHeight) {
+    scriptFrameCanvas.width = frame.displayWidth
+    scriptFrameCanvas.height = frame.displayHeight
+  }
+  const fctx = scriptFrameCanvas.getContext('2d')!
+  fctx.drawImage(frame, 0, 0)
+}
+
+// 开关切换或步骤变化时重绘标记（画面静止时没有新帧，需要手动重画）
+const scriptRedrawMarkers = () => {
+  const cv = scriptCanvasRef.value
+  if (!cv || !scriptFrameCanvas) return
+  const ctx = cv.getContext('2d')!
+  ctx.drawImage(scriptFrameCanvas, 0, 0)
+  scriptDrawMarkers(ctx)
+}
+
 // ---------- 屏幕流（复用 /ws/remote，单设备） ----------
 
 const scriptHandleBinary = (buf: ArrayBuffer) => {
@@ -521,7 +631,7 @@ const scriptHandleBinary = (buf: ArrayBuffer) => {
         if (cv.width !== frame.displayWidth) cv.width = frame.displayWidth
         if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
         const ctx = cv.getContext('2d')!
-        ctx.drawImage(frame, 0, 0)
+        scriptDrawFrame(ctx, frame)
         scriptMeta = { width: frame.displayWidth, height: frame.displayHeight }
         frame.close()
       },
@@ -610,6 +720,14 @@ watch(activeTab, async (tab) => {
     stopScriptStream()
   }
 })
+
+// 标记开关切换 / 步骤增减时重绘画面标记
+watch(scriptShowMarkers, () => {
+  nextTick(() => scriptRedrawMarkers())
+})
+watch(scriptSteps, () => {
+  nextTick(() => scriptRedrawMarkers())
+}, { deep: true })
 
 // 切换设备时重连屏幕流
 watch(selectedDevice, async (deviceId) => {
@@ -4452,6 +4570,65 @@ button.batch-remote-tile-tag:disabled.active {
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
+/* ===== 画面步骤标记开关 ===== */
+.script-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: #888;
+  transition: color 0.25s ease;
+}
+
+.script-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.script-switch-track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: #d9d9d9;
+  transition: background 0.25s ease;
+}
+
+.script-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.25s ease;
+}
+
+.script-switch.on {
+  color: #2e7d32;
+}
+
+.script-switch.on .script-switch-track {
+  background: #4caf50;
+}
+
+.script-switch.on .script-switch-track::after {
+  transform: translateX(14px);
+}
+
+.script-switch input:focus-visible + .script-switch-track {
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
+}
+
 .script-screen-body {
   flex: 1;
   display: flex;
@@ -5217,6 +5394,22 @@ button.batch-remote-tile-tag:disabled.active {
     border-color: #40434a;
   }
 
+  .script-switch {
+    color: #999;
+  }
+
+  .script-switch.on {
+    color: #81c784;
+  }
+
+  .script-switch-track {
+    background: #4a4d55;
+  }
+
+  .script-switch.on .script-switch-track {
+    background: #66bb6a;
+  }
+
   .serial-key-btn {
     background: #3a3d45;
     border-color: #555;
@@ -5908,6 +6101,11 @@ button.batch-remote-tile-tag:disabled.active {
                       <span>屏幕预览</span>
                       <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
                       <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
+                      <label class="script-switch" :class="{ on: scriptShowMarkers }">
+                        <input type="checkbox" v-model="scriptShowMarkers" />
+                        <span class="script-switch-track"></span>
+                        <span class="script-switch-text">显示步骤</span>
+                      </label>
                     </div>
                     <div class="script-screen-body">
                       <canvas
