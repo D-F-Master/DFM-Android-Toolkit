@@ -5261,28 +5261,33 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: default;
 }
 
-/* 快捷导入下拉：与 serial-select 同规格，适配头部小尺寸 */
+/* 快捷导入下拉（Element Plus el-select）：适配头部小尺寸与暗色模式 */
 .script-quick-select {
-  height: 24px;
-  max-width: 150px;
+  width: 150px;
+}
+
+.script-quick-select :deep(.el-select__wrapper) {
+  min-height: 24px;
   padding: 0 6px;
-  border: 1px solid #e8eaed;
-  border-radius: 6px;
   font-size: 12px;
-  font-family: inherit;
-  background: #fff;
-  color: #333;
-  cursor: pointer;
+  border-radius: 6px;
 }
 
-.script-quick-select:focus {
-  outline: none;
-  border-color: #4caf50;
+.script-quick-select :deep(.el-select__placeholder) {
+  font-size: 12px;
 }
 
-.script-quick-select:disabled {
-  opacity: 0.4;
-  cursor: default;
+.script-quick-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.script-quick-option-desc {
+  font-size: 11px;
+  color: #999;
 }
 
 .script-steps-list {
@@ -5434,6 +5439,10 @@ button.batch-remote-tile-tag:disabled.active {
   .script-step-config {
     background: #33363e;
     border-color: #40434a;
+  }
+
+  .script-quick-option-desc {
+    color: #7a7f8a;
   }
 }
 
@@ -6691,16 +6700,29 @@ button.batch-remote-tile-tag:disabled.active {
                       <div class="script-list-header">
                         <span>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
-                          <select
+                          <el-select
                             v-model="scriptQuickSelected"
                             class="script-quick-select"
+                            :class="{ dark: isDarkMode() }"
+                            size="small"
+                            :loading="scriptQuickLoading"
                             :disabled="scriptQuickLoading || scriptQuickOptions.length === 0"
+                            placeholder="选择脚本"
+                            :no-data-text="scriptQuickLoading ? '加载中…' : '暂无脚本'"
+                            popper-class="script-quick-popper"
                           >
-                            <option value="" disabled>{{ scriptQuickLoading ? '加载中…' : (scriptQuickOptions.length === 0 ? '暂无脚本' : '选择脚本') }}</option>
-                            <option v-for="opt in scriptQuickOptions" :key="opt.value" :value="opt.value">
-                              {{ opt.label }}（{{ opt.desc }}）
-                            </option>
-                          </select>
+                            <el-option
+                              v-for="opt in scriptQuickOptions"
+                              :key="opt.value"
+                              :value="opt.value"
+                              :label="opt.label"
+                            >
+                              <span class="script-quick-option">
+                                <span>{{ opt.label }}</span>
+                                <span class="script-quick-option-desc">{{ opt.desc }}</span>
+                              </span>
+                            </el-option>
+                          </el-select>
                           <button
                             class="script-mini-btn"
                             @click="importScriptQuick"
