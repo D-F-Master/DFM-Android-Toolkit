@@ -918,6 +918,8 @@ const finishCropRegion = async () => {
 // ---------- 屏幕流（复用 /ws/remote，单设备） ----------
 
 const scriptHandleBinary = (buf: ArrayBuffer) => {
+  // 收到任何数据都算连接活着（半开 TCP 检测的喂狗信号）
+  scriptLastDataAt = Date.now()
   const view = new DataView(buf)
   const kind = view.getUint8(1)
   const payload = new Uint8Array(buf, 2)
@@ -960,13 +962,23 @@ const scriptHandleBinary = (buf: ArrayBuffer) => {
 }
 
 const startScriptStream = () => {
-  if (!selectedDevice.value || scriptWs) return
+  if (!selectedDevice.value) return
+  // 存活检测：旧连接引用还在但已不是 OPEN（close 事件异步未触发、或后端 session 已死），
+  // 直接强制清理，否则这里 return 会导致切设备/重连时画面永久卡死
+  if (scriptWs && scriptWs.readyState !== WebSocket.OPEN && scriptWs.readyState !== WebSocket.CONNECTING) {
+    try { scriptWs.close() } catch { /* ignore */ }
+    scriptWs = null
+  }
+  if (scriptWs) return
+
   scriptWsStatus.value = '连接中'
   const wsUrl = API_BASE.value.replace(/^http/, 'ws') + '/ws/remote'
   const thisWs = new WebSocket(wsUrl)
   scriptWs = thisWs
   thisWs.binaryType = 'arraybuffer'
   thisWs.onopen = () => {
+    // 连上了就重置重连计数
+    scriptReconnectAttempts = 0
     thisWs.send(JSON.stringify({ type: 'start', devices: [selectedDevice.value] }))
   }
   thisWs.onmessage = (ev) => {
@@ -982,6 +994,8 @@ const startScriptStream = () => {
         scriptWsStatus.value = '实时'
       } else if (msg.type === 'error') {
         scriptWsStatus.value = `错误: ${msg.message}`
+        // 后端报错（设备断开/会话失败等）通常是致命的，主动断开触发重连流程
+        try { thisWs.close() } catch { /* ignore */ }
       }
     } else {
       scriptHandleBinary(ev.data as ArrayBuffer)
@@ -991,17 +1005,46 @@ const startScriptStream = () => {
     // 只有当前连接断开才算真断开：切设备时旧 ws 的 close 是异步触发的，
     // 可能晚于新 ws 创建，不能把新连接的引用/状态误清掉
     if (scriptWs === thisWs) {
-      scriptStreaming.value = false
-      scriptWsStatus.value = '未连接'
       scriptWs = null
+      scriptStreaming.value = false
+      // 主动停流（切页签/切设备）不重连；其余（网络波动、后端报错）自动重连
+      if (shouldStreamBeActive()) {
+        scheduleScriptReconnect()
+      } else {
+        scriptWsStatus.value = '未连接'
+      }
     }
   }
 }
 
+// 屏幕流是否应该处于激活状态（决定断线后要不要自动重连）
+const shouldStreamBeActive = (): boolean => {
+  return activeTab.value === 'script' && !!selectedDevice.value && !scriptManualStop
+}
+
+// 自动重连：指数退避（1s 起步，翻倍，上限 15s），连接成功后归零
+let scriptReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let scriptReconnectAttempts = 0
+let scriptManualStop = false
+
+const scheduleScriptReconnect = () => {
+  if (scriptReconnectTimer) return
+  const delay = Math.min(1000 * Math.pow(2, scriptReconnectAttempts), 15000)
+  scriptReconnectAttempts++
+  scriptWsStatus.value = `连接中断，${Math.round(delay / 1000)}s 后重连（第 ${scriptReconnectAttempts} 次）`
+  scriptReconnectTimer = setTimeout(() => {
+    scriptReconnectTimer = null
+    if (shouldStreamBeActive()) startScriptStream()
+  }, delay)
+}
+
 const stopScriptStream = () => {
+  // 主动停流：抑制自动重连
+  scriptManualStop = true
+  if (scriptReconnectTimer) { clearTimeout(scriptReconnectTimer); scriptReconnectTimer = null }
   if (scriptWs) {
     try { scriptWs.send(JSON.stringify({ type: 'stop' })) } catch { /* ignore */ }
-    scriptWs.close()
+    try { scriptWs.close() } catch { /* ignore */ }
     scriptWs = null
   }
   if (scriptDecoder) {
@@ -1016,17 +1059,49 @@ const stopScriptStream = () => {
   scriptReleaseKeyboard()
 }
 
+// 主动启动入口：清除手动停止标记
+const beginScriptStream = () => {
+  scriptManualStop = false
+  startScriptStream()
+}
+
+// ---------- 半开 TCP 检测：流"活着"但 10 秒没有任何数据 → 强制断开触发重连 ----------
+let scriptLastDataAt = 0
+let scriptStallTimer: ReturnType<typeof setInterval> | null = null
+
+const startStallWatch = () => {
+  if (scriptStallTimer) return
+  scriptLastDataAt = Date.now()
+  scriptStallTimer = setInterval(() => {
+    if (!scriptWs || !scriptStreaming.value) {
+      scriptLastDataAt = Date.now()
+      return
+    }
+    if (Date.now() - scriptLastDataAt > 10000) {
+      // 数据流卡死：显示提示并强断，onclose 会触发自动重连
+      scriptWsStatus.value = '画面超过 10 秒无数据，重连中...'
+      try { scriptWs.close() } catch { /* ignore */ }
+    }
+  }, 2000)
+}
+
+const stopStallWatch = () => {
+  if (scriptStallTimer) { clearInterval(scriptStallTimer); scriptStallTimer = null }
+}
+
 // 进入/离开 Tab 时开关屏幕流
 watch(activeTab, async (tab) => {
   if (tab === 'script') {
     await nextTick()
-    if (selectedDevice.value) startScriptStream()
+    startStallWatch()
+    if (selectedDevice.value) beginScriptStream()
     // 进入脚本页时准备安装APK / 等待组件 / 应用下拉的数据
     if (scriptApkOptions.value.length === 0) fetchScriptApks()
     fetchScriptTemplates()
     fetchScriptApps()
   } else {
     stopScriptStream()
+    stopStallWatch()
   }
 })
 
@@ -1049,7 +1124,7 @@ watch(selectedDevice, async (deviceId) => {
   }
   if (deviceId && activeTab.value === 'script') {
     await nextTick()
-    startScriptStream()
+    beginScriptStream()
   }
 })
 
@@ -3373,8 +3448,9 @@ onUnmounted(() => {
   disposeMonitorCharts()
   // 关闭批量投屏会话
   stopBatchRemote()
-  // 关闭模拟脚本屏幕流
+  // 关闭模拟脚本屏幕流（含重连定时器与卡顿看门狗）
   stopScriptStream()
+  stopStallWatch()
 })
 
 // ---------- 模拟串口 ----------
