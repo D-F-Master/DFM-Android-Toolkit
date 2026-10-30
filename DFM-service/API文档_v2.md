@@ -790,10 +790,11 @@
 }
 ```
 
-- `installApk`：从流水线素材库（`data/pipelines/apks/`）选择 APK 安装
+- `installApk`：从流水线素材库（`data/apk/`）选择 APK 安装
 - `simulate`：引用「模拟脚本」Tab 保存的脚本，`repeat` 为脚本重复轮数
 - `screenshot`：`screencap` 截图 pull 到本机，`saveDir` 留空默认 `D:\log\{设备SN}\`
 - `deleteFolder`：`rm -rf` 删除设备文件夹，**仅允许 `/sdcard/` 或 `/storage/` 开头的路径**（防误删系统目录）
+- `shell`：在设备 shell 中执行任意命令（`{"type": "shell", "command": "ls /sdcard"}`）；命令不要带 `adb` 前缀；输出前 20 行记入执行日志
 
 ### 32. 保存流水线
 **接口**: `POST /api/device/pipeline/save`  
@@ -815,7 +816,7 @@
 - `POST /api/device/pipeline/list-apks`（无参数）
 - `POST /api/device/pipeline/delete-apk`（`{"name": "xxx.apk"}`）
 
-**说明**: 素材存放于 `data/pipelines/apks/`，文件名经安全过滤（中英文数字下划线连字符）
+**说明**: 素材存放于 `data/apk/`，文件名经安全过滤（中英文数字下划线连字符）
 
 ### 36. 执行流水线
 **接口**: `POST /api/device/pipeline/run`  
