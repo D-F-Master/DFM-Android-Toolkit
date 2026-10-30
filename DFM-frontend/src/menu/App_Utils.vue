@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import axios from 'axios'
-import { onMounted, onUnmounted, ref, computed, nextTick, watch } from 'vue';
+import { onMounted, onUnmounted, onBeforeUnmount, ref, computed, nextTick, watch } from 'vue';
 import ModalDialog from '../components/ModalDialog.vue';
 import FileEditorDialog from '../components/FileEditorDialog.vue';
 import * as echarts from 'echarts/core';
@@ -195,6 +195,14 @@ const batchRemoteGridCols = computed(() => {
   if (n <= 4) return 2
   return 3
 })
+
+// 画面容器按设备真实宽高比撑开：竖屏 9:16 不再被固定高度裁掉
+const batchRemoteTileBodyStyle = (card: { width: number; height: number }) => {
+  const w = card && card.width ? card.width : 9
+  const h = card && card.height ? card.height : 16
+  // width:auto 让盒宽由高度 × 宽高比推出，避免先铺满再用 max-height 砍掉导致比例失真
+  return { aspectRatio: `${w} / ${h}`, width: 'auto', maxWidth: '100%' }
+}
 
 const batchRemoteSendMirror = (event: any) => {
   if (batchRemoteWs && batchRemoteWs.readyState === WebSocket.OPEN) {
@@ -397,6 +405,68 @@ const concatU8 = (a: Uint8Array, b: Uint8Array): Uint8Array => {
   out.set(b, a.length)
   return out
 }
+
+// 画面容器高度按「行数」和投屏区可用高度分配（竖屏 9:16 也完整显示，不写死 200px 裁切）。
+// 注意：不能用卡片内容高度反推容器高度——两者互相影响会形成 ResizeObserver 自反馈，
+// 高度会一路涨上去。这里只观察父级 .batch-remote-area，且只在它高度变化时重算。
+const batchRemoteAreaRef = ref<HTMLElement | null>(null)
+const batchRemoteAreaHeight = ref(0)
+let batchRemoteAreaObserver: ResizeObserver | null = null
+
+const batchRemoteMeasureArea = () => {
+  const el = batchRemoteAreaRef.value
+  if (!el) return
+  const h = el.clientHeight
+  // 忽略 0 值（面板切换/Hidden 期间测量），避免把手写变量清成兜底值
+  if (h > 0) batchRemoteAreaHeight.value = h
+}
+
+const startBatchRemoteAreaObserver = () => {
+  stopBatchRemoteAreaObserver()
+  const el = batchRemoteAreaRef.value
+  if (!el || typeof ResizeObserver === 'undefined') return
+  batchRemoteAreaObserver = new ResizeObserver(() => batchRemoteMeasureArea())
+  batchRemoteAreaObserver.observe(el)
+  batchRemoteMeasureArea()
+}
+
+const stopBatchRemoteAreaObserver = () => {
+  if (batchRemoteAreaObserver) {
+    batchRemoteAreaObserver.disconnect()
+    batchRemoteAreaObserver = null
+  }
+}
+
+watch(() => batchRemoteCards.value.length, async () => {
+  await nextTick()
+  startBatchRemoteAreaObserver()
+})
+
+onBeforeUnmount(() => {
+  stopBatchRemoteAreaObserver()
+})
+
+// 网格行数：卡片数 / 列数
+const batchRemoteGridRows = computed(() => {
+  const n = batchRemoteCards.value.length
+  if (n === 0) return 1
+  return Math.ceil(n / batchRemoteGridCols.value)
+})
+
+// 卡片可用高度 = 投屏区高度去掉表头内边距后，按行数均分（含 gap）
+const batchRemoteTileHeight = computed(() => {
+  const areaH = batchRemoteAreaHeight.value || 480
+  const rows = batchRemoteGridRows.value
+  const headerH = 60
+  const gap = 10
+  const h = (areaH - headerH - gap * (rows - 1)) / rows
+  return Math.max(120, Math.floor(h))
+})
+
+const batchRemoteGridStyle = computed(() => ({
+  gridTemplateColumns: `repeat(${batchRemoteGridCols.value}, 1fr)`,
+  '--batch-tile-h': `${batchRemoteTileHeight.value}px`,
+}))
 
 const startBatchRemote = () => {
   if (batchSelectedDevices.value.size === 0) {
@@ -2332,6 +2402,52 @@ const monitorError = ref('')
 const monitorActive = ref(false)       // 是否停留在性能监控 Tab（懒加载开关）
 const rateHistory = ref<Array<{ time: string; cpu: number; rx: number; tx: number }>>([])
 
+// 第一行卡片视图切换：chart = CPU/网络折线图，top = top 命令进程列表
+type RateViewMode = 'chart' | 'top'
+const rateViewMode = ref<RateViewMode>('chart')
+
+interface TopProcess {
+  pid: number;
+  user: string;
+  stat: string;
+  cpuPercent: number;
+  memPercent: number;
+  command: string;
+}
+const topProcesses = ref<TopProcess[]>([])
+let topRequesting = false              // 防止 top 请求堆积
+
+// 拉取 top 进程快照（仅 top 视图时轮询，防堆积方式与速率轮询一致）
+const fetchMonitorTop = async () => {
+  if (!selectedDevice.value || topRequesting) return
+  topRequesting = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/monitor/top`, {
+      deviceId: selectedDevice.value
+    })
+    if (response.data.code === 200 && response.data.data) {
+      topProcesses.value = response.data.data.processes || []
+      monitorError.value = ''
+    } else {
+      monitorError.value = response.data.message || '获取 Top 进程失败'
+    }
+  } catch (error: any) {
+    console.error('获取 Top 进程失败:', error)
+    monitorError.value = `获取 Top 进程失败: ${error.message}`
+  } finally {
+    topRequesting = false
+  }
+}
+
+// 视图切换时：进入 top 立即拉一次，回到 chart 清空 top 数据（下次进入重新拉）
+watch(rateViewMode, async (mode) => {
+  if (mode === 'top') {
+    await fetchMonitorTop()
+  } else {
+    topProcesses.value = []
+  }
+})
+
 let snapshotTimer: ReturnType<typeof setInterval> | null = null
 let rateTimer: ReturnType<typeof setTimeout> | null = null
 let rateRequesting = false             // 防止上一次请求未返回就发起下一次
@@ -2666,7 +2782,8 @@ const fetchMonitorRate = async () => {
   }
 }
 
-// 速率轮询：上一次请求返回后再排下一次，天然防止堆积
+// 速率/top 轮询：上一次请求返回后再排下一次，天然防止堆积。
+// top 视图下折线数据停止累积，改为轮询 top 进程快照。
 const scheduleRatePoll = () => {
   if (rateTimer) {
     clearTimeout(rateTimer)
@@ -2676,7 +2793,11 @@ const scheduleRatePoll = () => {
   rateTimer = setTimeout(async () => {
     rateTimer = null
     if (!monitorActive.value || !selectedDevice.value) return
-    await fetchMonitorRate()
+    if (rateViewMode.value === 'top') {
+      await fetchMonitorTop()
+    } else {
+      await fetchMonitorRate()
+    }
     scheduleRatePoll()
   }, RATE_POLL_INTERVAL)
 }
@@ -2708,6 +2829,7 @@ const startMonitor = async () => {
 const stopMonitor = () => {
   monitorActive.value = false
   rateRequesting = false
+  topRequesting = false
   if (rateTimer) {
     clearTimeout(rateTimer)
     rateTimer = null
@@ -2777,6 +2899,7 @@ watch(activeTab, async (tab) => {
 watch(selectedDevice, async (deviceId) => {
   if (!monitorActive.value) return
   rateHistory.value = []
+  topProcesses.value = []
   monitorSnapshot.value = null
   monitorRate.value = null
   disposeMonitorCharts()
@@ -4280,10 +4403,9 @@ button.batch-action-btn:disabled {
   padding: 12px 16px;
   background: #fafafa;
   border-radius: 8px;
-  /* 高度受控：最多占页面 55%，避免把设备区与功能区挤出视口 */
-  flex: 0 1 auto;
+  /* 与设备区共享剩余空间；画面高度已按宽高比自适应，不会撑高整页 */
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: 55%;
   display: flex;
   flex-direction: column;
 }
@@ -4405,16 +4527,18 @@ button.batch-remote-tile-tag:disabled.active {
   color: #fff;
 }
 
-/* 画面容器：固定高度上限，canvas 在其中等比缩放。
-   之前直接把 canvas 放在 tile 里且用 width:auto，浏览器优先满足宽度约束，
-   9:16 画面高度会撑到上千像素，把上方设备区与功能区挤出视口。 */
+/* 画面容器高度由 --batch-tile-h 决定（按投屏区可用高度与行数均分，JS 计算写入），
+   再按设备宽高比反推宽度：竖屏 9:16 与横屏 16:9 都完整显示，不裁切也不撑高页面。 */
 .batch-remote-tile-body {
   position: relative;
   flex: 0 0 auto;
-  height: 200px;
+  height: var(--batch-tile-h, 200px);
+  max-width: 100%;
+  margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 
 /* canvas 上 object-fit 无效，用 max-width/max-height 双约束实现等比缩放 */
@@ -6246,13 +6370,13 @@ button.batch-remote-tile-tag:disabled.active {
                 </div>
 
                 <!-- 批量投屏画面区（会话建立后显示） -->
-                <div v-if="batchRemoteActive || batchRemoteCards.length > 0" class="batch-remote-area">
+                <div v-if="batchRemoteActive || batchRemoteCards.length > 0" ref="batchRemoteAreaRef" class="batch-remote-area">
                   <div class="batch-remote-header">
                     <span>批量投屏（主控画面操作同步到其他设备 · 单击从机画面或点「设为主控」切换主控）</span>
                     <span class="batch-remote-status" :class="{ live: batchRemoteActive }">{{ batchRemoteWsStatus }}</span>
                   </div>
                   <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
-                  <div class="batch-remote-grid" :style="{ gridTemplateColumns: `repeat(${batchRemoteGridCols}, 1fr)` }">
+                  <div class="batch-remote-grid" :style="batchRemoteGridStyle">
                     <div
                       v-for="card in batchRemoteCards"
                       :key="card.deviceId"
@@ -6275,8 +6399,8 @@ button.batch-remote-tile-tag:disabled.active {
                           {{ card.deviceId === batchRemoteSource ? '★ 主控' : '设为主控' }}
                         </button>
                       </div>
-                      <!-- 画面容器：固定高度上限，canvas 在其中等比缩放 -->
-                      <div class="batch-remote-tile-body">
+                      <!-- 画面容器：按设备宽高比撑开，竖屏也能完整显示 -->
+                      <div class="batch-remote-tile-body" :style="batchRemoteTileBodyStyle(card)">
                         <canvas
                           :ref="(el) => setBatchRemoteCanvasRef(el, card.index)"
                           class="batch-remote-canvas"
