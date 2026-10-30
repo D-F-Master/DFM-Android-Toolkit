@@ -470,10 +470,11 @@ const scriptStreaming = ref(false)
 const scriptWsStatus = ref('未连接')
 const scriptRecording = ref(false)
 const scriptSteps = ref<Array<{
-  type: 'tap' | 'swipe' | 'longpress';
+  type: 'tap' | 'swipe' | 'longpress' | 'input';
   x1: number; y1: number;
   x2?: number; y2?: number;
   duration?: number;
+  text?: string;
   interval: number;
   count: number;
 }>>([])
@@ -547,6 +548,7 @@ const SCRIPT_LONGPRESS_MS = 600
 const scriptStepLabel = (step: any): string => {
   if (step.type === 'tap') return `点击 (${step.x1}, ${step.y1})`
   if (step.type === 'longpress') return `长按 (${step.x1}, ${step.y1}) ${step.duration}ms`
+  if (step.type === 'input') return `输入「${step.text ?? ''}」`
   return `滑动 (${step.x1}, ${step.y1}) → (${step.x2}, ${step.y2})`
 }
 
@@ -575,6 +577,8 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
   const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
 
   scriptSteps.value.forEach((step, idx) => {
+    // 输入步骤没有坐标，画面上不画标记（序号也就不占位）
+    if (step.type === 'input') return
     const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
     const x = step.x1
     const y = step.y1
@@ -702,6 +706,8 @@ const scriptHitTest = (x: number, y: number): { stepIndex: number; part: 'start'
 
   for (let idx = scriptSteps.value.length - 1; idx >= 0; idx--) {
     const step = scriptSteps.value[idx]
+    // 输入步骤没有坐标，不参与命中
+    if (step.type === 'input') continue
     const d1 = Math.hypot(x - step.x1, y - step.y1)
     if (d1 <= tolerance) return { stepIndex: idx, part: 'start' }
     if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
@@ -1017,6 +1023,32 @@ const clearScriptSteps = () => {
   scriptSteps.value = []
 }
 
+// ---------- 输入文字步骤 ----------
+
+// 右侧控制区的输入框内容
+const scriptInputText = ref('')
+
+// 追加一个输入步骤：不存坐标，执行时输入到设备当前聚焦的输入框
+// （通常紧跟在一次点击之后，点哪个框就往哪个框里打字）
+const addScriptInputStep = () => {
+  const text = scriptInputText.value
+  if (!text) {
+    showNotification('请输入要输入的文字', 'error')
+    return
+  }
+  const step = {
+    type: 'input' as const,
+    x1: 0,
+    y1: 0,
+    text,
+    interval: scriptOpConfig.value.tap.interval,
+    count: 1,
+  }
+  scriptSteps.value.push(step)
+  showNotification(`已添加第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
+  scriptInputText.value = ''
+}
+
 // 点击步骤：选中并展开执行参数（再点一次收起）
 const toggleStepEdit = (idx: number) => {
   scriptEditingStep.value = scriptEditingStep.value === idx ? null : idx
@@ -1076,6 +1108,7 @@ const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
     x2: s.x2,
     y2: s.y2,
     duration: s.duration,
+    text: s.text,
     interval: s.interval ?? 0,
     count: s.count ?? 1,
   }))
@@ -5160,6 +5193,29 @@ button.batch-remote-tile-tag:disabled.active {
   width: 100%;
 }
 
+/* 输入文字：输入框 + 插入按钮同一行 */
+.script-input-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.script-input-field {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #333;
+}
+
+.script-input-field:focus {
+  outline: none;
+  border-color: #4caf50;
+}
+
 .script-config-row {
   display: flex;
   align-items: center;
@@ -6660,6 +6716,22 @@ button.batch-remote-tile-tag:disabled.active {
                           </span>
                         </el-option>
                       </el-select>
+
+                      <!-- 输入文字：追加一个 input 步骤，执行时输入到设备当前聚焦的输入框 -->
+                      <div class="script-input-row">
+                        <input
+                          v-model="scriptInputText"
+                          class="script-input-field"
+                          type="text"
+                          placeholder="输入要填的文字…"
+                          @keyup.enter="addScriptInputStep"
+                        >
+                        <button
+                          class="script-mini-btn"
+                          @click="addScriptInputStep"
+                          :disabled="!scriptInputText"
+                        >插入输入</button>
+                      </div>
                     </div>
 
                     <!-- 下：脚本列表 + 底部按钮 -->
@@ -6693,6 +6765,14 @@ button.batch-remote-tile-tag:disabled.active {
 
                           <!-- 选中后展开该步的执行参数 -->
                           <div v-if="scriptEditingStep === idx" class="script-step-config" @click.stop>
+                            <div v-if="step.type === 'input'" class="script-config-row">
+                              <span>输入内容</span>
+                              <input
+                                type="text"
+                                class="script-config-input"
+                                v-model="step.text"
+                              >
+                            </div>
                             <div class="script-config-row">
                               <span>执行间隔(ms)</span>
                               <input
@@ -6711,7 +6791,10 @@ button.batch-remote-tile-tag:disabled.active {
                                 v-model.number="step.count"
                               >
                             </div>
-                            <div class="script-config-hint">
+                            <div v-if="step.type === 'input'" class="script-config-hint">
+                              输入到设备当前聚焦的输入框，通常放在一次点击之后
+                            </div>
+                            <div v-else class="script-config-hint">
                               开启「显示步骤」后可在画面上拖动该步骤的位置
                             </div>
                           </div>
