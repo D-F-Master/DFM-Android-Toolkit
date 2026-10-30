@@ -785,7 +785,16 @@
     { "type": "installApk", "apkName": "素材库中的APK文件名" },
     { "type": "simulate",   "scriptName": "模拟脚本名", "repeat": 1 },
     { "type": "screenshot", "saveDir": "" },
-    { "type": "deleteFolder", "path": "/sdcard/xxx" }
+    { "type": "deleteFolder", "path": "/sdcard/xxx" },
+    { "type": "shell", "command": "ls /sdcard" },
+    { "type": "startApp", "packageName": "com.example.app", "activity": ".MainActivity" },
+    { "type": "stopApp", "packageName": "com.example.app" },
+    { "type": "uninstallApp", "packageName": "com.example.app" },
+    { "type": "keyevent", "keycode": 4, "repeat": 1 },
+    { "type": "volume", "action": "up", "stream": "media" },
+    { "type": "reboot" },
+    { "type": "rebootLoader" },
+    { "type": "cleanMemory" }
   ]
 }
 ```
@@ -795,6 +804,15 @@
 - `screenshot`：`screencap` 截图 pull 到本机，`saveDir` 留空默认 `D:\log\{设备SN}\`
 - `deleteFolder`：`rm -rf` 删除设备文件夹，**仅允许 `/sdcard/` 或 `/storage/` 开头的路径**（防误删系统目录）
 - `shell`：在设备 shell 中执行任意命令（`{"type": "shell", "command": "ls /sdcard"}`）；命令不要带 `adb` 前缀；输出前 20 行记入执行日志
+- `startApp`：启动应用；填 `activity` 时用 `am start -n 包名/Activity`，否则用 monkey LAUNCHER 方式
+- `stopApp`：`am force-stop` 停止应用
+- `uninstallApp`：`adb uninstall` 卸载应用
+- `keyevent`：`input keyevent` 发送按键，`keycode` 为数字键值（4=返回 3=HOME 26=电源 24/25=音量），`repeat` 1-20 次
+- `volume`：`action` 仅支持 `up`/`down`/`mute`；加减走音量键，`mute` 走 audio 服务（`stream` 仅静音时生效）
+- `reboot` / `rebootLoader`：`adb reboot` / `adb reboot bootloader`（⚠️ loader 模式 adb 不可达，需数据线重插或工具恢复）
+- `cleanMemory`：杀后台缓存进程（`am kill-all`）+ 尝试释放页缓存（root，失败不阻塞）
+- 通用字段：`screenshot`/`deleteFolder`/`keyevent`/`reboot`/`rebootLoader`/`cleanMemory` 支持 `delayAfter`（秒，0-∞，执行成功后等待再进入下一步；停止请求可中断等待）
+- 前端「添加步骤」行展示最近使用的 5 个步骤类型（localStorage 持久化），「⋯ 更多」弹窗按分类（基础/应用管理/设备控制/系统维护）展示全部；投屏、文件管理、日志窗口等查看型功能不作为流水线步骤
 
 ### 32. 保存流水线
 **接口**: `POST /api/device/pipeline/save`  
@@ -1199,6 +1217,12 @@
 ---
 
 ## 更新日志
+
+### v2.5.0
+- 生产流水线新增 8 种步骤类型（p3）：`startApp` / `stopApp` / `uninstallApp` / `keyevent` / `volume` / `reboot` / `rebootLoader` / `cleanMemory`，覆盖 ADB 工具全部动作型功能
+- 步骤通用字段 `delayAfter`：执行成功后等待 N 秒再进入下一步（支持停止中断）
+- 包名/Activity/键值/音量动作参数校验（保存与导入时拦截非法值）
+- 前端「添加步骤」按最近使用排序（localStorage），「⋯ 更多」按分类展示全部步骤类型
 
 ### v2.4.0
 - 新增日志抓取接口 `POST /api/device/logs/capture/start` / `stop`（持续抓取前台应用日志，保存到 D:\log\{SN}\{时间}.log）
