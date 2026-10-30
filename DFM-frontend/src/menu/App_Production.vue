@@ -326,9 +326,9 @@ onUnmounted(() => {
         <div class="content">
           <div class="prod-page">
             <!-- 设备画面网格：3 列，可滚动，左上角设备 IP -->
-            <div class="scr-section">
-              <div class="scr-toolbar">
-                <span class="scr-title">设备画面（{{ selectedDevices.length }} 台）</span>
+            <div class="prod-card">
+              <div class="prod-card-head">
+                <span>设备画面（{{ selectedDevices.length }} 台）</span>
                 <div class="scr-toolbar-btns">
                   <button class="prod-btn" :disabled="screensLoading || selectedDevices.length === 0" @click="fetchScreens">
                     {{ screensLoading ? '获取中...' : '📷 获取画面' }}
@@ -338,38 +338,45 @@ onUnmounted(() => {
                   </button>
                 </div>
               </div>
-              <div class="scr-grid" v-if="selectedDevices.length > 0">
-                <div v-for="d in selectedDevices" :key="d" class="scr-tile">
-                  <span class="scr-tile-ip">{{ d }}</span>
-                  <span v-if="screenTiles.get(d)?.capturedAt" class="scr-tile-time">{{ screenTiles.get(d)?.capturedAt }}</span>
-                  <div class="scr-tile-body">
-                    <img v-if="screenTiles.get(d)?.imageDataUrl" :src="screenTiles.get(d)?.imageDataUrl" class="scr-tile-img">
-                    <div v-else-if="screenTiles.get(d)?.loading" class="scr-tile-loading">截取中...</div>
-                    <div v-else-if="screenTiles.get(d)?.error" class="scr-tile-error">{{ screenTiles.get(d)?.error }}</div>
-                    <div v-else class="scr-tile-loading">点击「获取画面」</div>
-                    <div v-if="screenTiles.get(d)?.loading && screenTiles.get(d)?.imageDataUrl" class="scr-tile-refresh">刷新中...</div>
+              <div class="prod-card-body">
+                <div class="scr-grid" v-if="selectedDevices.length > 0">
+                  <div v-for="d in selectedDevices" :key="d" class="scr-tile">
+                    <span class="scr-tile-ip">{{ d }}</span>
+                    <span v-if="screenTiles.get(d)?.capturedAt" class="scr-tile-time">{{ screenTiles.get(d)?.capturedAt }}</span>
+                    <div class="scr-tile-body">
+                      <img v-if="screenTiles.get(d)?.imageDataUrl" :src="screenTiles.get(d)?.imageDataUrl" class="scr-tile-img">
+                      <div v-else-if="screenTiles.get(d)?.loading" class="scr-tile-loading">截取中...</div>
+                      <div v-else-if="screenTiles.get(d)?.error" class="scr-tile-error">{{ screenTiles.get(d)?.error }}</div>
+                      <div v-else class="scr-tile-loading">点击「获取画面」</div>
+                      <div v-if="screenTiles.get(d)?.loading && screenTiles.get(d)?.imageDataUrl" class="scr-tile-refresh">刷新中...</div>
+                    </div>
                   </div>
                 </div>
+                <div v-else class="scr-empty">先在左侧勾选设备</div>
               </div>
-              <div v-else class="scr-empty">先在左侧勾选设备</div>
             </div>
 
             <!-- 快捷执行：选脚本直接跑 -->
-            <div class="quick-bar">
-              <span class="quick-label">快捷执行：</span>
-              <select v-model="quickScriptName" class="quick-select">
-                <option value="" disabled>选择模拟脚本...</option>
-                <option v-for="n in scriptOptions" :key="n" :value="n">{{ n }}</option>
-              </select>
-              <button class="prod-run-btn" :disabled="quickRunning || running" @click="quickRunScript">
-                {{ quickRunning ? '启动中...' : '▶ 对已选设备执行脚本' }}
-              </button>
-              <button v-if="running" class="prod-stop-btn" @click="stopRun">■ 停止</button>
+            <div class="prod-card">
+              <div class="prod-card-head">
+                <span>快捷执行</span>
+              </div>
+              <div class="prod-card-body quick-bar">
+                <span class="quick-label">选择脚本</span>
+                <select v-model="quickScriptName" class="quick-select">
+                  <option value="" disabled>选择模拟脚本...</option>
+                  <option v-for="n in scriptOptions" :key="n" :value="n">{{ n }}</option>
+                </select>
+                <button class="prod-run-btn" :disabled="quickRunning || running" @click="quickRunScript">
+                  {{ quickRunning ? '启动中...' : '▶ 对已选设备执行脚本' }}
+                </button>
+                <button v-if="running" class="prod-stop-btn" @click="stopRun">■ 停止</button>
+              </div>
             </div>
 
             <!-- 日志 -->
-            <div class="prod-log-card">
-              <div class="prod-log-head">
+            <div class="prod-card prod-log-card">
+              <div class="prod-card-head prod-log-head">
                 <span>执行日志</span>
                 <span v-if="logFilePath" class="prod-log-file" :title="logFilePath">落盘: {{ logFilePath }}</span>
               </div>
@@ -497,15 +504,40 @@ onUnmounted(() => {
   opacity: 0.55;
 }
 
-/* ===== 右栏：画面 + 快捷执行 + 日志 ===== */
+/* ===== 右栏：卡片布局（与 ADB 工具的 scrcpy-card 同风格） ===== */
 .prod-page {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   padding: 10px;
   height: 100%;
   box-sizing: border-box;
   overflow-y: auto;
+}
+
+.prod-card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.prod-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+.prod-card-body {
+  padding: 16px;
 }
 
 /* ===== 按钮 ===== */
@@ -568,25 +600,6 @@ onUnmounted(() => {
 }
 
 /* ===== 设备画面网格 ===== */
-.scr-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.scr-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.scr-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #444;
-}
-
 .scr-toolbar-btns {
   display: flex;
   gap: 8px;
@@ -692,7 +705,7 @@ onUnmounted(() => {
 .quick-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .quick-label {
