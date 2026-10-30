@@ -7,12 +7,18 @@
   "repeat": 1,                  # 整个脚本重复轮数
   "steps": [
     {
-      "type": "tap",            # tap | swipe | longpress
+      "type": "tap",            # tap | swipe | longpress | input
       "x1": 540, "y1": 960,     # tap/longpress 只用 x1,y1；swipe 额外用 x2,y2
       "x2": 540, "y2": 1200,
       "duration": 800,          # longpress 时长(ms)
       "interval": 500,          # 该步执行间隔(ms)，步与步之间的等待
       "count": 1                # 该步执行次数
+    },
+    {
+      "type": "input",          # 输入文字：无坐标，输入到设备当前聚焦的输入框
+      "text": "1234",
+      "interval": 500,
+      "count": 1
     }
   ]
 }
@@ -79,7 +85,7 @@ class ScriptImportRequest(BaseModel):
 
 # ========== 脚本校验 ==========
 
-VALID_STEP_TYPES = ("tap", "swipe", "longpress")
+VALID_STEP_TYPES = ("tap", "swipe", "longpress", "input")
 
 
 def _validate_steps(steps) -> str:
@@ -97,6 +103,19 @@ def _validate_steps(steps) -> str:
         step_type = step.get("type")
         if step_type not in VALID_STEP_TYPES:
             return f"第 {i + 1} 步的 type 无效: {step_type}（应为 {'/'.join(VALID_STEP_TYPES)}）"
+
+        # input 步骤没有坐标（输入到设备当前聚焦的输入框），只校验文本
+        if step_type == "input":
+            text = step.get("text")
+            if not isinstance(text, str) or not text:
+                return f"第 {i + 1} 步是输入步骤，text 必须是非空字符串"
+            interval = step.get("interval", 0)
+            if not isinstance(interval, (int, float)) or interval < 0:
+                return f"第 {i + 1} 步的 interval 必须是非负数字"
+            count = step.get("count", 1)
+            if not isinstance(count, int) or count < 1:
+                return f"第 {i + 1} 步的 count 必须是大于 0 的整数"
+            continue
 
         for field in ("x1", "y1"):
             value = step.get(field)
@@ -129,6 +148,15 @@ def _normalize_steps(steps) -> List[dict]:
     """补全步骤的缺省字段"""
     normalized = []
     for step in steps:
+        # input 步骤没有坐标，只保留文本与执行参数
+        if step["type"] == "input":
+            normalized.append({
+                "type": "input",
+                "text": step.get("text", ""),
+                "interval": step.get("interval", 0),
+                "count": step.get("count", 1),
+            })
+            continue
         item = {
             "type": step["type"],
             "x1": step["x1"],
@@ -374,6 +402,16 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                             )
                             time.sleep(0.01)
                         session.inject_touch(1, x2, y2, w, h)
+                    elif stype == "input":
+                        # 输入文字：注入到设备当前聚焦的输入框
+                        # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
+                        text = step.get("text") or ""
+                        if text:
+                            session.inject_text(text)
+                            # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
+                            time.sleep(0.1)
+                        else:
+                            logger.warning("Input step with empty text skipped")
                     else:
                         logger.warning(f"Unknown step type: {stype}")
                         break
