@@ -19,9 +19,20 @@
       "text": "1234",
       "interval": 500,
       "count": 1
-    }
+    },
+    { "type": "installApk",  "apkName": "demo.apk" },
+    { "type": "deleteFolder", "path": "/sdcard/xxx" },
+    { "type": "startApp",    "packageName": "com.x", "activity": ".Main" },
+    { "type": "stopApp",     "packageName": "com.x" },
+    { "type": "uninstallApp","packageName": "com.x" },
+    { "type": "keyevent",    "keycode": 4 },
+    { "type": "volume",      "action": "up", "stream": "media" },
+    { "type": "reboot" }
   ]
 }
+
+设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
+其余注入类步骤走 scrcpy 会话。
 
 执行（/script/run）：
   临时起一个 scrcpy DeviceSession（复用批量远控的会话实现），
@@ -47,6 +58,7 @@ router = APIRouter(
 )
 
 SCRIPTS_DIR = get_data_path() / "scripts"
+APKS_DIR = get_data_path() / "apk"
 
 
 def _ensure_scripts_dir():
@@ -94,7 +106,14 @@ class ScriptImportRequest(BaseModel):
 
 # ========== 脚本校验 ==========
 
-VALID_STEP_TYPES = ("tap", "swipe", "longpress", "input")
+# 注入类步骤：走 scrcpy 会话
+INJECT_STEP_TYPES = ("tap", "swipe", "longpress", "input")
+# 设备动作类步骤：走 adb 命令
+ADB_STEP_TYPES = (
+    "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
+    "keyevent", "volume", "reboot",
+)
+VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES
 
 
 def _validate_steps(steps) -> str:
@@ -126,6 +145,13 @@ def _validate_steps(steps) -> str:
                 return f"第 {i + 1} 步的 count 必须是大于 0 的整数"
             continue
 
+        # 设备动作类步骤：无坐标，按各自参数校验
+        if step_type in ADB_STEP_TYPES:
+            error = _validate_adb_step(step_type, step, i + 1)
+            if error:
+                return error
+            continue
+
         for field in ("x1", "y1"):
             value = step.get(field)
             if not isinstance(value, (int, float)):
@@ -153,6 +179,54 @@ def _validate_steps(steps) -> str:
     return ""
 
 
+def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
+    """校验设备动作类步骤，返回空串表示通过"""
+    if step_type == "installApk":
+        if not str(step.get("apkName", "")).strip():
+            return f"第 {idx} 步未选择 APK 文件"
+        return ""
+
+    if step_type == "deleteFolder":
+        path = str(step.get("path", "")).strip()
+        if not path:
+            return f"第 {idx} 步未填写要删除的文件夹路径"
+        # rm -rf 的目标必须限定在用户区，防止误删系统目录
+        if not (path.startswith("/sdcard/") or path.startswith("/storage/")):
+            return f"第 {idx} 步的删除路径仅允许 /sdcard/ 或 /storage/ 开头"
+        return ""
+
+    if step_type in ("startApp", "stopApp", "uninstallApp"):
+        pkg = str(step.get("packageName", "")).strip()
+        if not pkg:
+            return f"第 {idx} 步未填写应用包名"
+        if re.search(r'[\s"\'&|;$<>`\\]', pkg):
+            return f"第 {idx} 步的包名不能包含空格或特殊字符"
+        if step_type == "startApp" and step.get("activity"):
+            activity = str(step.get("activity", "")).strip()
+            if re.search(r'[\s"\'&|;$<>`\\]', activity):
+                return f"第 {idx} 步的 Activity 名不能包含空格或特殊字符"
+        return ""
+
+    if step_type == "keyevent":
+        try:
+            keycode = int(step.get("keycode"))
+        except (TypeError, ValueError):
+            return f"第 {idx} 步未填写有效的按键键值（数字）"
+        if not (0 <= keycode <= 65535):
+            return f"第 {idx} 步的键值超出范围 0-65535"
+        return ""
+
+    if step_type == "volume":
+        if str(step.get("action", "")).strip() not in ("up", "down", "mute"):
+            return f"第 {idx} 步的音量动作仅支持 up/down/mute"
+        return ""
+
+    if step_type == "reboot":
+        return ""
+
+    return ""
+
+
 def _normalize_steps(steps) -> List[dict]:
     """补全步骤的缺省字段"""
     normalized = []
@@ -165,6 +239,18 @@ def _normalize_steps(steps) -> List[dict]:
                 "interval": step.get("interval", 0),
                 "count": step.get("count", 1),
             })
+            continue
+        # 设备动作类步骤：保留各自参数（不带坐标字段）
+        if step["type"] in ADB_STEP_TYPES:
+            item = {
+                "type": step["type"],
+                "interval": step.get("interval", 0),
+                "count": step.get("count", 1),
+            }
+            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream"):
+                if step.get(field) is not None:
+                    item[field] = step.get(field)
+            normalized.append(item)
             continue
         item = {
             "type": step["type"],
@@ -338,12 +424,105 @@ def _check_device_online(device_id: str) -> bool:
     return False
 
 
+def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
+    """
+    执行一个设备动作类步骤（走 adb 命令，不需要 scrcpy 会话）
+
+    count>1 时重复执行；interval 是每次之间的等待毫秒数。
+    失败抛出 RuntimeError，由调用方（流水线/面板）记录。
+    """
+    stype = step.get("type")
+
+    for i in range(max(1, repeat_count)):
+        if stype == "installApk":
+            apk_name = str(step.get("apkName", "")).strip()
+            path = APKS_DIR / apk_name
+            if not path.exists():
+                raise RuntimeError(f"APK {apk_name} 不存在，请先上传到 APK 仓库")
+            result = execute_adb_command(f'adb -s {device_id} install -r "{path}"', timeout=600)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "install failed").strip())
+
+        elif stype == "deleteFolder":
+            target = str(step.get("path", "")).strip()
+            # 兜底拦截：校验层已限制，执行层再确认一次，防止未校验数据进入
+            if not (target.startswith("/sdcard/") or target.startswith("/storage/")):
+                raise RuntimeError(f"删除路径仅允许 /sdcard/ 或 /storage/ 开头: {target}")
+            result = execute_adb_command(f'adb -s {device_id} shell rm -rf "{target}"', timeout=120)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "rm failed").strip())
+
+        elif stype == "startApp":
+            pkg = str(step.get("packageName", "")).strip()
+            activity = str(step.get("activity", "") or "").strip()
+            if activity:
+                cmd = f'adb -s {device_id} shell am start -n "{pkg}/{activity}"'
+            else:
+                cmd = f'adb -s {device_id} shell monkey -p "{pkg}" -c android.intent.category.LAUNCHER 1'
+            result = execute_adb_command(cmd, timeout=60)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or result.get("stdout") or "start failed").strip())
+            out = (result.get("stdout") or "").strip()
+            # am start 失败（如 Activity 不存在）时 adb 仍返回成功，需检查输出
+            if "Error" in out:
+                raise RuntimeError(out.splitlines()[0][:120])
+
+        elif stype == "stopApp":
+            pkg = str(step.get("packageName", "")).strip()
+            result = execute_adb_command(f'adb -s {device_id} shell am force-stop "{pkg}"', timeout=60)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "force-stop failed").strip())
+
+        elif stype == "uninstallApp":
+            pkg = str(step.get("packageName", "")).strip()
+            result = execute_adb_command(f'adb -s {device_id} uninstall "{pkg}"', timeout=120)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "uninstall failed").strip())
+
+        elif stype == "keyevent":
+            keycode = int(step.get("keycode"))
+            result = execute_adb_command(f"adb -s {device_id} shell input keyevent {keycode}", timeout=30)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "keyevent failed").strip())
+
+        elif stype == "volume":
+            action = str(step.get("action", "")).strip()
+            stream = str(step.get("stream", "") or "").strip() or "media"
+            if action in ("up", "down"):
+                key = "KEYCODE_VOLUME_UP" if action == "up" else "KEYCODE_VOLUME_DOWN"
+                result = execute_adb_command(f"adb -s {device_id} shell input keyevent {key}", timeout=30)
+                if not result["success"]:
+                    raise RuntimeError((result.get("error") or "volume key failed").strip())
+            else:
+                # 静音：复用 ADB工具页的 service call 音频服务方案
+                from routes.adb_utils import get_stream_type
+                result = execute_adb_command(
+                    f"adb -s {device_id} shell service call audio {7 + int(get_stream_type(stream))} i32 1",
+                    timeout=30,
+                )
+                if not result["success"]:
+                    raise RuntimeError((result.get("error") or "mute failed").strip())
+
+        elif stype == "reboot":
+            result = execute_adb_command(f"adb -s {device_id} reboot", timeout=30)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "reboot failed").strip())
+
+        else:
+            raise RuntimeError(f"未知设备动作步骤类型: {stype}")
+
+        if i < repeat_count - 1:
+            time.sleep(max(0, int(step.get("interval", 0))) / 1000)
+
+
 def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     在设备上回放脚本（阻塞，运行于 task_queue 工作线程）
 
-    复用共享 scrcpy 会话注入（与屏幕预览/批量投屏共用同一会话，
-    避免重复启动 server 互相干扰），跑完归还引用。
+    注入类步骤（tap/swipe/longpress/input）复用共享 scrcpy 会话注入
+    （与屏幕预览/批量投屏共用同一会话，避免重复启动 server 互相干扰），
+    跑完归还引用。设备动作类步骤（安装/删除/应用管理/按键/音量/重启）
+    直接走 adb 命令，不占用会话。
 
     坐标换算：步骤坐标以「录制时的画面尺寸」为基准（脚本保存了
     videoWidth/videoHeight）。回放时若会话分辨率与基准不同
@@ -352,13 +531,21 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     from routes.remote_ws import acquire_session, release_session
 
-    # wait_first_frame：新建会话时等首帧视频就绪再注入，
-    # 避免 server 初始化窗口期吞掉第一步点击（流水线新起会话时必现）
-    session = acquire_session(device_id, wait_first_frame=True)
-    if session is None:
-        raise RuntimeError("设备会话启动失败")
+    steps = script.get("steps", [])
+    # 全脚本没有注入类步骤时不需要 scrcpy 会话（纯 adb 动作脚本更快、更稳）
+    needs_session = any(s.get("type") in INJECT_STEP_TYPES for s in steps)
 
-    try:
+    session = None
+    w = h = 0
+    scale_x = scale_y = 1.0
+
+    if needs_session:
+        # wait_first_frame：新建会话时等首帧视频就绪再注入，
+        # 避免 server 初始化窗口期吞掉第一步点击（流水线新起会话时必现）
+        session = acquire_session(device_id, wait_first_frame=True)
+        if session is None:
+            raise RuntimeError("设备会话启动失败")
+
         # 会话当前分辨率
         w, h = session.video_width, session.video_height
         # 录制时基准（未保存则视为与会话一致，行为向后兼容）
@@ -374,63 +561,69 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 f"recorded {base_w}x{base_h} -> session {w}x{h}, scaling ({scale_x:.3f}, {scale_y:.3f})"
             )
 
-        def _sx(v) -> float:
-            return v * scale_x
+    def _sx(v) -> float:
+        return v * scale_x
 
-        def _sy(v) -> float:
-            return v * scale_y
+    def _sy(v) -> float:
+        return v * scale_y
 
-        steps = script.get("steps", [])
+    try:
         for round_no in range(1, repeat + 1):
             logger.info(f"Script run round {round_no}/{repeat} on {device_id}")
             for idx, step in enumerate(steps):
                 stype = step.get("type")
                 count = max(1, int(step.get("count", 1)))
                 interval = max(0, int(step.get("interval", 0)))
-                for i in range(count):
-                    if stype == "tap":
-                        session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                        session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                        time.sleep(0.05)
-                    elif stype == "longpress":
-                        session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                        time.sleep(max(0.1, step.get("duration", 800)) / 1000)
-                        session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                    elif stype == "swipe":
-                        # 滑动：down → 多段 move → up，模拟真实手势
-                        x1, y1 = _sx(step["x1"]), _sy(step["y1"])
-                        x2, y2 = _sx(step.get("x2", step["x1"])), _sy(step.get("y2", step["y1"]))
-                        seg = 10
-                        session.inject_touch(0, x1, y1, w, h)
-                        for k in range(1, seg + 1):
-                            session.inject_touch(
-                                2,
-                                x1 + (x2 - x1) * k / seg,
-                                y1 + (y2 - y1) * k / seg,
-                                w, h,
-                            )
-                            time.sleep(0.01)
-                        session.inject_touch(1, x2, y2, w, h)
-                    elif stype == "input":
-                        # 输入文字：注入到设备当前聚焦的输入框
-                        # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
-                        text = step.get("text") or ""
-                        if text:
-                            session.inject_text(text)
-                            # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
-                            time.sleep(0.1)
+
+                # 设备动作类步骤走 adb 命令（不依赖 scrcpy 会话），count 在函数内部循环
+                if stype in ADB_STEP_TYPES:
+                    _exec_adb_step(device_id, step, count)
+                else:
+                    for i in range(count):
+                        if stype == "tap":
+                            session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
+                            session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
+                            time.sleep(0.05)
+                        elif stype == "longpress":
+                            session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
+                            time.sleep(max(0.1, step.get("duration", 800)) / 1000)
+                            session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
+                        elif stype == "swipe":
+                            # 滑动：down → 多段 move → up，模拟真实手势
+                            x1, y1 = _sx(step["x1"]), _sy(step["y1"])
+                            x2, y2 = _sx(step.get("x2", step["x1"])), _sy(step.get("y2", step["y1"]))
+                            seg = 10
+                            session.inject_touch(0, x1, y1, w, h)
+                            for k in range(1, seg + 1):
+                                session.inject_touch(
+                                    2,
+                                    x1 + (x2 - x1) * k / seg,
+                                    y1 + (y2 - y1) * k / seg,
+                                    w, h,
+                                )
+                                time.sleep(0.01)
+                            session.inject_touch(1, x2, y2, w, h)
+                        elif stype == "input":
+                            # 输入文字：注入到设备当前聚焦的输入框
+                            # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
+                            text = step.get("text") or ""
+                            if text:
+                                session.inject_text(text)
+                                # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
+                                time.sleep(0.1)
+                            else:
+                                logger.warning("Input step with empty text skipped")
                         else:
-                            logger.warning("Input step with empty text skipped")
-                    else:
-                        logger.warning(f"Unknown step type: {stype}")
-                        break
-                    if i < count - 1:
-                        time.sleep(interval / 1000)
+                            logger.warning(f"Unknown step type: {stype}")
+                            break
+                        if i < count - 1:
+                            time.sleep(interval / 1000)
                 # 步与步之间的间隔
                 if idx < len(steps) - 1:
                     time.sleep(interval / 1000)
     finally:
-        release_session(device_id, session)
+        if session is not None:
+            release_session(device_id, session)
         logger.info(f"Script run finished on {device_id}")
 
 
