@@ -41,6 +41,7 @@
 """
 import base64
 import json
+import os
 import re
 import time
 import threading
@@ -54,6 +55,10 @@ from typing import Optional, List
 from config import logger
 from utils.tool_manager import get_data_path
 from routes.adb_utils import execute_adb_command
+
+
+class DeviceIdRequest(BaseModel):
+    deviceId: str
 
 router = APIRouter(
     prefix="/api",
@@ -829,6 +834,71 @@ def run_steps(request: ScriptRunStepsRequest):
 
 class TemplateNameRequest(BaseModel):
     name: str
+
+
+@router.post("/device/script/app-names")
+def get_app_names(request: DeviceIdRequest):
+    """
+    获取设备上第三方应用的「包名 -> 中文名」映射（脚本页应用下拉用）
+
+    数据来源两层：
+    1. data/app_labels.json 缓存（应用管理页历史上积累的中文名，最准最快）
+    2. 一条 `dumpsys package` 全量输出解析 application-label（单次 adb 往返）
+
+    缓存没有且 dumpsys 也提取不到的包，值回落为包名本身。
+    """
+    try:
+        if not request.deviceId:
+            return {"code": 400, "message": "deviceId 不能为空", "data": None}
+
+        from utils.app_label_utils import load_label_cache
+        cache = load_label_cache()
+
+        # 包名列表（-3 = 第三方应用）
+        pkgs_result = execute_adb_command(f'adb -s {request.deviceId} shell pm list packages -3', timeout=30)
+        if not pkgs_result["success"]:
+            return {"code": 500, "message": "获取应用列表失败", "data": None}
+        packages = [ln[8:].strip() for ln in (pkgs_result.get("stdout") or "").split("\n") if ln.startswith("package:")]
+        if not packages:
+            return {"code": 200, "message": "success", "data": {}}
+
+        # 全部包名先落到结果表，缓存命中的直接用中文名
+        names = {p: cache.get(p, p) for p in packages}
+
+        # 缓存没覆盖的包，用一条全量 dumpsys 解析 label（比逐包 dumpsys 快几十倍）
+        missing = [p for p in packages if names[p] == p]
+        if missing:
+            dump_result = execute_adb_command(f'adb -s {request.deviceId} shell dumpsys package', timeout=60)
+            if dump_result["success"]:
+                from utils.app_label_utils import extract_app_name_from_dumpsys
+                # dumpsys package 输出按 "Package [com.xxx]" 分段，逐段提取 label
+                current_pkg = None
+                seg_lines: list = []
+                seg_map: dict = {}
+                for line in (dump_result.get("stdout") or "").split("\n"):
+                    m = re.match(r'\s*Package \[([^\]]+)\]', line)
+                    if m:
+                        if current_pkg and current_pkg in missing and current_pkg not in seg_map:
+                            label = extract_app_name_from_dumpsys("\n".join(seg_lines))
+                            if label:
+                                seg_map[current_pkg] = label
+                        current_pkg = m.group(1)
+                        seg_lines = []
+                    elif current_pkg:
+                        seg_lines.append(line)
+                # 最后一段
+                if current_pkg and current_pkg in missing and current_pkg not in seg_map:
+                    label = extract_app_name_from_dumpsys("\n".join(seg_lines))
+                    if label:
+                        seg_map[current_pkg] = label
+
+                for p, label in seg_map.items():
+                    names[p] = label
+
+        return {"code": 200, "message": "success", "data": names}
+    except Exception as e:
+        logger.error(f"获取应用名映射失败: {e}")
+        return {"code": 500, "message": f"获取应用名映射失败: {str(e)}", "data": None}
 
 
 class TemplateUploadBase64Request(BaseModel):
