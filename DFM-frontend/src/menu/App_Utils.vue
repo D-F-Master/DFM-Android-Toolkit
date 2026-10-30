@@ -482,6 +482,9 @@ const scriptSteps = ref<Array<{
   keycode?: number | string;
   action?: string;
   stream?: string;
+  template?: string;
+  threshold?: number;
+  timeout?: number;
   interval: number;
   count: number;
 }>>([])
@@ -520,6 +523,7 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'keyevent') return `按键 ${scriptKeyName(step.keycode)}`
   if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
   if (step.type === 'reboot') return '重启设备'
+  if (step.type === 'waitFor') return `等待组件 ${step.template || '（未选择模板）'}（阈值${step.threshold ?? 0.85}）`
   return step.type
 }
 
@@ -586,6 +590,18 @@ const fetchScriptApks = async () => {
   }
 }
 
+// 模板图列表（等待组件步骤的下拉数据源）
+const scriptTemplateOptions = ref<Array<{ name: string; width: number; height: number }>>([])
+
+const fetchScriptTemplates = async () => {
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/script/list-templates`)
+    if (res.data.code === 200) scriptTemplateOptions.value = res.data.data || []
+  } catch {
+    /* 模板列表拉取失败不阻断脚本编辑 */
+  }
+}
+
 // 设备动作步骤的默认参数
 const scriptAdbStepDefaults = (type: string): Record<string, any> => {
   switch (type) {
@@ -623,6 +639,21 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
 
   const radius = Math.max(18, Math.round(scriptMeta.width / 40))
   const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
+
+  // 框选中的矩形（虚线高亮）
+  if (scriptCropRegion.value) {
+    const r = scriptCropRegion.value
+    const left = Math.min(r.x1, r.x2)
+    const top = Math.min(r.y1, r.y2)
+    const w = Math.abs(r.x2 - r.x1)
+    const h = Math.abs(r.y2 - r.y1)
+    ctx.save()
+    ctx.strokeStyle = '#ff9800'
+    ctx.lineWidth = 3
+    ctx.setLineDash([10, 6])
+    ctx.strokeRect(left, top, w, h)
+    ctx.restore()
+  }
 
   scriptSteps.value.forEach((step, idx) => {
     // 输入步骤与设备动作步骤没有坐标，画面上不画标记（序号也就不占位）
@@ -779,6 +810,83 @@ const scriptMoveMarker = (target: { stepIndex: number; part: 'start' | 'end' }, 
   }
 }
 
+// ---------- 框选模板（等待组件出现步骤） ----------
+
+// 框选模式：开启后在画面上拖框，松开即把框内画面存为模板
+const scriptCropMode = ref(false)
+// 正在框选的区域（设备坐标）
+const scriptCropRegion = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+
+const toggleCropMode = () => {
+  scriptCropMode.value = !scriptCropMode.value
+  scriptCropRegion.value = null
+  if (scriptCropMode.value) {
+    showNotification('框选模式：在画面上拖出组件所在区域，松开保存为模板', 'info')
+  }
+  scriptRedrawMarkers()
+}
+
+// 松开鼠标：把框选区域从缓存帧裁出，上传后端保存为模板
+const finishCropRegion = async () => {
+  const region = scriptCropRegion.value
+  scriptCropRegion.value = null
+  scriptCropMode.value = false
+  if (!region || !scriptFrameCanvas) return
+
+  const left = Math.min(region.x1, region.x2)
+  const top = Math.min(region.y1, region.y2)
+  const w = Math.abs(region.x2 - region.x1)
+  const h = Math.abs(region.y2 - region.y1)
+  // 太小基本是误触
+  if (w < 12 || h < 12) {
+    showNotification('框选区域太小，请框住完整的组件图案', 'error')
+    scriptRedrawMarkers()
+    return
+  }
+
+  try {
+    // 裁剪到临时 canvas，导出 base64 PNG（坐标基于缓存帧 = 当前画面）
+    const crop = document.createElement('canvas')
+    crop.width = w
+    crop.height = h
+    crop.getContext('2d')!.drawImage(scriptFrameCanvas, left, top, w, h, 0, 0, w, h)
+    const dataUrl = crop.toDataURL('image/png')
+
+    showPrompt('请输入模板名称', async (name?: string) => {
+      if (!name || !name.trim()) { scriptRedrawMarkers(); return }
+      try {
+        const response = await axios.post(`${API_BASE.value}/api/device/script/save-template`, {
+          name: name.trim(),
+          image: dataUrl,
+        })
+        if (response.data.code === 200) {
+          const d = response.data.data
+          showNotification(`模板「${d.name}」已保存（${d.width}x${d.height}）`, 'success')
+          // 模板就绪后立即加一个等待组件步骤引用它
+          addScriptStep({
+            type: 'waitFor',
+            template: d.name,
+            threshold: 0.85,
+            timeout: 15,
+            interval: 500,
+            count: 1,
+          })
+          fetchScriptTemplates()
+        } else {
+          showNotification('保存模板失败: ' + (response.data.message || '未知错误'), 'error')
+        }
+      } catch (error: any) {
+        showNotification('保存模板失败: ' + error.message, 'error')
+      } finally {
+        scriptRedrawMarkers()
+      }
+    }, `template_${Date.now() % 10000}`, '保存模板')
+  } catch (error: any) {
+    showNotification('裁剪画面失败: ' + error.message, 'error')
+    scriptRedrawMarkers()
+  }
+}
+
 // ---------- 屏幕流（复用 /ws/remote，单设备） ----------
 
 const scriptHandleBinary = (buf: ArrayBuffer) => {
@@ -885,8 +993,9 @@ watch(activeTab, async (tab) => {
   if (tab === 'script') {
     await nextTick()
     if (selectedDevice.value) startScriptStream()
-    // 进入脚本页时准备安装APK步骤的下拉数据
+    // 进入脚本页时准备安装APK / 等待组件步骤的下拉数据
     if (scriptApkOptions.value.length === 0) fetchScriptApks()
+    fetchScriptTemplates()
   } else {
     stopScriptStream()
   }
@@ -1072,6 +1181,13 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   ev.preventDefault()
   const p = canvasPoint(ev)
 
+  // 框选模板模式：拖框裁剪画面当作「等待组件出现」的模板，不注入设备
+  if (scriptCropMode.value) {
+    try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+    scriptCropRegion.value = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
+    return
+  }
+
   // 点画面即接管键盘：之后敲电脑键盘的文字会实时发到设备并在录制时记为输入步骤
   scriptKeyboardActive.value = true
   // 点别处意味着上一段输入结束
@@ -1120,6 +1236,14 @@ const scriptOnPointerMove = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
 
+  // 框选中：更新框选区域并重绘
+  if (scriptCropMode.value && scriptCropRegion.value) {
+    scriptCropRegion.value.x2 = p.x
+    scriptCropRegion.value.y2 = p.y
+    scriptRedrawMarkers()
+    return
+  }
+
   // 拖拽标记：更新坐标并重绘
   if (scriptDragging.value) {
     scriptMoveMarker(scriptDragging.value, p.x, p.y)
@@ -1141,6 +1265,12 @@ const scriptOnPointerMove = (ev: PointerEvent) => {
 const scriptOnPointerUp = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
+
+  // 框选结束：裁剪画面保存为模板
+  if (scriptCropMode.value && scriptCropRegion.value) {
+    finishCropRegion()
+    return
+  }
 
   // 拖拽结束
   if (scriptDragging.value) {
@@ -1285,6 +1415,9 @@ const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
     keycode: s.keycode,
     action: s.action,
     stream: s.stream,
+    template: s.template,
+    threshold: s.threshold,
+    timeout: s.timeout,
     interval: s.interval ?? 0,
     count: s.count ?? 1,
   }))
@@ -5443,6 +5576,14 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: default;
 }
 
+/* 框选模式进行中 */
+.script-add-btn.cropping {
+  border-style: solid;
+  border-color: #ff9800;
+  color: #e65100;
+  background: #fff3e0;
+}
+
 .script-config-hint {
   margin-top: 6px;
   font-size: 11px;
@@ -6897,6 +7038,13 @@ button.batch-remote-tile-tag:disabled.active {
                           :disabled="scriptRunning"
                           @click="addScriptAdbStep(a.type)"
                         >{{ a.icon }} {{ a.label }}</button>
+                        <button
+                          class="script-add-btn"
+                          :class="{ cropping: scriptCropMode }"
+                          :disabled="!scriptStreaming || scriptRunning"
+                          title="开启后在画面上框住组件，松开保存为模板并添加等待步骤"
+                          @click="toggleCropMode"
+                        >{{ scriptCropMode ? '✕ 取消框选' : '👁 等待组件(框选)' }}</button>
                       </div>
                     </div>
 
@@ -6938,6 +7086,24 @@ button.batch-remote-tile-tag:disabled.active {
                                 class="script-config-input"
                                 v-model="step.text"
                               >
+                            </div>
+                            <!-- 等待组件步骤的专属参数 -->
+                            <div v-if="step.type === 'waitFor'" class="script-config-row">
+                              <span>模板</span>
+                              <select class="script-config-select" v-model="step.template">
+                                <option value="" disabled>选择模板</option>
+                                <option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name">
+                                  {{ t.name }}（{{ t.width }}x{{ t.height }}）
+                                </option>
+                              </select>
+                            </div>
+                            <div v-if="step.type === 'waitFor'" class="script-config-row">
+                              <span>匹配阈值</span>
+                              <input type="number" min="0.5" max="1" step="0.05" class="script-config-input" v-model.number="step.threshold">
+                            </div>
+                            <div v-if="step.type === 'waitFor'" class="script-config-row">
+                              <span>超时(秒)</span>
+                              <input type="number" min="1" max="600" class="script-config-input" v-model.number="step.timeout">
                             </div>
                             <!-- 设备动作类步骤的专属参数 -->
                             <div v-if="step.type === 'installApk'" class="script-config-row">
@@ -7020,6 +7186,9 @@ button.batch-remote-tile-tag:disabled.active {
                             </div>
                             <div v-if="step.type === 'input'" class="script-config-hint">
                               输入到设备当前聚焦的输入框，通常放在一次点击之后
+                            </div>
+                            <div v-else-if="step.type === 'waitFor'" class="script-config-hint">
+                              反复截屏搜索模板，组件出现才继续下一步；超时未出现判失败
                             </div>
                             <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
