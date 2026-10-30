@@ -42,7 +42,7 @@ router = APIRouter(
 )
 
 PIPELINES_DIR = get_data_path() / "pipelines"
-APKS_DIR = PIPELINES_DIR / "apks"
+APKS_DIR = get_data_path() / "apk"
 
 # 步骤类型与中文标签（日志与前端展示用）
 STEP_LABELS = {
@@ -50,6 +50,7 @@ STEP_LABELS = {
     "simulate": "模拟操作",
     "screenshot": "获取画面",
     "deleteFolder": "删除文件夹",
+    "shell": "执行Shell命令",
 }
 
 VALID_STEP_TYPES = tuple(STEP_LABELS.keys())
@@ -82,6 +83,15 @@ def _validate_steps(steps) -> str:
         step_type = step.get("type")
         if step_type not in VALID_STEP_TYPES:
             return f"第 {i + 1} 步的 type 无效: {step_type}（应为 {'/'.join(VALID_STEP_TYPES)}）"
+
+        if step_type == "shell":
+            cmd = str(step.get("command", "")).strip()
+            if not cmd:
+                return f"第 {i + 1} 步的 shell 命令不能为空"
+            # 命令直接进 adb shell 执行，拆掉首尾的 adb shell 包装防套娃
+            lowered = cmd.lower()
+            if lowered.startswith("adb ") or lowered.startswith("adb.exe "):
+                return f"第 {i + 1} 步不要带 adb 前缀，命令会在设备 shell 中执行"
 
         if step_type == "installApk" and not str(step.get("apkName", "")).strip():
             return f"第 {i + 1} 步未选择 APK 文件"
@@ -350,6 +360,18 @@ def _exec_step(device_id: str, step: dict, step_label: str, run: dict) -> bool:
             if not pull["success"]:
                 raise RuntimeError((pull.get("error") or "pull failed").strip())
             _plog(run, device_id, step_label, "ok", f"已保存 {local_path}")
+            return True
+
+        elif stype == "shell":
+            cmd = str(step.get("command", "") or "").strip()
+            _plog(run, device_id, step_label, "info", f"$ {cmd}")
+            result = execute_adb_command(f'adb -s {device_id} shell "{cmd}"', timeout=300)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "shell command failed").strip())
+            output = (result.get("stdout") or "").strip()
+            if output:
+                for line in output.splitlines()[:20]:
+                    _plog(run, device_id, step_label, "info", f"  {line}")
             return True
 
         elif stype == "deleteFolder":
