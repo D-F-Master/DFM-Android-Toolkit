@@ -89,10 +89,13 @@ def find_template(screen, template, threshold: float = 0.85):
 
 
 def wait_for_template(device_id: str, template, threshold: float = 0.85,
-                      timeout: float = 15.0, interval: float = 0.8,
+                      timeout: float = 15.0, interval: float = 0.3,
                       stop_event=None):
     """
     反复截屏直到模板出现或超时
+
+    interval：截屏匹配之间的等待秒数。每轮实际耗时 ≈ 截屏(~0.65s) + interval，
+    0.3s 时一轮约 1 秒，短时闪现的组件（>1s）基本都能抓到。
 
     stop_event（可选）：外部停止标志，置位后立刻返回未命中。
     返回 (命中?, 耗时秒, 最高分, 尝试次数)。超时不抛异常，
