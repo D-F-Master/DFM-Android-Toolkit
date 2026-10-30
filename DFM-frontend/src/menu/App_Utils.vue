@@ -484,11 +484,10 @@ const scriptOpConfig = ref<Record<'tap' | 'swipe' | 'longpress', { interval: num
   swipe: { interval: 500, count: 1 },
   longpress: { interval: 500, count: 1 },
 })
-const expandedOpConfig = ref<'tap' | 'swipe' | 'longpress' | null>(null)
 const scriptRepeat = ref(1)
 const scriptSaving = ref(false)
 
-// 快捷导入：常驻下拉选择器（列出 data/scripts 下的脚本），点导入直接载入面板
+// 快捷导入：下拉选择器（列出 data/scripts 下的脚本），选中即载入面板
 const scriptQuickOptions = ref<Array<{ value: string; label: string; desc?: string }>>([])
 const scriptQuickSelected = ref('')
 const scriptQuickLoading = ref(false)
@@ -507,25 +506,17 @@ const loadScriptQuickOptions = async () => {
           label: s.name,
           desc: `${s.stepCount} 步 · ${s.repeat} 轮`,
         }))
-      // 当前选中项被删掉时清空选择
-      if (scriptQuickSelected.value && !scriptQuickOptions.value.some((s: any) => s.value === scriptQuickSelected.value)) {
-        scriptQuickSelected.value = ''
-      }
     }
   } catch {
-    // 服务端不可达时保持旧列表，导入时会报网络错误
+    // 服务端不可达时保持旧列表
   } finally {
     scriptQuickLoading.value = false
   }
 }
 
-// 快捷导入：把选中脚本载入到当前面板
-const importScriptQuick = async () => {
-  if (!scriptQuickSelected.value) {
-    showNotification('请先选择要导入的脚本', 'error')
-    return
-  }
-  const name = scriptQuickSelected.value
+// 选中脚本即导入：把选中脚本载入到当前面板
+const onScriptQuickChange = async (name: string) => {
+  if (!name) return
   try {
     scriptSaving.value = true
     const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name })
@@ -1040,12 +1031,6 @@ const toggleRecording = () => {
   if (scriptRecording.value) {
     showNotification('录制已开始：单击记录点击，拖动记录滑动，长按记录长按', 'info')
   }
-}
-
-// ---------- 操作配置 ----------
-
-const toggleOpConfig = (op: 'tap' | 'swipe' | 'longpress') => {
-  expandedOpConfig.value = expandedOpConfig.value === op ? null : op
 }
 
 // ---------- 保存 / 执行 / 重复 ----------
@@ -5141,48 +5126,10 @@ button.batch-remote-tile-tag:disabled.active {
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
-.script-ops {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.script-op-row {
-  display: flex;
-  gap: 8px;
-}
-
-.script-op-btn {
-  flex: 1;
-  padding: 8px 0;
-  border: 1px solid #e8eaed;
-  border-radius: 8px;
-  background: #f5f7fa;
-  font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
-  color: #444;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.script-op-btn:hover {
-  background: #e8f5e9;
-  border-color: #a5d6a7;
-  color: #2e7d32;
-}
-
-.script-op-btn.expanded {
-  background: #e8f5e9;
-  border-color: #4caf50;
-  color: #2e7d32;
-}
-
-.script-op-config {
-  padding: 10px;
-  background: #f8faf8;
-  border: 1px solid #e0e8e0;
-  border-radius: 8px;
+/* 录制按钮与快捷导入下拉纵向排布 */
+.script-section .script-quick-select {
+  margin-top: 10px;
+  width: 100%;
 }
 
 .script-config-row {
@@ -6650,53 +6597,33 @@ button.batch-remote-tile-tag:disabled.active {
 
                   <!-- 右：控制区 -->
                   <div class="script-side-panel">
-                    <!-- 上：录制控制 -->
+                    <!-- 上：录制控制 + 快捷导入 -->
                     <div class="script-section">
                       <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
                         {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
                       </button>
-                    </div>
-
-                    <!-- 中：操作按钮 + 配置 -->
-                    <div class="script-section script-ops">
-                      <div class="script-op-row">
-                        <button
-                          class="script-op-btn"
-                          :class="{ expanded: expandedOpConfig === 'tap' }"
-                          @click="toggleOpConfig('tap')"
-                        >点击 ▾</button>
-                        <button
-                          class="script-op-btn"
-                          :class="{ expanded: expandedOpConfig === 'swipe' }"
-                          @click="toggleOpConfig('swipe')"
-                        >滑动 ▾</button>
-                        <button
-                          class="script-op-btn"
-                          :class="{ expanded: expandedOpConfig === 'longpress' }"
-                          @click="toggleOpConfig('longpress')"
-                        >长按 ▾</button>
-                      </div>
-                      <div v-if="expandedOpConfig" class="script-op-config">
-                        <div class="script-config-row">
-                          <span>执行间隔(ms)</span>
-                          <input
-                            type="number"
-                            min="0"
-                            class="script-config-input"
-                            v-model.number="scriptOpConfig[expandedOpConfig].interval"
-                          >
-                        </div>
-                        <div class="script-config-row">
-                          <span>执行次数</span>
-                          <input
-                            type="number"
-                            min="1"
-                            class="script-config-input"
-                            v-model.number="scriptOpConfig[expandedOpConfig].count"
-                          >
-                        </div>
-                        <div class="script-config-hint">修改后录制的步骤将使用该配置</div>
-                      </div>
+                      <el-select
+                        v-model="scriptQuickSelected"
+                        class="script-quick-select"
+                        size="small"
+                        :loading="scriptQuickLoading"
+                        :disabled="scriptQuickLoading || scriptQuickOptions.length === 0"
+                        placeholder="导入已保存脚本…"
+                        :no-data-text="scriptQuickLoading ? '加载中…' : '暂无脚本'"
+                        @change="onScriptQuickChange"
+                      >
+                        <el-option
+                          v-for="opt in scriptQuickOptions"
+                          :key="opt.value"
+                          :value="opt.value"
+                          :label="opt.label"
+                        >
+                          <span class="script-quick-option">
+                            <span>{{ opt.label }}</span>
+                            <span class="script-quick-option-desc">{{ opt.desc }}</span>
+                          </span>
+                        </el-option>
+                      </el-select>
                     </div>
 
                     <!-- 下：脚本列表 + 底部按钮 -->
@@ -6704,39 +6631,11 @@ button.batch-remote-tile-tag:disabled.active {
                       <div class="script-list-header">
                         <span>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
-                          <el-select
-                            v-model="scriptQuickSelected"
-                            class="script-quick-select"
-                            :class="{ dark: isDarkMode() }"
-                            size="small"
-                            :loading="scriptQuickLoading"
-                            :disabled="scriptQuickLoading || scriptQuickOptions.length === 0"
-                            placeholder="选择脚本"
-                            :no-data-text="scriptQuickLoading ? '加载中…' : '暂无脚本'"
-                            popper-class="script-quick-popper"
-                          >
-                            <el-option
-                              v-for="opt in scriptQuickOptions"
-                              :key="opt.value"
-                              :value="opt.value"
-                              :label="opt.label"
-                            >
-                              <span class="script-quick-option">
-                                <span>{{ opt.label }}</span>
-                                <span class="script-quick-option-desc">{{ opt.desc }}</span>
-                              </span>
-                            </el-option>
-                          </el-select>
-                          <button
-                            class="script-mini-btn"
-                            @click="importScriptQuick"
-                            :disabled="!scriptQuickSelected || scriptSaving || scriptRunning"
-                          >导入</button>
                           <button
                             class="script-mini-btn"
                             @click="openImportMenu"
                             :disabled="scriptSaving || scriptRunning"
-                          >导入▾</button>
+                          >导入</button>
                           <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
                         </div>
                       </div>
