@@ -300,6 +300,9 @@ class PipelineLogRequest(BaseModel):
 _pipeline_runs = {}
 _runs_lock = threading.Lock()
 
+# 执行日志根目录（与日志抓取同一 D:\log 约定）
+PIPELINE_LOG_ROOT = r"D:\log"
+
 
 def _plog(run: dict, device_id: str, step: str, level: str, message: str):
     entry = {
@@ -311,6 +314,14 @@ def _plog(run: dict, device_id: str, step: str, level: str, message: str):
     }
     with run["lock"]:
         run["logs"].append(entry)
+        # 同步写入合并日志文件（D:\log\{流水线名}_{日期}\run.log）
+        fh = run.get("file_handle")
+        if fh:
+            try:
+                fh.write(f"[{entry['time']}] [{entry['level'].upper()}] [{device_id}] {step} - {message}\n")
+                fh.flush()
+            except Exception:
+                pass
     logger.info(f"[pipeline] {device_id} {step} {message}")
 
 
@@ -431,6 +442,13 @@ def _run_pipeline(run_id: str, pipeline: dict, device_ids: List[str], mode: str)
         _plog(run, "全部设备", "流水线", "err", f"执行异常: {str(e)}")
     finally:
         run["running"] = False
+        fh = run.get("file_handle")
+        if fh:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            run["file_handle"] = None
 
 
 def _check_devices_online(device_ids: List[str]):
@@ -472,12 +490,25 @@ def run_pipeline(request: PipelineRunRequest):
             return {"code": 400, "message": "所选设备均不在线", "data": None}
 
         run_id = uuid.uuid4().hex[:12]
+
+        # 日志目录：D:\log\{流水线名}_{日期_时间}\，整个执行过程写入单个 run.log
+        log_dir = os.path.join(PIPELINE_LOG_ROOT, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "run.log")
+        file_handle = open(log_path, "a", encoding="utf-8")
+
         run = {
             "logs": [],
             "lock": threading.Lock(),
             "stop": threading.Event(),
             "running": True,
+            "file_handle": file_handle,
         }
+        # 起始行（写文件+内存，标记本次运行基本信息）
+        file_handle.write(f"===== 流水线 [{name}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+                          f"mode={request.mode} 设备={','.join(online)} =====\n")
+        file_handle.flush()
+
         with _runs_lock:
             # 只保留最近 20 次运行的日志，防止内存无限增长
             while len(_pipeline_runs) >= 20:
@@ -503,6 +534,7 @@ def run_pipeline(request: PipelineRunRequest):
                 "offline": offline,
                 "stepCount": len(pipeline.get("steps", [])),
                 "mode": request.mode,
+                "logDir": log_dir,
             },
         }
     except Exception as e:
