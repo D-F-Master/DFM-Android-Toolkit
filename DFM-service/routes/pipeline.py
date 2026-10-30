@@ -51,6 +51,14 @@ STEP_LABELS = {
     "screenshot": "获取画面",
     "deleteFolder": "删除文件夹",
     "shell": "执行Shell命令",
+    "startApp": "启动应用",
+    "stopApp": "停止应用",
+    "uninstallApp": "卸载应用",
+    "keyevent": "模拟按键",
+    "volume": "音量控制",
+    "reboot": "重启设备",
+    "rebootLoader": "重启进Loader",
+    "cleanMemory": "清理内存",
 }
 
 VALID_STEP_TYPES = tuple(STEP_LABELS.keys())
@@ -104,6 +112,41 @@ def _validate_steps(steps) -> str:
             # rm -rf 的目标必须限定在用户区，防止误删系统目录
             if not (path.startswith("/sdcard/") or path.startswith("/storage/")):
                 return f"第 {i + 1} 步的删除路径仅允许 /sdcard/ 或 /storage/ 开头"
+
+        if step_type in ("startApp", "stopApp", "uninstallApp"):
+            pkg = str(step.get("packageName", "")).strip()
+            if not pkg:
+                return f"第 {i + 1} 步未填写应用包名"
+            if re.search(r'[\s"\'&|;$<>`\\]', pkg):
+                return f"第 {i + 1} 步的包名不能包含空格或特殊字符"
+            if step_type == "startApp" and step.get("activity"):
+                activity = str(step.get("activity", "")).strip()
+                if re.search(r'[\s"\'&|;$<>`\\]', activity):
+                    return f"第 {i + 1} 步的 Activity 名不能包含空格或特殊字符"
+
+        if step_type == "keyevent":
+            try:
+                keycode = int(step.get("keycode"))
+            except (TypeError, ValueError):
+                return f"第 {i + 1} 步未填写有效的按键键值（数字）"
+            if not (0 <= keycode <= 65535):
+                return f"第 {i + 1} 步的键值超出范围 0-65535"
+            repeat = step.get("repeat", 1)
+            try:
+                if int(repeat) < 1 or int(repeat) > 20:
+                    return f"第 {i + 1} 步的按键次数必须在 1-20 之间"
+            except (TypeError, ValueError):
+                return f"第 {i + 1} 步的按键次数无效"
+
+        if step_type == "volume" and str(step.get("action", "")).strip() not in ("up", "down", "mute"):
+            return f"第 {i + 1} 步的音量动作仅支持 up/down/mute"
+
+        if step_type in ("screenshot", "deleteFolder", "keyevent", "reboot", "rebootLoader", "cleanMemory") and step.get("delayAfter") is not None:
+            try:
+                if int(step.get("delayAfter")) < 0:
+                    return f"第 {i + 1} 步的步骤间隔不能为负数"
+            except (TypeError, ValueError):
+                return f"第 {i + 1} 步的步骤间隔无效"
 
     return ""
 
@@ -393,10 +436,110 @@ def _exec_step(device_id: str, step: dict, step_label: str, run: dict) -> bool:
                 raise RuntimeError((result.get("error") or "rm failed").strip())
             return True
 
+        elif stype == "startApp":
+            pkg = str(step.get("packageName", "")).strip()
+            activity = str(step.get("activity", "") or "").strip()
+            if activity:
+                _plog(run, device_id, step_label, "info", f"启动 {pkg}/{activity} ...")
+                cmd = f'adb -s {device_id} shell am start -n "{pkg}/{activity}"'
+            else:
+                _plog(run, device_id, step_label, "info", f"启动应用 {pkg} ...")
+                cmd = f'adb -s {device_id} shell monkey -p "{pkg}" -c android.intent.category.LAUNCHER 1'
+            result = execute_adb_command(cmd, timeout=60)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or result.get("stdout") or "start failed").strip())
+            out = (result.get("stdout") or "").strip()
+            # am start 失败（如 Activity 不存在）时 adb 仍返回成功，需检查输出
+            if "Error" in out:
+                raise RuntimeError(out.splitlines()[0][:120])
+            return True
+
+        elif stype == "stopApp":
+            pkg = str(step.get("packageName", "")).strip()
+            _plog(run, device_id, step_label, "info", f"停止应用 {pkg} ...")
+            result = execute_adb_command(f'adb -s {device_id} shell am force-stop "{pkg}"', timeout=60)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "force-stop failed").strip())
+            return True
+
+        elif stype == "uninstallApp":
+            pkg = str(step.get("packageName", "")).strip()
+            _plog(run, device_id, step_label, "info", f"卸载应用 {pkg} ...")
+            result = execute_adb_command(f'adb -s {device_id} uninstall "{pkg}"', timeout=120)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "uninstall failed").strip())
+            return True
+
+        elif stype == "keyevent":
+            keycode = int(step.get("keycode"))
+            repeat = max(1, min(20, int(step.get("repeat", 1) or 1)))
+            _plog(run, device_id, step_label, "info", f"发送按键 {keycode} ×{repeat} ...")
+            for _ in range(repeat):
+                result = execute_adb_command(f"adb -s {device_id} shell input keyevent {keycode}", timeout=30)
+                if not result["success"]:
+                    raise RuntimeError((result.get("error") or "keyevent failed").strip())
+            return True
+
+        elif stype == "volume":
+            action = str(step.get("action", "")).strip()
+            stream = str(step.get("stream", "") or "").strip() or "media"
+            action_label = {"up": "音量+", "down": "音量-", "mute": "静音"}.get(action, action)
+            _plog(run, device_id, step_label, "info", f"{action_label}（{stream}）...")
+            if action in ("up", "down"):
+                key = "KEYCODE_VOLUME_UP" if action == "up" else "KEYCODE_VOLUME_DOWN"
+                result = execute_adb_command(f"adb -s {device_id} shell input keyevent {key}", timeout=30)
+                if not result["success"]:
+                    raise RuntimeError((result.get("error") or "volume key failed").strip())
+            else:
+                # 静音：复用 ADB工具页的 service call 音频服务方案（root/系统权限失败则报错）
+                from routes.adb_utils import get_stream_type
+                result = execute_adb_command(
+                    f"adb -s {device_id} shell service call audio {7 + int(get_stream_type(stream))} i32 1",
+                    timeout=30,
+                )
+                if not result["success"]:
+                    raise RuntimeError((result.get("error") or "mute failed").strip())
+            return True
+
+        elif stype == "reboot":
+            _plog(run, device_id, step_label, "info", "重启设备 ...")
+            result = execute_adb_command(f"adb -s {device_id} reboot", timeout=30)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "reboot failed").strip())
+            return True
+
+        elif stype == "rebootLoader":
+            _plog(run, device_id, step_label, "info", "重启进 bootloader ...")
+            result = execute_adb_command(f"adb -s {device_id} reboot bootloader", timeout=30)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "reboot bootloader failed").strip())
+            return True
+
+        elif stype == "cleanMemory":
+            _plog(run, device_id, step_label, "info", "清理内存（杀后台缓存进程+释放页缓存）...")
+            result = execute_adb_command(f"adb -s {device_id} shell am kill-all", timeout=15)
+            if not result["success"]:
+                _plog(run, device_id, step_label, "info", "am kill-all 失败，继续尝试释放页缓存")
+            execute_adb_command(f'adb -s {device_id} shell "sync; echo 3 > /proc/sys/vm/drop_caches"', timeout=15)
+            _plog(run, device_id, step_label, "ok", "清理完成")
+            return True
+
         raise RuntimeError(f"未知步骤类型: {stype}")
     except Exception as e:
         _plog(run, device_id, step_label, "err", f"失败: {str(e)}")
         return False
+
+
+def _wait_step_delay(step: dict, run: dict, label: str):
+    """步骤执行成功后的可选间隔（delayAfter 秒），停止请求可中断"""
+    try:
+        delay = int(step.get("delayAfter") or 0)
+    except (TypeError, ValueError):
+        delay = 0
+    if delay <= 0:
+        return
+    _plog(run, "全部设备", label, "info", f"等待 {delay}s 后继续 ...")
+    run["stop"].wait(delay)
 
 
 def _run_pipeline(run_id: str, pipeline: dict, device_ids: List[str], mode: str):
@@ -420,6 +563,7 @@ def _run_pipeline(run_id: str, pipeline: dict, device_ids: List[str], mode: str)
                     for fut in as_completed(futures):
                         if not fut.result():
                             failed.add(futures[fut])
+                _wait_step_delay(step, run, label)
             for d in failed:
                 _plog(run, d, "流水线", "err", "因步骤失败已退出本次执行")
         else:
@@ -435,6 +579,8 @@ def _run_pipeline(run_id: str, pipeline: dict, device_ids: List[str], mode: str)
                         continue
                     label = f"步骤{i + 1}/{len(steps)} {STEP_LABELS.get(step.get('type'), '?')}"
                     dev_failed = not _exec_step(d, step, label, run)
+                    if not dev_failed:
+                        _wait_step_delay(step, run, label)
                 if dev_failed:
                     _plog(run, d, "流水线", "err", "因步骤失败已跳过剩余步骤")
         _plog(run, "全部设备", "流水线", "ok", "执行结束" + ("（已手动停止）" if run["stop"].is_set() else ""))
