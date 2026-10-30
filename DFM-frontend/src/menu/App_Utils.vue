@@ -470,11 +470,18 @@ const scriptStreaming = ref(false)
 const scriptWsStatus = ref('未连接')
 const scriptRecording = ref(false)
 const scriptSteps = ref<Array<{
-  type: 'tap' | 'swipe' | 'longpress' | 'input';
-  x1: number; y1: number;
+  type: string;
+  x1?: number; y1?: number;
   x2?: number; y2?: number;
   duration?: number;
   text?: string;
+  apkName?: string;
+  path?: string;
+  packageName?: string;
+  activity?: string;
+  keycode?: number | string;
+  action?: string;
+  stream?: string;
   interval: number;
   count: number;
 }>>([])
@@ -504,7 +511,93 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'tap') return `点击 (${step.x1}, ${step.y1})`
   if (step.type === 'longpress') return `长按 (${step.x1}, ${step.y1}) ${step.duration}ms`
   if (step.type === 'input') return `输入「${step.text ?? ''}」`
-  return `滑动 (${step.x1}, ${step.y1}) → (${step.x2}, ${step.y2})`
+  if (step.type === 'swipe') return `滑动 (${step.x1}, ${step.y1}) → (${step.x2}, ${step.y2})`
+  if (step.type === 'installApk') return `安装APK ${step.apkName || '（未选择）'}`
+  if (step.type === 'deleteFolder') return `删除文件夹 ${step.path || '（未填写）'}`
+  if (step.type === 'startApp') return step.activity ? `启动 ${step.packageName}/${step.activity}` : `启动 ${step.packageName || '（未填写包名）'}`
+  if (step.type === 'stopApp') return `停止 ${step.packageName || '（未填写包名）'}`
+  if (step.type === 'uninstallApp') return `卸载 ${step.packageName || '（未填写包名）'}`
+  if (step.type === 'keyevent') return `按键 ${scriptKeyName(step.keycode)}`
+  if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
+  if (step.type === 'reboot') return '重启设备'
+  return step.type
+}
+
+// 常用按键（下拉选择用，存值仍是数字键值）
+const SCRIPT_COMMON_KEYS: Array<{ code: number; name: string }> = [
+  { code: 4, name: '返回' },
+  { code: 3, name: '主页' },
+  { code: 187, name: '多任务' },
+  { code: 26, name: '电源/锁屏' },
+  { code: 24, name: '音量+' },
+  { code: 25, name: '音量-' },
+  { code: 164, name: '静音键' },
+  { code: 82, name: '菜单' },
+  { code: 23, name: '方向键·确认' },
+  { code: 19, name: '方向键·上' },
+  { code: 20, name: '方向键·下' },
+  { code: 21, name: '方向键·左' },
+  { code: 22, name: '方向键·右' },
+  { code: 66, name: '回车' },
+  { code: 67, name: '退格' },
+  { code: 84, name: '搜索' },
+]
+
+const scriptKeyName = (keycode: number | string | undefined): string => {
+  const hit = SCRIPT_COMMON_KEYS.find(k => k.code === Number(keycode))
+  return hit ? `${hit.name}（${hit.code}）` : `键值 ${keycode ?? '?'}`
+}
+
+const scriptKeyPresetOf = (step: any): string => {
+  const hit = SCRIPT_COMMON_KEYS.find(k => k.code === Number(step.keycode))
+  return hit ? String(hit.code) : 'custom'
+}
+
+const onScriptKeyPresetChange = (step: any, ev: Event) => {
+  const v = (ev.target as HTMLSelectElement).value
+  step.keycode = v === 'custom' ? '' : Number(v)
+}
+
+// 设备动作类步骤（走 adb，不依赖画面录制）
+const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
+  { type: 'installApk', label: '安装APK', icon: '📦' },
+  { type: 'deleteFolder', label: '删除文件夹', icon: '🗑️' },
+  { type: 'startApp', label: '启动应用', icon: '🚀' },
+  { type: 'stopApp', label: '停止应用', icon: '⏹️' },
+  { type: 'uninstallApp', label: '卸载应用', icon: '🧹' },
+  { type: 'keyevent', label: '模拟按键', icon: '🔘' },
+  { type: 'volume', label: '音量控制', icon: '🔊' },
+  { type: 'reboot', label: '重启设备', icon: '🔄' },
+]
+
+// 已上传的 APK 列表（安装APK步骤的下拉数据源）
+const scriptApkOptions = ref<Array<{ name: string; size: number }>>([])
+const scriptApkLoading = ref(false)
+
+const fetchScriptApks = async () => {
+  scriptApkLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/pipeline/list-apks`)
+    if (res.data.code === 200) scriptApkOptions.value = res.data.data || []
+  } catch {
+    /* APK 列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptApkLoading.value = false
+  }
+}
+
+// 设备动作步骤的默认参数
+const scriptAdbStepDefaults = (type: string): Record<string, any> => {
+  switch (type) {
+    case 'installApk': return { apkName: scriptApkOptions.value[0]?.name || '' }
+    case 'deleteFolder': return { path: '/sdcard/' }
+    case 'startApp': return { packageName: '', activity: '' }
+    case 'stopApp':
+    case 'uninstallApp': return { packageName: '' }
+    case 'keyevent': return { keycode: 4 }
+    case 'volume': return { action: 'up', stream: 'media' }
+    default: return {}
+  }
 }
 
 // ---------- 画面上的步骤标记 ----------
@@ -532,8 +625,8 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
   const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
 
   scriptSteps.value.forEach((step, idx) => {
-    // 输入步骤没有坐标，画面上不画标记（序号也就不占位）
-    if (step.type === 'input') return
+    // 输入步骤与设备动作步骤没有坐标，画面上不画标记（序号也就不占位）
+    if (step.type === 'input' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) return
     const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
     const x = step.x1
     const y = step.y1
@@ -661,8 +754,8 @@ const scriptHitTest = (x: number, y: number): { stepIndex: number; part: 'start'
 
   for (let idx = scriptSteps.value.length - 1; idx >= 0; idx--) {
     const step = scriptSteps.value[idx]
-    // 输入步骤没有坐标，不参与命中
-    if (step.type === 'input') continue
+    // 输入步骤与设备动作步骤没有坐标，不参与命中
+    if (step.type === 'input' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) continue
     const d1 = Math.hypot(x - step.x1, y - step.y1)
     if (d1 <= tolerance) return { stepIndex: idx, part: 'start' }
     if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
@@ -792,6 +885,8 @@ watch(activeTab, async (tab) => {
   if (tab === 'script') {
     await nextTick()
     if (selectedDevice.value) startScriptStream()
+    // 进入脚本页时准备安装APK步骤的下拉数据
+    if (scriptApkOptions.value.length === 0) fetchScriptApks()
   } else {
     stopScriptStream()
   }
@@ -1103,6 +1198,19 @@ const addScriptStep = (step: any) => {
   showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
 }
 
+// 添加设备动作类步骤（安装APK/删除文件夹/应用管理/按键/音量/重启）
+const addScriptAdbStep = (type: string) => {
+  if (type === 'installApk' && scriptApkOptions.value.length === 0) {
+    fetchScriptApks()
+  }
+  addScriptStep({
+    type,
+    ...scriptAdbStepDefaults(type),
+    interval: 500,
+    count: 1,
+  })
+}
+
 const removeScriptStep = (idx: number) => {
   scriptSteps.value.splice(idx, 1)
 }
@@ -1170,6 +1278,13 @@ const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
     y2: s.y2,
     duration: s.duration,
     text: s.text,
+    apkName: s.apkName,
+    path: s.path,
+    packageName: s.packageName,
+    activity: s.activity,
+    keycode: s.keycode,
+    action: s.action,
+    stream: s.stream,
     interval: s.interval ?? 0,
     count: s.count ?? 1,
   }))
@@ -5276,6 +5391,58 @@ button.batch-remote-tile-tag:disabled.active {
   text-align: right;
 }
 
+/* 设备动作步骤的文本/下拉配置（宽度更大，左对齐） */
+.script-config-text,
+.script-config-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 62%;
+  padding: 4px 8px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+}
+
+/* 添加设备动作步骤按钮组 */
+.script-add-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.script-add-label {
+  font-size: 12px;
+  color: #888;
+  margin-right: 2px;
+}
+
+.script-add-btn {
+  padding: 4px 9px;
+  border: 1px dashed #bdbdbd;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  color: #555;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.script-add-btn:hover:not(:disabled) {
+  border-color: #4caf50;
+  color: #2e7d32;
+  background: #f6fbf6;
+}
+
+.script-add-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .script-config-hint {
   margin-top: 6px;
   font-size: 11px;
@@ -5482,6 +5649,25 @@ button.batch-remote-tile-tag:disabled.active {
   .script-step-config {
     background: #33363e;
     border-color: #40434a;
+  }
+
+  .script-config-text,
+  .script-config-select {
+    background: #3a3d44;
+    border-color: #4a4d55;
+    color: #e0e0e0;
+  }
+
+  .script-add-btn {
+    background: #33363e;
+    border-color: #4a4d55;
+    color: #bbb;
+  }
+
+  .script-add-btn:hover:not(:disabled) {
+    border-color: #66bb6a;
+    color: #81c784;
+    background: #2e3d31;
   }
 }
 
@@ -6697,11 +6883,21 @@ button.batch-remote-tile-tag:disabled.active {
 
                   <!-- 右：控制区 -->
                   <div class="script-side-panel">
-                    <!-- 上：录制控制 -->
+                    <!-- 上：录制控制 + 添加设备动作步骤 -->
                     <div class="script-section">
                       <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
                         {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
                       </button>
+                      <div class="script-add-steps">
+                        <span class="script-add-label">添加步骤</span>
+                        <button
+                          v-for="a in SCRIPT_ADB_STEPS"
+                          :key="a.type"
+                          class="script-add-btn"
+                          :disabled="scriptRunning"
+                          @click="addScriptAdbStep(a.type)"
+                        >{{ a.icon }} {{ a.label }}</button>
+                      </div>
                     </div>
 
                     <!-- 下：脚本列表 + 底部按钮 -->
@@ -6743,6 +6939,67 @@ button.batch-remote-tile-tag:disabled.active {
                                 v-model="step.text"
                               >
                             </div>
+                            <!-- 设备动作类步骤的专属参数 -->
+                            <div v-if="step.type === 'installApk'" class="script-config-row">
+                              <span>APK 文件</span>
+                              <select v-model="step.apkName" class="script-config-select">
+                                <option value="" disabled>{{ scriptApkLoading ? '加载中…' : '选择 APK' }}</option>
+                                <option v-for="a in scriptApkOptions" :key="a.name" :value="a.name">{{ a.name }}</option>
+                              </select>
+                            </div>
+                            <div v-if="step.type === 'deleteFolder'" class="script-config-row">
+                              <span>文件夹路径</span>
+                              <input
+                                type="text"
+                                class="script-config-text"
+                                v-model="step.path"
+                                placeholder="/sdcard/xxx"
+                              >
+                            </div>
+                            <div v-if="step.type === 'startApp'" class="script-config-row">
+                              <span>包名</span>
+                              <input type="text" class="script-config-text" v-model="step.packageName" placeholder="com.example.app">
+                            </div>
+                            <div v-if="step.type === 'startApp'" class="script-config-row">
+                              <span>Activity（可选）</span>
+                              <input type="text" class="script-config-text" v-model="step.activity" placeholder=".MainActivity">
+                            </div>
+                            <div v-if="step.type === 'stopApp' || step.type === 'uninstallApp'" class="script-config-row">
+                              <span>包名</span>
+                              <input type="text" class="script-config-text" v-model="step.packageName" placeholder="com.example.app">
+                            </div>
+                            <div v-if="step.type === 'keyevent'" class="script-config-row">
+                              <span>按键</span>
+                              <select
+                                class="script-config-select"
+                                :value="scriptKeyPresetOf(step)"
+                                @change="onScriptKeyPresetChange(step, $event)"
+                              >
+                                <option v-for="k in SCRIPT_COMMON_KEYS" :key="k.code" :value="String(k.code)">{{ k.name }}（{{ k.code }}）</option>
+                                <option value="custom">自定义键值...</option>
+                              </select>
+                            </div>
+                            <div v-if="step.type === 'keyevent' && scriptKeyPresetOf(step) === 'custom'" class="script-config-row">
+                              <span>键值</span>
+                              <input type="number" min="0" max="65535" class="script-config-input" v-model="step.keycode">
+                            </div>
+                            <div v-if="step.type === 'volume'" class="script-config-row">
+                              <span>音量动作</span>
+                              <select class="script-config-select" v-model="step.action">
+                                <option value="up">音量+</option>
+                                <option value="down">音量-</option>
+                                <option value="mute">静音</option>
+                              </select>
+                            </div>
+                            <div v-if="step.type === 'volume' && step.action === 'mute'" class="script-config-row">
+                              <span>音源</span>
+                              <select class="script-config-select" v-model="step.stream">
+                                <option value="media">媒体</option>
+                                <option value="ring">铃声</option>
+                                <option value="alarm">闹钟</option>
+                                <option value="notification">通知</option>
+                              </select>
+                            </div>
                             <div class="script-config-row">
                               <span>执行间隔(ms)</span>
                               <input
@@ -6763,6 +7020,9 @@ button.batch-remote-tile-tag:disabled.active {
                             </div>
                             <div v-if="step.type === 'input'" class="script-config-hint">
                               输入到设备当前聚焦的输入框，通常放在一次点击之后
+                            </div>
+                            <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
+                              设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
                             </div>
                             <div v-else class="script-config-hint">
                               开启「显示步骤」后可在画面上拖动该步骤的位置
