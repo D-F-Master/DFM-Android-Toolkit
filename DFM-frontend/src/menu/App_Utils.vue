@@ -406,67 +406,9 @@ const concatU8 = (a: Uint8Array, b: Uint8Array): Uint8Array => {
   return out
 }
 
-// 画面容器高度按「行数」和投屏区可用高度分配（竖屏 9:16 也完整显示，不写死 200px 裁切）。
-// 注意：不能用卡片内容高度反推容器高度——两者互相影响会形成 ResizeObserver 自反馈，
-// 高度会一路涨上去。这里只观察父级 .batch-remote-area，且只在它高度变化时重算。
-const batchRemoteAreaRef = ref<HTMLElement | null>(null)
-const batchRemoteAreaHeight = ref(0)
-let batchRemoteAreaObserver: ResizeObserver | null = null
-
-const batchRemoteMeasureArea = () => {
-  const el = batchRemoteAreaRef.value
-  if (!el) return
-  const h = el.clientHeight
-  // 忽略 0 值（面板切换/Hidden 期间测量），避免把手写变量清成兜底值
-  if (h > 0) batchRemoteAreaHeight.value = h
-}
-
-const startBatchRemoteAreaObserver = () => {
-  stopBatchRemoteAreaObserver()
-  const el = batchRemoteAreaRef.value
-  if (!el || typeof ResizeObserver === 'undefined') return
-  batchRemoteAreaObserver = new ResizeObserver(() => batchRemoteMeasureArea())
-  batchRemoteAreaObserver.observe(el)
-  batchRemoteMeasureArea()
-}
-
-const stopBatchRemoteAreaObserver = () => {
-  if (batchRemoteAreaObserver) {
-    batchRemoteAreaObserver.disconnect()
-    batchRemoteAreaObserver = null
-  }
-}
-
-watch(() => batchRemoteCards.value.length, async () => {
-  await nextTick()
-  startBatchRemoteAreaObserver()
-})
-
-onBeforeUnmount(() => {
-  stopBatchRemoteAreaObserver()
-})
-
-// 网格行数：卡片数 / 列数
-const batchRemoteGridRows = computed(() => {
-  const n = batchRemoteCards.value.length
-  if (n === 0) return 1
-  return Math.ceil(n / batchRemoteGridCols.value)
-})
-
-// 卡片可用高度 = 投屏区高度去掉表头内边距后，按行数均分（含 gap）
-const batchRemoteTileHeight = computed(() => {
-  const areaH = batchRemoteAreaHeight.value || 480
-  const rows = batchRemoteGridRows.value
-  const headerH = 60
-  const gap = 10
-  const h = (areaH - headerH - gap * (rows - 1)) / rows
-  return Math.max(120, Math.floor(h))
-})
-
-const batchRemoteGridStyle = computed(() => ({
-  gridTemplateColumns: `repeat(${batchRemoteGridCols.value}, 1fr)`,
-  '--batch-tile-h': `${batchRemoteTileHeight.value}px`,
-}))
+// 画面适配交给 CSS（见 .batch-remote-tile-body / .batch-remote-canvas）。
+// 不做 JS 测高：投屏区是 flex:1 且卡片高度又影响它，测高会形成自反馈，
+// 高度一路上涨或读到 0，表现为画面被裁 / 高度不适配。
 
 const startBatchRemote = () => {
   if (batchSelectedDevices.value.size === 0) {
@@ -4527,27 +4469,27 @@ button.batch-remote-tile-tag:disabled.active {
   color: #fff;
 }
 
-/* 画面容器高度由 --batch-tile-h 决定（按投屏区可用高度与行数均分，JS 计算写入），
-   再按设备宽高比反推宽度：竖屏 9:16 与横屏 16:9 都完整显示，不裁切也不撑高页面。 */
+/* 画面容器：撑满卡片剩余空间（卡片高度由网格行均分，见 .batch-remote-grid）。
+   高度完全由布局分配，不再依赖 JS 测高，因此不存在自反馈。 */
 .batch-remote-tile-body {
   position: relative;
-  flex: 0 0 auto;
-  height: var(--batch-tile-h, 200px);
-  max-width: 100%;
-  margin: 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
 }
 
-/* canvas 上 object-fit 无效，用 max-width/max-height 双约束实现等比缩放 */
+/* canvas 的 width/height 属性是视频原始像素，不能当显示尺寸用。
+   这里铺满容器再用 object-fit: contain 等比收进框内：
+   竖屏 9:16 与横屏 16:9 都完整显示，不裁切上下或左右。 */
 .batch-remote-canvas {
   display: block;
-  width: auto;
-  height: auto;
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   background: #2a3040;
   touch-action: none;
   user-select: none;
@@ -4684,6 +4626,83 @@ button.batch-remote-tile-tag:disabled.active {
   color: #2e7d32;
   font-size: 11px;
   font-weight: 500;
+}
+
+/* ===== 视图切换开关（折线图 / TOP进程） ===== */
+.rate-view-switch {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.rate-view-switch button {
+  padding: 3px 10px;
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.rate-view-switch button + button {
+  border-left: 1px solid #e0e0e0;
+}
+
+.rate-view-switch button.active {
+  background: #4caf50;
+  color: #fff;
+}
+
+/* ===== TOP 进程表格 ===== */
+.top-table-wrap {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+}
+
+.top-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.top-table th,
+.top-table td {
+  padding: 6px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.top-table thead th {
+  position: sticky;
+  top: 0;
+  background: #f8f9fb;
+  color: #666;
+  font-weight: 600;
+  border-bottom: 1px solid #eef1f4;
+}
+
+.top-table tbody tr {
+  border-bottom: 1px solid #f5f6f8;
+}
+
+.top-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.top-cpu-high {
+  color: #f44336;
+  font-weight: 600;
+}
+
+.top-cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
 }
 
 .monitor-freq-info {
@@ -6862,9 +6881,14 @@ button.batch-remote-tile-tag:disabled.active {
                       </svg>
                     </span>
                     <span>CPU 占用率 / 网络速率</span>
+                    <div class="rate-view-switch">
+                      <button :class="{ active: rateViewMode === 'chart' }" @click="rateViewMode = 'chart'">折线图</button>
+                      <button :class="{ active: rateViewMode === 'top' }" @click="rateViewMode = 'top'">TOP进程</button>
+                    </div>
                     <span class="monitor-live-tag" v-if="monitorActive">实时刷新中</span>
                   </div>
                   <div class="card-body">
+                    <template v-if="rateViewMode === 'chart'">
                     <div class="rate-summary">
                       <div class="rate-item">
                         <span class="rate-label">CPU 占用率</span>
@@ -6885,10 +6909,40 @@ button.batch-remote-tile-tag:disabled.active {
                         </span>
                       </div>
                     </div>
-                    <div ref="rateChartEl" class="rate-chart"></div>
+                    <div ref="rateChartEl" class="rate-chart" v-show="rateViewMode === 'chart'"></div>
                     <div v-if="monitorRate && (!monitorRate.network || monitorRate.network.length === 0)" class="monitor-empty">
                       暂无网络流量
                     </div>
+                    </template>
+                    <template v-else>
+                      <div class="top-table-wrap">
+                        <table class="top-table">
+                          <thead>
+                            <tr>
+                              <th>PID</th>
+                              <th>用户</th>
+                              <th>状态</th>
+                              <th>CPU%</th>
+                              <th>内存%</th>
+                              <th>进程</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-if="topProcesses.length === 0">
+                              <td colspan="6" class="monitor-empty">{{ monitorLoading ? '加载中...' : (monitorError || '暂无数据') }}</td>
+                            </tr>
+                            <tr v-for="p in topProcesses" :key="p.pid">
+                              <td>{{ p.pid }}</td>
+                              <td>{{ p.user }}</td>
+                              <td>{{ p.stat }}</td>
+                              <td :class="{ 'top-cpu-high': p.cpuPercent >= 50 }">{{ p.cpuPercent }}%</td>
+                              <td>{{ p.memPercent }}%</td>
+                              <td class="top-cmd" :title="p.command">{{ p.command }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </template>
                   </div>
                 </div>
 
