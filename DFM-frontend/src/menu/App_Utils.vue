@@ -2294,7 +2294,7 @@ const onApkDrop = async (event: DragEvent) => {
 
 const uninstallApp = async (packageName: string) => {
   if (!selectedDevice.value) return
-  
+
   try {
     const response = await axios.post(`${API_BASE.value}/api/device/app/uninstall`, {
       deviceId: selectedDevice.value,
@@ -2306,6 +2306,96 @@ const uninstallApp = async (packageName: string) => {
   } catch (error) {
     console.error('卸载应用失败:', error)
   }
+}
+
+// ==================== APK 仓库（应用管理页） ====================
+
+const apkRepoVisible = ref(false)
+const apkRepoUploading = ref(false)
+const apkRepoOptions = ref<Array<{ name: string; size: number }>>([])
+const apkRepoLoading = ref(false)
+const apkRepoInputEl = ref<HTMLInputElement | null>(null)
+
+const fetchApkRepo = async () => {
+  apkRepoLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/pipeline/list-apks`)
+    if (res.data.code === 200) apkRepoOptions.value = res.data.data || []
+  } catch {
+    /* 列表拉取失败不阻断界面 */
+  } finally {
+    apkRepoLoading.value = false
+  }
+}
+
+const openApkRepo = () => {
+  apkRepoVisible.value = true
+  fetchApkRepo()
+}
+
+const pickRepoApk = () => apkRepoInputEl.value?.click()
+
+const onRepoApkChosen = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  apkRepoUploading.value = true
+  try {
+    const form = new FormData()
+    form.append('apk', file)
+    const response = await axios.post(`${API_BASE.value}/api/device/pipeline/upload-apk`, form)
+    if (response.data.code === 200) {
+      await fetchApkRepo()
+    } else {
+      showNotification(response.data.message || '上传失败', 'error')
+    }
+  } catch (error: any) {
+    showNotification('上传失败: ' + error.message, 'error')
+  } finally {
+    apkRepoUploading.value = false
+  }
+}
+
+// 从仓库安装到当前设备
+const installFromRepo = async (name: string) => {
+  if (!selectedDevice.value) {
+    showNotification('请先在左侧选择设备', 'error')
+    return
+  }
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/pipeline/install-apk-to-device`, {
+      deviceId: selectedDevice.value,
+      apkName: name,
+    })
+    if (response.data.code === 200) {
+      showNotification(`${name} 安装成功`, 'success')
+      fetchApps(selectedDevice.value)
+    } else {
+      showNotification('安装失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    showNotification('安装失败: ' + (error?.response?.data?.message || error.message), 'error')
+  }
+}
+
+const removeRepoApk = async (name: string) => {
+  if (!confirm(`确定删除 APK 素材 ${name} 吗？`)) return
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/pipeline/delete-apk`, { name })
+    if (response.data.code === 200) {
+      await fetchApkRepo()
+    } else {
+      showNotification(response.data.message || '删除失败', 'error')
+    }
+  } catch (error: any) {
+    showNotification('删除失败: ' + error.message, 'error')
+  }
+}
+
+const formatRepoSize = (size: number): string => {
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 const startApp = async (packageName: string) => {
@@ -6005,6 +6095,199 @@ button.batch-remote-tile-tag:disabled.active {
   }
 }
 
+/* ==================== APK 仓库弹窗（应用管理页） ==================== */
+.apps-header-btns {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.apk-repo-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.apk-repo-dialog {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.apk-repo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.apk-repo-close {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.apk-repo-close:hover {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.apk-repo-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.apk-repo-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.apk-repo-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+.apk-repo-list {
+  flex: 1;
+  min-height: 120px;
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+}
+
+.apk-repo-empty {
+  padding: 32px;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
+}
+
+.apk-repo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f5f6f8;
+  font-size: 13px;
+}
+
+.apk-repo-item:last-child {
+  border-bottom: none;
+}
+
+.apk-repo-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #333;
+}
+
+.apk-repo-size {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.apk-repo-install {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  font-size: 12px;
+  background: #fff;
+  color: #2e7d32;
+  border: 1px solid #a5d6a7;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.apk-repo-install:hover {
+  background: #e8f5e9;
+}
+
+.apk-repo-del {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: #fff;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.apk-repo-del:hover {
+  background: #ffebee;
+}
+
+@media (prefers-color-scheme: dark) {
+  .apk-repo-dialog {
+    background: #2b2e35;
+  }
+
+  .apk-repo-head {
+    background: #33363e;
+    border-bottom-color: #40434a;
+    color: #e0e0e0;
+  }
+
+  .apk-repo-list {
+    border-color: #40434a;
+  }
+
+  .apk-repo-item {
+    border-bottom-color: #383b42;
+    color: #ddd;
+  }
+
+  .apk-repo-name {
+    color: #e0e0e0;
+  }
+
+  .apk-repo-install,
+  .apk-repo-del {
+    background: #33363e;
+  }
+
+  .apk-repo-install {
+    color: #81c784;
+    border-color: #4a6b4d;
+  }
+
+  .apk-repo-del {
+    color: #ef9a9a;
+    border-color: #6b4a4a;
+  }
+}
+
 /* ==================== 模拟串口页 ==================== */
 .serial-row {
   display: flex;
@@ -6794,7 +7077,10 @@ button.batch-remote-tile-tag:disabled.active {
                       </svg>
                     </span>
                     <span>应用管理</span>
-                    <button class="card-action-btn" @click="installApp">+ 安装</button>
+                    <div class="apps-header-btns">
+                      <button class="card-action-btn" @click="openApkRepo">🗄️ APK仓库</button>
+                      <button class="card-action-btn" @click="installApp">+ 安装</button>
+                    </div>
                   </div>
                   <div
                     class="card-body"
@@ -7854,5 +8140,34 @@ button.batch-remote-tile-tag:disabled.active {
       @save="handleEditorSave"
       @close="handleEditorClose"
     />
+
+    <!-- APK 仓库弹窗（应用管理页） -->
+    <div v-if="apkRepoVisible" class="apk-repo-mask" @click.self="apkRepoVisible = false">
+      <div class="apk-repo-dialog">
+        <div class="apk-repo-head">
+          <span>APK 仓库</span>
+          <button class="apk-repo-close" @click="apkRepoVisible = false">✕</button>
+        </div>
+        <div class="apk-repo-body">
+          <div class="apk-repo-actions">
+            <button class="card-action-btn" :disabled="apkRepoUploading" @click="pickRepoApk">
+              {{ apkRepoUploading ? '上传中...' : '⬆ 上传 APK' }}
+            </button>
+            <span class="apk-repo-hint">文件存放于服务端 data\apk\ 目录{{ selectedDevice ? `，安装目标：${selectedDevice}` : '，安装前请先选择设备' }}</span>
+          </div>
+          <div class="apk-repo-list">
+            <div v-if="apkRepoLoading" class="apk-repo-empty">加载中...</div>
+            <div v-else-if="apkRepoOptions.length === 0" class="apk-repo-empty">仓库为空，先上传 APK</div>
+            <div v-for="a in apkRepoOptions" :key="a.name" class="apk-repo-item">
+              <span class="apk-repo-name" :title="a.name">📦 {{ a.name }}</span>
+              <span class="apk-repo-size">{{ formatRepoSize(a.size) }}</span>
+              <button class="apk-repo-install" @click="installFromRepo(a.name)">安装</button>
+              <button class="apk-repo-del" @click="removeRepoApk(a.name)">删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <input ref="apkRepoInputEl" type="file" accept=".apk" style="display:none" @change="onRepoApkChosen">
+    </div>
   </div>
 </template>
