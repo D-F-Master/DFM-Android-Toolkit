@@ -89,10 +89,12 @@ def find_template(screen, template, threshold: float = 0.85):
 
 
 def wait_for_template(device_id: str, template, threshold: float = 0.85,
-                      timeout: float = 15.0, interval: float = 0.8):
+                      timeout: float = 15.0, interval: float = 0.8,
+                      stop_event=None):
     """
     反复截屏直到模板出现或超时
 
+    stop_event（可选）：外部停止标志，置位后立刻返回未命中。
     返回 (命中?, 耗时秒, 最高分, 尝试次数)。超时不抛异常，
     由调用方决定是判失败还是继续（YAGNI：只用当前已知的两条路径）。
     """
@@ -100,6 +102,8 @@ def wait_for_template(device_id: str, template, threshold: float = 0.85,
     best_score = 0.0
     attempts = 0
     while True:
+        if stop_event is not None and stop_event.is_set():
+            return False, time.time() - start, best_score, attempts
         attempts += 1
         try:
             screen = capture_screen(device_id)
@@ -124,4 +128,9 @@ def wait_for_template(device_id: str, template, threshold: float = 0.85,
             )
             return False, elapsed, best_score, attempts
 
-        time.sleep(interval)
+        # 等待轮询间隔，同样可被停止请求唤醒
+        if stop_event is not None:
+            if stop_event.wait(interval):
+                return False, time.time() - start, best_score, attempts
+        else:
+            time.sleep(interval)

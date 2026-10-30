@@ -573,13 +573,15 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
             time.sleep(max(0, int(step.get("interval", 0))) / 1000)
 
 
-def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int):
+def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int, stop_event=None):
     """
     执行「等待组件出现」步骤
 
     模板图按录制时的画面分辨率保存。若回放时设备分辨率不同，
     需要把模板按比例缩放到当前屏幕尺寸，否则同一组件在不同分辨率下
     尺寸不匹配会一直等不到（不是点击坐标那种简单平移能解决的）。
+
+    stop_event：停止标志，传入后轮询等待可被停止请求提前打断。
     """
     from routes.vision import load_template, wait_for_template, capture_screen
 
@@ -610,14 +612,21 @@ def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int):
             )
 
     found, elapsed, score, attempts = wait_for_template(
-        device_id, template, threshold=threshold, timeout=timeout
+        device_id, template, threshold=threshold, timeout=timeout, stop_event=stop_event
     )
     if not found:
+        # 停止请求打断的等待不报"超时"错误，抛一个上层识别的标记
+        if stop_event is not None and stop_event.is_set():
+            raise _ScriptStopped()
         raise RuntimeError(
             f"等待组件超时：模板 {template_name} 在 {elapsed:.1f}s 内未出现"
             f"（最高分 {score:.3f} < 阈值 {threshold}，尝试 {attempts} 次）"
         )
     logger.info(f"[{device_id}] 等待组件 {template_name} 命中，耗时 {elapsed:.2f}s（分数 {score:.3f}）")
+
+
+class _ScriptStopped(Exception):
+    """用户停止脚本时用于中断执行流程的内部标记"""
 
 
 def _current_screen_size(device_id: str, base_w: int, base_h: int):
@@ -644,8 +653,18 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     videoWidth/videoHeight）。回放时若会话分辨率与基准不同
     （设备转屏 / 流水线对异构设备执行同一脚本），按比例换算到
     当前会话坐标系，保证点击落在录制时的相对位置上。
+
+    每台设备同一时间只允许一个执行（同设备重复提交会立刻失败）；
+    支持停止：/script/stop-run 置停止标志后，当前步骤完成后不再继续。
     """
     from routes.remote_ws import acquire_session, release_session
+
+    # 同设备并发执行防护：拿不到执行槽说明已有一个在跑
+    stop_event = _script_runs.get(device_id)
+    if stop_event is not None:
+        raise RuntimeError(f"设备 {device_id} 已有脚本在执行中，请先停止或等待完成")
+    stop_event = threading.Event()
+    _script_runs[device_id] = stop_event
 
     steps = script.get("steps", [])
     # 全脚本没有注入类步骤时不需要 scrcpy 会话
@@ -656,38 +675,43 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     w = h = 0
     scale_x = scale_y = 1.0
 
-    if needs_session:
-        # wait_first_frame：新建会话时等首帧视频就绪再注入，
-        # 避免 server 初始化窗口期吞掉第一步点击（流水线新起会话时必现）
-        session = acquire_session(device_id, wait_first_frame=True)
-        if session is None:
-            raise RuntimeError("设备会话启动失败")
-
-        # 会话当前分辨率
-        w, h = session.video_width, session.video_height
-        # 录制时基准（未保存则视为与会话一致，行为向后兼容）
-        base_w = int(script.get("videoWidth") or 0)
-        base_h = int(script.get("videoHeight") or 0)
-        if not (base_w and base_h) or (base_w == w and base_h == h):
-            scale_x = scale_y = 1.0
-        else:
-            scale_x = w / base_w
-            scale_y = h / base_h
-            logger.info(
-                f"Script resolution mismatch on {device_id}: "
-                f"recorded {base_w}x{base_h} -> session {w}x{h}, scaling ({scale_x:.3f}, {scale_y:.3f})"
-            )
-
-    def _sx(v) -> float:
-        return v * scale_x
-
-    def _sy(v) -> float:
-        return v * scale_y
-
     try:
+        if needs_session:
+            # wait_first_frame：新建会话时等首帧视频就绪再注入，
+            # 避免 server 初始化窗口期吞掉第一步点击（流水线新起会话时必现）
+            session = acquire_session(device_id, wait_first_frame=True)
+            if session is None:
+                raise RuntimeError("设备会话启动失败")
+
+            # 会话当前分辨率
+            w, h = session.video_width, session.video_height
+            # 录制时基准（未保存则视为与会话一致，行为向后兼容）
+            base_w = int(script.get("videoWidth") or 0)
+            base_h = int(script.get("videoHeight") or 0)
+            if not (base_w and base_h) or (base_w == w and base_h == h):
+                scale_x = scale_y = 1.0
+            else:
+                scale_x = w / base_w
+                scale_y = h / base_h
+                logger.info(
+                    f"Script resolution mismatch on {device_id}: "
+                    f"recorded {base_w}x{base_h} -> session {w}x{h}, scaling ({scale_x:.3f}, {scale_y:.3f})"
+                )
+
+        def _sx(v) -> float:
+            return v * scale_x
+
+        def _sy(v) -> float:
+            return v * scale_y
+
         for round_no in range(1, repeat + 1):
+            if stop_event.is_set():
+                break
             logger.info(f"Script run round {round_no}/{repeat} on {device_id}")
             for idx, step in enumerate(steps):
+                if stop_event.is_set():
+                    logger.info(f"Script stopped by user on {device_id} at step {idx + 1}")
+                    break
                 stype = step.get("type")
                 count = max(1, int(step.get("count", 1)))
                 interval = max(0, int(step.get("interval", 0)))
@@ -698,7 +722,9 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                     base_w = int(script.get("videoWidth") or 0) or w
                     base_h = int(script.get("videoHeight") or 0) or h
                     for _ in range(count):
-                        _exec_wait_step(device_id, step, base_w, base_h)
+                        if stop_event.is_set():
+                            break
+                        _exec_wait_step(device_id, step, base_w, base_h, stop_event)
                 # 设备动作类步骤走 adb 命令（不依赖 scrcpy 会话），count 在函数内部循环
                 elif stype in ADB_STEP_TYPES:
                     _exec_adb_step(device_id, step, count)
@@ -741,14 +767,37 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                             logger.warning(f"Unknown step type: {stype}")
                             break
                         if i < count - 1:
-                            time.sleep(interval / 1000)
+                            _interruptible_sleep(interval / 1000, stop_event)
                 # 步与步之间的间隔
                 if idx < len(steps) - 1:
-                    time.sleep(interval / 1000)
+                    _interruptible_sleep(interval / 1000, stop_event)
     finally:
+        _script_runs.pop(device_id, None)
         if session is not None:
             release_session(device_id, session)
         logger.info(f"Script run finished on {device_id}")
+
+
+# 每台设备当前执行的停止标志（设备号 -> Event）
+_script_runs: dict = {}
+
+
+def _interruptible_sleep(ms: float, stop_event: threading.Event):
+    """可被停止请求提前唤醒的等待"""
+    if ms <= 0:
+        return
+    stop_event.wait(ms / 1000)
+
+
+@router.post("/device/script/stop-run")
+def stop_script_run(request: DeviceIdRequest):
+    """请求停止设备上正在执行的脚本（当前步骤完成后生效）"""
+    stop_event = _script_runs.get(request.deviceId)
+    if stop_event is None:
+        return {"code": 200, "message": "该设备当前没有脚本在执行", "data": None}
+    stop_event.set()
+    logger.info(f"Script stop requested on {request.deviceId}")
+    return {"code": 200, "message": "已发送停止请求，当前步骤完成后生效", "data": None}
 
 
 @router.post("/device/script/run")
@@ -822,6 +871,9 @@ def run_steps(request: ScriptRunStepsRequest):
             "message": "success",
             "data": {"repeat": repeat, "stepCount": len(script["steps"])},
         }
+    except _ScriptStopped:
+        logger.info(f"Script steps stopped by user on {request.deviceId}")
+        return {"code": 200, "message": "已停止", "data": {"stopped": True}}
     except RuntimeError as e:
         # 步骤执行失败（未安装应用/等待超时/命令失败等），把原因带回给前端
         logger.warning(f"Script steps failed on {request.deviceId}: {e}")
