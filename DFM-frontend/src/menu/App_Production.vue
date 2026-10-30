@@ -414,6 +414,127 @@ const logBoxEl = ref<HTMLDivElement | null>(null);
 let logTimer: ReturnType<typeof setInterval> | null = null;
 let logPolling = false;
 
+// ===== 设备画面快照 =====
+interface ScreenTile {
+  deviceId: string;
+  imageDataUrl: string;   // data:image/png;base64,...
+  loading: boolean;
+  error: string;
+  capturedAt: string;
+}
+const screenTiles = ref<Map<string, ScreenTile>>(new Map());
+const screensLoading = ref(false);
+let screenPollTimer: ReturnType<typeof setInterval> | null = null;
+const screenPolling = ref(false);
+
+// 获取所有勾选设备的画面快照（一轮）
+const captureScreens = async () => {
+  const targets = selectedDevices.value.filter(d => {
+    const t = screenTiles.value.get(d);
+    return !t || !t.loading;   // 跳过正在截取中的
+  });
+  if (targets.length === 0) return;
+  targets.forEach(d => {
+    const t = screenTiles.value.get(d);
+    if (t) t.loading = true;
+    else screenTiles.value.set(d, { deviceId: d, imageDataUrl: '', loading: true, error: '', capturedAt: '' });
+  });
+  // 并发截取（限 4 路，避免 adb 并发打爆）
+  const workers = Math.min(4, targets.length);
+  let cursor = 0;
+  const runOne = async () => {
+    while (cursor < targets.length) {
+      const deviceId = targets[cursor++];
+      try {
+        const response = await axios.post(`${API_BASE.value}/api/device/pipeline/screen`, { deviceId }, { timeout: 30000 });
+        if (response.data.code === 200) {
+          const t = screenTiles.value.get(deviceId);
+          if (t) {
+            t.imageDataUrl = 'data:image/jpeg;base64,' + response.data.data.image;
+            t.capturedAt = new Date().toTimeString().slice(0, 8);
+            t.error = '';
+          }
+        } else {
+          const t = screenTiles.value.get(deviceId);
+          if (t) t.error = response.data.message || '截取失败';
+        }
+      } catch (error: any) {
+        const t = screenTiles.value.get(deviceId);
+        if (t) t.error = error?.response?.data?.message || error.message;
+      } finally {
+        const t = screenTiles.value.get(deviceId);
+        if (t) t.loading = false;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, runOne));
+};
+
+// 手动获取画面
+const fetchScreens = async () => {
+  if (selectedDevices.value.length === 0) { alert('请先勾选设备'); return; }
+  screensLoading.value = true;
+  try { await captureScreens(); } finally { screensLoading.value = false; }
+};
+
+// 画面自动刷新开关（3 秒一轮）
+const toggleScreenPolling = () => {
+  screenPolling.value = !screenPolling.value;
+  if (screenPollTimer) { clearInterval(screenPollTimer); screenPollTimer = null; }
+  if (screenPolling.value) {
+    screenPollTimer = setInterval(captureScreens, 3000);
+    captureScreens();
+  }
+};
+
+// 移除已取消勾选设备的画面
+const pruneScreens = () => {
+  for (const d of Array.from(screenTiles.value.keys())) {
+    if (!selectedDevices.value.includes(d)) screenTiles.value.delete(d);
+  }
+};
+
+// 设备画面基底64 缓存路径
+const deviceScreenUrl = (deviceId: string) => screenTiles.value.get(deviceId)?.imageDataUrl || '';
+
+// ===== 快捷执行脚本（选脚本 -> 对勾选设备执行）=====
+const quickScriptName = ref('');
+const quickRunning = ref(false);
+
+const quickRunScript = async () => {
+  if (selectedDevices.value.length === 0) { alert('请先勾选设备'); return; }
+  if (!quickScriptName.value) { alert('请先选择脚本'); return; }
+  quickRunning.value = true;
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/pipeline/run-script`, {
+      deviceIds: selectedDevices.value,
+      scriptName: quickScriptName.value,
+    });
+    if (response.data.code === 200) {
+      runId.value = response.data.data.runId;
+      running.value = true;
+      runLogs.value = [];
+      logCursor.value = 0;
+      logFilePath.value = (response.data.data.logDir ? response.data.data.logDir + '\\run.log' : '');
+      const offline = response.data.data.offline || [];
+      if (offline.length > 0) {
+        appendLogs(offline.map((d: string) => ({
+          time: new Date().toTimeString().slice(0, 8),
+          deviceId: d, step: '准备', level: 'err', message: '设备不在线，已跳过',
+        })));
+      }
+      if (logTimer) clearInterval(logTimer);
+      logTimer = setInterval(pollLogs, 1000);
+    } else {
+      alert(response.data.message || '启动失败');
+    }
+  } catch (error: any) {
+    alert(`启动失败: ${error.message}`);
+  } finally {
+    quickRunning.value = false;
+  }
+};
+
 const appendLogs = (entries: LogEntry[]) => {
   runLogs.value.push(...entries);
   nextTick(() => {
@@ -501,6 +622,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  if (screenPollTimer) { clearInterval(screenPollTimer); screenPollTimer = null; }
 });
 </script>
 
@@ -553,7 +675,7 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 右侧：流水线编辑 + 执行 -->
+        <!-- 右侧：流水线编辑 + 设备画面 + 执行 -->
         <div class="content">
           <div class="pipeline-page">
             <!-- 工具栏 -->
@@ -689,6 +811,48 @@ onUnmounted(() => {
               </label>
               <button class="pl-run-btn" :disabled="running" @click="startRun">
                 {{ running ? '执行中...' : '▶ 执行流水线' }}
+              </button>
+              <button v-if="running" class="pl-stop-btn" @click="stopRun">■ 停止</button>
+            </div>
+
+            <!-- 设备画面网格：3 列，可滚动，左上角设备 IP -->
+            <div class="scr-section">
+              <div class="scr-toolbar">
+                <span class="scr-title">设备画面（{{ selectedDevices.length }} 台）</span>
+                <div class="scr-toolbar-btns">
+                  <button class="pl-btn" :disabled="screensLoading || selectedDevices.length === 0" @click="fetchScreens">
+                    {{ screensLoading ? '获取中...' : '📷 获取画面' }}
+                  </button>
+                  <button class="pl-btn" :class="{ 'scr-polling-on': screenPolling }" @click="toggleScreenPolling">
+                    {{ screenPolling ? '⏸ 停止刷新' : '🔄 自动刷新(3s)' }}
+                  </button>
+                </div>
+              </div>
+              <div class="scr-grid" v-if="selectedDevices.length > 0">
+                <div v-for="d in selectedDevices" :key="d" class="scr-tile">
+                  <span class="scr-tile-ip">{{ d }}</span>
+                  <span v-if="screenTiles.get(d)?.capturedAt" class="scr-tile-time">{{ screenTiles.get(d)?.capturedAt }}</span>
+                  <div class="scr-tile-body">
+                    <img v-if="screenTiles.get(d)?.imageDataUrl" :src="screenTiles.get(d)?.imageDataUrl" class="scr-tile-img">
+                    <div v-else-if="screenTiles.get(d)?.loading" class="scr-tile-loading">截取中...</div>
+                    <div v-else-if="screenTiles.get(d)?.error" class="scr-tile-error">{{ screenTiles.get(d)?.error }}</div>
+                    <div v-else class="scr-tile-loading">点击「获取画面」</div>
+                    <div v-if="screenTiles.get(d)?.loading && screenTiles.get(d)?.imageDataUrl" class="scr-tile-refresh">刷新中...</div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="scr-empty">先在左侧勾选设备</div>
+            </div>
+
+            <!-- 快捷执行：选脚本直接跑，无需编排流水线 -->
+            <div class="quick-bar">
+              <span class="quick-label">快捷执行：</span>
+              <select v-model="quickScriptName" class="pl-config-select quick-select">
+                <option value="" disabled>选择模拟脚本...</option>
+                <option v-for="n in scriptOptions" :key="n" :value="n">{{ n }}</option>
+              </select>
+              <button class="pl-run-btn quick-run-btn" :disabled="quickRunning || running" @click="quickRunScript">
+                ▶ 对已选设备执行脚本
               </button>
               <button v-if="running" class="pl-stop-btn" @click="stopRun">■ 停止</button>
             </div>
@@ -884,6 +1048,7 @@ onUnmounted(() => {
   padding: 10px;
   height: 100%;
   box-sizing: border-box;
+  overflow-y: auto;
 }
 
 .pl-toolbar {
@@ -1229,6 +1394,150 @@ onUnmounted(() => {
 
 .pl-stop-btn:hover {
   background: #d32f2f;
+}
+
+/* ===== 设备画面网格 ===== */
+.scr-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.scr-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.scr-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+}
+
+.scr-toolbar-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.scr-polling-on {
+  background: #e8f5e9;
+  border-color: #66bb6a;
+  color: #2e7d32;
+}
+
+.scr-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.scr-tile {
+  position: relative;
+  background: #1e2430;
+  border-radius: 8px;
+  overflow: hidden;
+  min-height: 90px;
+}
+
+.scr-tile-ip {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 2;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-family: Consolas, monospace;
+  pointer-events: none;
+}
+
+.scr-tile-time {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #9fd6a8;
+  font-size: 10px;
+  font-family: Consolas, monospace;
+  pointer-events: none;
+}
+
+.scr-tile-body {
+  position: relative;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scr-tile-img {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #000;
+}
+
+.scr-tile-loading,
+.scr-tile-error {
+  padding: 40px 10px;
+  font-size: 12px;
+  color: #8a97a8;
+  text-align: center;
+}
+
+.scr-tile-error {
+  color: #ff8a80;
+  word-break: break-all;
+}
+
+.scr-tile-refresh {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffd54f;
+  font-size: 10px;
+}
+
+.scr-empty {
+  padding: 32px;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
+  border: 1px dashed #ddd;
+  border-radius: 8px;
+}
+
+/* ===== 快捷执行条 ===== */
+.quick-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.quick-label {
+  font-size: 13px;
+  color: #666;
+}
+
+.quick-select {
+  min-width: 180px;
+}
+
+.quick-run-btn {
+  padding: 7px 16px;
+  font-size: 13px;
 }
 
 /* ===== 日志 ===== */
