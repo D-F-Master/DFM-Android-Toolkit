@@ -1137,7 +1137,8 @@
     { "type": "uninstallApp", "packageName": "com.x" },
     { "type": "keyevent", "keycode": 4 },
     { "type": "volume", "action": "up", "stream": "media" },
-    { "type": "reboot" }
+    { "type": "reboot" },
+    { "type": "waitFor", "template": "组件.png", "threshold": 0.85, "timeout": 15 }
   ]
 }
 ```
@@ -1157,6 +1158,12 @@
 - `keyevent`: `keycode` 数字键值 0-65535（4=返回 3=主页 26=电源 24/25=音量）
 - `volume`: `action` 为 `up`/`down`/`mute`；`stream` 仅静音时生效（media/ring/alarm/notification）
 - `reboot`: 无参数
+- `waitFor`: 反复截屏搜索模板图，**组件出现才继续下一步**；`template` 为 `data/templates/` 中的文件名（禁止路径分隔符），`threshold` 匹配阈值 0.5-1.0（默认 0.85），`timeout` 超时秒数 0-600（默认 15，超时报错终止脚本）；模板按录制分辨率自动换算到当前屏幕尺寸
+
+**waitFor 实现说明**（`routes/vision.py`）:
+- 截屏用 raw `screencap`（~640ms/次），比 PNG 快 6 倍（PNG 编码要 3.3s），轮询间隔 0.8s
+- 匹配用 `cv2.matchTemplate`（TM_CCOEFF_NORMED），对亮度/整体色偏不敏感；实测存在 1.0000 / 缩放 0.95 倍 0.9124 / 不存在 0.47，默认阈值 0.85
+- 依赖 `numpy` + `opencv-python-headless`（已加入 requirements.txt）
 
 **通用字段**:
 - `interval`: 该步执行间隔 ms（步与步之间、同一步多次之间的等待）
@@ -1212,9 +1219,18 @@
 - `repeat`: 重复轮数（可选，不传用脚本保存的 repeat）
 
 **注意**:
-- 执行时临时建立 scrcpy 注入会话，跑完自动销毁
+- 执行时临时建立 scrcpy 注入会话，跑完自动销毁；全脚本无注入类步骤时不建立会话
 - 设备不在线返回 400，脚本不存在返回 404
 - 回放顺序：步骤顺序 → 每步 count 次（步间 interval）→ 共 repeat 轮
+
+### 6. 视觉匹配模板管理
+**接口**:
+- `POST /api/device/script/save-template`（`{"name": "模板名", "image": "base64 PNG"}`）— 保存前端画面框选的模板
+- `POST /api/device/script/upload-template`（multipart，字段 `template`）— 上传模板图片文件
+- `POST /api/device/script/list-templates`（无参数）— 列出模板（名称/尺寸/大小）
+- `POST /api/device/script/delete-template`（`{"name": "xxx.png"}`）— 删除模板
+
+**说明**: 模板存放于 `data/templates/`，与 `waitFor` 步骤配合使用（见步骤类型说明）
 
 ---
 
@@ -1237,6 +1253,14 @@
 ---
 
 ## 更新日志
+
+### v2.7.0
+- 模拟脚本新增「等待组件出现」步骤（`waitFor`）：反复截屏搜索模板图，组件出现才继续下一步，超时报错终止
+- 新增视觉匹配模块 `routes/vision.py`：raw screencap（~640ms/次，比 PNG 快 6 倍）+ `cv2.matchTemplate` 模板匹配
+- 新增模板管理接口：`save-template`（base64）/ `upload-template` / `list-templates` / `delete-template`，存放于 `data/templates/`
+- 前端脚本页新增「👁 等待组件(框选)」：在投屏画面上框住组件即保存为模板并自动添加等待步骤；步骤可配匹配阈值与超时
+- 模板按录制分辨率自动换算到当前屏幕尺寸（跨分辨率设备执行同一脚本）
+- 新增依赖 `numpy` / `opencv-python-headless`
 
 ### v2.6.0
 - 模拟脚本新增 8 种设备动作类步骤（走 adb 命令，不依赖 scrcpy 会话）：`installApk` / `deleteFolder` / `startApp` / `stopApp` / `uninstallApp` / `keyevent` / `volume` / `reboot`
