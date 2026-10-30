@@ -57,6 +57,8 @@ class ScriptSaveRequest(BaseModel):
     name: str
     repeat: int = 1
     steps: List[dict]
+    videoWidth: Optional[int] = None   # 录制时的画面宽（坐标基准）
+    videoHeight: Optional[int] = None  # 录制时的画面高
 
 
 class ScriptNameRequest(BaseModel):
@@ -158,6 +160,11 @@ def save_script(request: ScriptSaveRequest):
             "repeat": max(1, request.repeat),
             "steps": request.steps,
         }
+        # 记录录制时的画面尺寸：回放时若会话分辨率不同（设备转屏/异构设备），
+        # 以此为基准等比换算坐标，保证点击位置与录制时一致
+        if request.videoWidth and request.videoHeight:
+            data["videoWidth"] = int(request.videoWidth)
+            data["videoHeight"] = int(request.videoHeight)
         path = SCRIPTS_DIR / f"{name}.json"
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -300,6 +307,11 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
 
     复用共享 scrcpy 会话注入（与屏幕预览/批量投屏共用同一会话，
     避免重复启动 server 互相干扰），跑完归还引用。
+
+    坐标换算：步骤坐标以「录制时的画面尺寸」为基准（脚本保存了
+    videoWidth/videoHeight）。回放时若会话分辨率与基准不同
+    （设备转屏 / 流水线对异构设备执行同一脚本），按比例换算到
+    当前会话坐标系，保证点击落在录制时的相对位置上。
     """
     from routes.remote_ws import acquire_session, release_session
 
@@ -308,8 +320,27 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
         raise RuntimeError("设备会话启动失败")
 
     try:
-        # 用会话真实分辨率做坐标归一化基准（与录屏预览一致）
+        # 会话当前分辨率
         w, h = session.video_width, session.video_height
+        # 录制时基准（未保存则视为与会话一致，行为向后兼容）
+        base_w = int(script.get("videoWidth") or 0)
+        base_h = int(script.get("videoHeight") or 0)
+        if not (base_w and base_h) or (base_w == w and base_h == h):
+            scale_x = scale_y = 1.0
+        else:
+            scale_x = w / base_w
+            scale_y = h / base_h
+            logger.info(
+                f"Script resolution mismatch on {device_id}: "
+                f"recorded {base_w}x{base_h} -> session {w}x{h}, scaling ({scale_x:.3f}, {scale_y:.3f})"
+            )
+
+        def _sx(v) -> float:
+            return v * scale_x
+
+        def _sy(v) -> float:
+            return v * scale_y
+
         steps = script.get("steps", [])
         for round_no in range(1, repeat + 1):
             logger.info(f"Script run round {round_no}/{repeat} on {device_id}")
@@ -319,17 +350,17 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 interval = max(0, int(step.get("interval", 0)))
                 for i in range(count):
                     if stype == "tap":
-                        session.inject_touch(0, step["x1"], step["y1"], w, h)
-                        session.inject_touch(1, step["x1"], step["y1"], w, h)
+                        session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
+                        session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
                         time.sleep(0.05)
                     elif stype == "longpress":
-                        session.inject_touch(0, step["x1"], step["y1"], w, h)
+                        session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
                         time.sleep(max(0.1, step.get("duration", 800)) / 1000)
-                        session.inject_touch(1, step["x1"], step["y1"], w, h)
+                        session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
                     elif stype == "swipe":
                         # 滑动：down → 多段 move → up，模拟真实手势
-                        x1, y1 = step["x1"], step["y1"]
-                        x2, y2 = step.get("x2", x1), step.get("y2", y1)
+                        x1, y1 = _sx(step["x1"]), _sy(step["y1"])
+                        x2, y2 = _sx(step.get("x2", step["x1"])), _sy(step.get("y2", step["y1"]))
                         seg = 10
                         session.inject_touch(0, x1, y1, w, h)
                         for k in range(1, seg + 1):
