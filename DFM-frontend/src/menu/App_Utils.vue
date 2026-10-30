@@ -590,16 +590,21 @@ const fetchScriptApks = async () => {
   }
 }
 
-// 应用列表（启动/停止/卸载步骤的下拉数据源；轻量接口只拿包名，快）
+// 应用列表（启动/停止/卸载步骤的下拉数据源；中文名 -> 包名映射）
 const scriptAppPackages = ref<string[]>([])
+const scriptAppNames = ref<Record<string, string>>({})
 const scriptAppLoading = ref(false)
 
 const fetchScriptApps = async () => {
   if (!selectedDevice.value) return
   scriptAppLoading.value = true
   try {
-    const res = await axios.post(`${API_BASE.value}/api/device/apps`, { deviceId: selectedDevice.value })
-    if (res.data.code === 200) scriptAppPackages.value = res.data.data || []
+    const res = await axios.post(`${API_BASE.value}/api/device/script/app-names`, { deviceId: selectedDevice.value })
+    if (res.data.code === 200) {
+      const map = res.data.data || {}
+      scriptAppNames.value = map
+      scriptAppPackages.value = Object.keys(map)
+    }
   } catch {
     /* 应用列表拉取失败不阻断脚本编辑 */
   } finally {
@@ -7156,18 +7161,14 @@ button.batch-remote-tile-tag:disabled.active {
                               <span>应用</span>
                               <select class="script-config-select" v-model="step.packageName">
                                 <option value="" disabled>{{ scriptAppLoading ? '加载应用列表中…' : '选择应用' }}</option>
-                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ p }}</option>
+                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ scriptAppNames[p] || p }}</option>
                               </select>
-                            </div>
-                            <div v-if="step.type === 'startApp'" class="script-config-row">
-                              <span>Activity（可选）</span>
-                              <input type="text" class="script-config-text" v-model="step.activity" placeholder=".MainActivity">
                             </div>
                             <div v-if="step.type === 'stopApp' || step.type === 'uninstallApp'" class="script-config-row">
                               <span>应用</span>
                               <select class="script-config-select" v-model="step.packageName">
                                 <option value="" disabled>{{ scriptAppLoading ? '加载应用列表中…' : '选择应用' }}</option>
-                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ p }}</option>
+                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ scriptAppNames[p] || p }}</option>
                               </select>
                             </div>
                             <div v-if="step.type === 'keyevent'" class="script-config-row">                              <span>按键</span>
