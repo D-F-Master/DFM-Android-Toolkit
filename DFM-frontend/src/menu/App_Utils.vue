@@ -1391,6 +1391,28 @@ const clearScriptSteps = () => {
   scriptSteps.value = []
 }
 
+// 批量设置所有步骤的执行间隔（毫秒）
+const setAllIntervals = () => {
+  if (scriptSteps.value.length === 0) return
+  showPrompt(
+    '请输入执行间隔(ms)，应用到全部步骤',
+    (input?: string) => {
+      const n = parseInt(input || '', 10)
+      if (isNaN(n) || n < 0) {
+        showNotification('请输入不小于 0 的整数', 'error')
+        return
+      }
+      const capped = Math.min(n, 600000)
+      for (const s of scriptSteps.value) {
+        s.interval = capped
+      }
+      showNotification(`已将 ${scriptSteps.value.length} 个步骤的间隔统一设为 ${capped}ms`, 'success')
+    },
+    String(scriptSteps.value[0]?.interval ?? 500),
+    '统一间隔'
+  )
+}
+
 // 点击步骤：选中并展开执行参数（再点一次收起）
 const toggleStepEdit = (idx: number) => {
   scriptEditingStep.value = scriptEditingStep.value === idx ? null : idx
@@ -7210,6 +7232,12 @@ button.batch-remote-tile-tag:disabled.active {
                       <div class="script-list-header">
                         <span>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
+                          <button
+                            class="script-mini-btn"
+                            @click="setAllIntervals"
+                            :disabled="scriptSteps.length === 0 || scriptRunning"
+                            title="把所有步骤的执行间隔统一设置为同一个值"
+                          >统一间隔</button>
                           <button
                             class="script-mini-btn"
                             @click="openImportMenu"
