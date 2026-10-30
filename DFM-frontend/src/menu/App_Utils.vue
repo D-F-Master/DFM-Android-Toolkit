@@ -557,9 +557,9 @@ const scriptKeyPresetOf = (step: any): string => {
   return hit ? String(hit.code) : 'custom'
 }
 
-const onScriptKeyPresetChange = (step: any, ev: Event) => {
-  const v = (ev.target as HTMLSelectElement).value
-  step.keycode = v === 'custom' ? '' : Number(v)
+const onScriptKeyPresetChange = (step: any, value: string | number) => {
+  // el-select 的 change 直接传选中值（原生 select 事件在别处使用）
+  step.keycode = value === 'custom' ? '' : Number(value)
 }
 
 // 设备动作类步骤（走 adb，不依赖画面录制）
@@ -614,13 +614,17 @@ const fetchScriptApps = async () => {
 
 // 模板图列表（等待组件步骤的下拉数据源）
 const scriptTemplateOptions = ref<Array<{ name: string; width: number; height: number }>>([])
+const scriptTemplateLoading = ref(false)
 
 const fetchScriptTemplates = async () => {
+  scriptTemplateLoading.value = true
   try {
     const res = await axios.post(`${API_BASE.value}/api/device/script/list-templates`)
     if (res.data.code === 200) scriptTemplateOptions.value = res.data.data || []
   } catch {
     /* 模板列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptTemplateLoading.value = false
   }
 }
 
@@ -5573,6 +5577,22 @@ button.batch-remote-tile-tag:disabled.active {
   background: #fff;
 }
 
+/* Element Plus 配置控件：占满行内剩余宽度 */
+.ep-config-select,
+.ep-config-input {
+  flex: 1;
+  min-width: 0;
+  max-width: 68%;
+}
+
+.ep-config-select {
+  width: 68%;
+}
+
+.ep-config-num {
+  width: 110px;
+}
+
 /* 添加设备动作步骤按钮组 */
 .script-add-steps {
   display: flex;
@@ -7116,109 +7136,85 @@ button.batch-remote-tile-tag:disabled.active {
                           <div v-if="scriptEditingStep === idx" class="script-step-config" @click.stop>
                             <div v-if="step.type === 'input'" class="script-config-row">
                               <span>输入内容</span>
-                              <input
-                                type="text"
-                                class="script-config-input"
-                                v-model="step.text"
-                              >
+                              <el-input v-model="step.text" class="ep-config-input" />
                             </div>
                             <!-- 等待组件步骤的专属参数 -->
                             <div v-if="step.type === 'waitFor'" class="script-config-row">
                               <span>模板</span>
-                              <select class="script-config-select" v-model="step.template">
-                                <option value="" disabled>选择模板</option>
-                                <option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name">
-                                  {{ t.name }}（{{ t.width }}x{{ t.height }}）
-                                </option>
-                              </select>
+                              <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
+                                <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
+                              </el-select>
                             </div>
                             <div v-if="step.type === 'waitFor'" class="script-config-row">
                               <span>匹配阈值</span>
-                              <input type="number" min="0.5" max="1" step="0.05" class="script-config-input" v-model.number="step.threshold">
+                              <el-input-number v-model="step.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
                             </div>
                             <div v-if="step.type === 'waitFor'" class="script-config-row">
                               <span>超时(秒)</span>
-                              <input type="number" min="1" max="600" class="script-config-input" v-model.number="step.timeout">
+                              <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="600" controls-position="right" />
                             </div>
                             <!-- 设备动作类步骤的专属参数 -->
                             <div v-if="step.type === 'installApk'" class="script-config-row">
                               <span>APK 文件</span>
-                              <select v-model="step.apkName" class="script-config-select">
-                                <option value="" disabled>{{ scriptApkLoading ? '加载中…' : '选择 APK' }}</option>
-                                <option v-for="a in scriptApkOptions" :key="a.name" :value="a.name">{{ a.name }}</option>
-                              </select>
+                              <el-select v-model="step.apkName" class="ep-config-select" placeholder="选择 APK" :loading="scriptApkLoading">
+                                <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
+                              </el-select>
                             </div>
                             <div v-if="step.type === 'deleteFolder'" class="script-config-row">
                               <span>文件夹路径</span>
-                              <input
-                                type="text"
-                                class="script-config-text"
-                                v-model="step.path"
-                                placeholder="/sdcard/xxx"
+                              <el-input v-model="step.path" class="ep-config-input" placeholder="/sdcard/xxx" />
+                            </div>
+                            <div v-if="step.type === 'startApp' || step.type === 'stopApp' || step.type === 'uninstallApp'" class="script-config-row">
+                              <span>应用</span>
+                              <el-select
+                                v-model="step.packageName"
+                                class="ep-config-select"
+                                placeholder="选择应用"
+                                filterable
+                                :loading="scriptAppLoading"
                               >
+                                <el-option v-for="p in scriptAppPackages" :key="p" :value="p" :label="scriptAppNames[p] || p" />
+                              </el-select>
                             </div>
-                            <div v-if="step.type === 'startApp'" class="script-config-row">
-                              <span>应用</span>
-                              <select class="script-config-select" v-model="step.packageName">
-                                <option value="" disabled>{{ scriptAppLoading ? '加载应用列表中…' : '选择应用' }}</option>
-                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ scriptAppNames[p] || p }}</option>
-                              </select>
-                            </div>
-                            <div v-if="step.type === 'stopApp' || step.type === 'uninstallApp'" class="script-config-row">
-                              <span>应用</span>
-                              <select class="script-config-select" v-model="step.packageName">
-                                <option value="" disabled>{{ scriptAppLoading ? '加载应用列表中…' : '选择应用' }}</option>
-                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ scriptAppNames[p] || p }}</option>
-                              </select>
-                            </div>
-                            <div v-if="step.type === 'keyevent'" class="script-config-row">                              <span>按键</span>
-                              <select
-                                class="script-config-select"
-                                :value="scriptKeyPresetOf(step)"
+                            <div v-if="step.type === 'keyevent'" class="script-config-row">
+                              <span>按键</span>
+                              <el-select
+                                :model-value="scriptKeyPresetOf(step)"
+                                class="ep-config-select"
                                 @change="onScriptKeyPresetChange(step, $event)"
                               >
-                                <option v-for="k in SCRIPT_COMMON_KEYS" :key="k.code" :value="String(k.code)">{{ k.name }}（{{ k.code }}）</option>
-                                <option value="custom">自定义键值...</option>
-                              </select>
+                                <el-option v-for="k in SCRIPT_COMMON_KEYS" :key="k.code" :value="String(k.code)" :label="`${k.name}（${k.code}）`" />
+                                <el-option value="custom" label="自定义键值..." />
+                              </el-select>
                             </div>
                             <div v-if="step.type === 'keyevent' && scriptKeyPresetOf(step) === 'custom'" class="script-config-row">
                               <span>键值</span>
-                              <input type="number" min="0" max="65535" class="script-config-input" v-model="step.keycode">
+                              <el-input-number v-model.number="step.keycode" class="ep-config-num" :min="0" :max="65535" controls-position="right" />
                             </div>
                             <div v-if="step.type === 'volume'" class="script-config-row">
                               <span>音量动作</span>
-                              <select class="script-config-select" v-model="step.action">
-                                <option value="up">音量+</option>
-                                <option value="down">音量-</option>
-                                <option value="mute">静音</option>
-                              </select>
+                              <el-select v-model="step.action" class="ep-config-select">
+                                <el-option value="up" label="音量+" />
+                                <el-option value="down" label="音量-" />
+                                <el-option value="mute" label="静音" />
+                              </el-select>
                             </div>
                             <div v-if="step.type === 'volume' && step.action === 'mute'" class="script-config-row">
                               <span>音源</span>
-                              <select class="script-config-select" v-model="step.stream">
-                                <option value="media">媒体</option>
-                                <option value="ring">铃声</option>
-                                <option value="alarm">闹钟</option>
-                                <option value="notification">通知</option>
-                              </select>
+                              <el-select v-model="step.stream" class="ep-config-select">
+                                <el-option value="media" label="媒体" />
+                                <el-option value="ring" label="铃声" />
+                                <el-option value="alarm" label="闹钟" />
+                                <el-option value="notification" label="通知" />
+                              </el-select>
                             </div>
                             <div class="script-config-row">
                               <span>执行间隔(ms)</span>
-                              <input
-                                type="number"
-                                min="0"
-                                class="script-config-input"
-                                v-model.number="step.interval"
-                              >
+                              <el-input-number v-model="step.interval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
                             </div>
                             <div class="script-config-row">
                               <span>执行次数</span>
-                              <input
-                                type="number"
-                                min="1"
-                                class="script-config-input"
-                                v-model.number="step.count"
-                              >
+                              <el-input-number v-model="step.count" class="ep-config-num" :min="1" :max="99" controls-position="right" />
                             </div>
                             <div v-if="step.type === 'input'" class="script-config-hint">
                               输入到设备当前聚焦的输入框，通常放在一次点击之后
