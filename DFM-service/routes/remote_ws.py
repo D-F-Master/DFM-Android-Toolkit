@@ -22,6 +22,7 @@ mirror 事件格式：
 import asyncio
 import socket
 import threading
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -47,12 +48,18 @@ _shared_sessions: dict = {}
 _shared_sessions_lock = threading.Lock()
 
 
-def acquire_session(device_id: str):
+def acquire_session(device_id: str, wait_first_frame: bool = False):
     """
     获取（或创建）设备的共享会话；返回 None 表示启动失败。
 
     调用方用完后必须调用 release_session(device_id)。
+
+    wait_first_frame=True 时：若本次新建了会话，阻塞等待首帧视频到达
+    （上限 5 秒）。刚启动的 server 在首帧编码出来前，注入的触控事件
+    可能被丢弃（编码器/display 尚未就绪）——脚本回放等依赖注入的
+    场景必须等首帧，否则第一步点击会被吞掉。
     """
+    created = False
     with _shared_sessions_lock:
         session = _shared_sessions.get(device_id)
         if session is not None and session.running:
@@ -72,7 +79,35 @@ def acquire_session(device_id: str):
     session._refcount = 1
     with _shared_sessions_lock:
         _shared_sessions[device_id] = session
+    created = True
+
+    if wait_first_frame and created:
+        _wait_first_frame(session, device_id)
+
     return session
+
+
+def _wait_first_frame(session, device_id: str, timeout: float = 5.0):
+    """等首帧视频到达（丢弃一路 config 帧），超时则记日志放行"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not session.running:
+            return
+        try:
+            frame = session.frame_queue.get(timeout=0.2)
+        except Exception:
+            continue
+        if frame["kind"] == "closed":
+            return
+        if frame["kind"] == "frame":
+            # 首帧到了：塞回队列供正常消费方（帧泵/预览）使用
+            try:
+                session.frame_queue.put(frame, block=False)
+            except Exception:
+                pass  # 队列满说明消费方已在取，直接放行
+            logger.info(f"[{device_id}] first frame arrived, session ready for injection")
+            return
+        # config 帧继续等下一帧
 
 
 def release_session(device_id: str, session):

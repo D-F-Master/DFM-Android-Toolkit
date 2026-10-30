@@ -315,7 +315,9 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     from routes.remote_ws import acquire_session, release_session
 
-    session = acquire_session(device_id)
+    # wait_first_frame：新建会话时等首帧视频就绪再注入，
+    # 避免 server 初始化窗口期吞掉第一步点击（流水线新起会话时必现）
+    session = acquire_session(device_id, wait_first_frame=True)
     if session is None:
         raise RuntimeError("设备会话启动失败")
 
