@@ -1924,6 +1924,65 @@ def get_device_monitor(request: MonitorRequest):
     }
 
 
+# 清理设备内存（释放页缓存 + 杀后台进程）
+@router.post("/device/memory/clean")
+def clean_device_memory(request: DeviceIdRequest):
+    """
+    清理设备内存：
+    1. 杀掉后台应用进程（am kill-all，只杀缓存态进程，不影响前台应用）
+    2. 释放页缓存（sync + /proc/sys/vm/drop_caches=3，需要 root，失败不阻塞）
+    返回清理前后的内存占用对比。
+    """
+    device_id = request.deviceId
+    logger.info(f"Cleaning memory for device: {device_id}")
+
+    def _read_memory():
+        result = execute_adb_command(f'adb -s {device_id} shell "head -5 /proc/meminfo"')
+        if not result["success"]:
+            return None
+        info = _parse_meminfo(result["stdout"])
+        total = info.get("MemTotal", 0)
+        available = info.get("MemAvailable", 0)
+        if not total:
+            return None
+        return {
+            "totalBytes": total * 1024,
+            "availableBytes": available * 1024,
+            "usedBytes": (total - available) * 1024,
+            "usagePercent": round((total - available) * 100 / total, 2),
+        }
+
+    before = _read_memory()
+    if before is None:
+        return {"code": 500, "message": "读取设备内存信息失败，请检查设备连接", "data": None}
+
+    # 1. 杀后台缓存态进程（不 root 也可用，前台/可见应用不受影响）
+    kill_result = execute_adb_command(f"adb -s {device_id} shell am kill-all", timeout=15)
+    if not kill_result["success"]:
+        logger.warning(f"am kill-all failed on {device_id}: {kill_result.get('error')}")
+
+    # 2. 释放页缓存：需要 root，无 root 设备会失败，忽略错误继续
+    execute_adb_command(f'adb -s {device_id} shell "sync; echo 3 > /proc/sys/vm/drop_caches"', timeout=15)
+
+    time.sleep(1)
+    after = _read_memory()
+    if after is None:
+        return {"code": 500, "message": "读取清理后内存信息失败", "data": None}
+
+    freed = before["usedBytes"] - after["usedBytes"]
+    logger.info(f"Memory cleaned for {device_id}: freed {freed} bytes")
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "before": before,
+            "after": after,
+            "freedBytes": freed if freed > 0 else 0,
+        },
+    }
+
+
 # 获取设备实时速率（CPU 占用率、网络上下行速率）
 @router.post("/device/monitor/rate")
 def get_device_monitor_rate(request: MonitorRateRequest):

@@ -2140,6 +2140,34 @@ const stopLogCapture = async () => {
   }
 }
 
+// 清理设备内存
+const cleaningMemory = ref(false)
+
+const cleanMemory = async () => {
+  if (!selectedDevice.value || cleaningMemory.value) return
+
+  cleaningMemory.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/memory/clean`, {
+      deviceId: selectedDevice.value
+    })
+    if (response.data.code === 200) {
+      const freed = response.data.data.freedBytes
+      showNotification(
+        freed > 0 ? `清理完成，释放了 ${formatBytes(freed)} 内存` : '清理完成',
+        'success'
+      )
+    } else {
+      showNotification('清理失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    console.error('清理内存失败:', error)
+    showNotification('清理内存失败: ' + error.message, 'error')
+  } finally {
+    cleaningMemory.value = false
+  }
+}
+
 const rebootToLoader = async () => {
   if (!selectedDevice.value) return
   
@@ -6155,11 +6183,19 @@ button.batch-remote-tile-tag:disabled.active {
                           <span class="capture-stop-label">结束抓取</span>
                         </template>
                       </button>
+                      <button class="feature-btn" :disabled="cleaningMemory" @click="cleanMemory">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                          <path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                          <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/>
+                          <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+                        </svg>
+                        <span>{{ cleaningMemory ? '清理中…' : '清理内存' }}</span>
+                      </button>
                       <button class="feature-btn danger" @click="rebootToLoader">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
                           <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
                         </svg>
-                        <span>re boot loader</span>
+                        <span>reboot loader</span>
                       </button>
                     </div>
                   </div>
