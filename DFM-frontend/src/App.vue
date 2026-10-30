@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue';
 import App_Utils from './menu/App_Utils.vue';
 import App_PortTool from './menu/App_PortTool.vue';
 import App_Settings from './menu/App_Settings.vue';
+import App_Production from './menu/App_Production.vue';
 
 const currentPage = ref('home');
 const appVersion = ref('V2.0.0');
@@ -28,6 +29,10 @@ const enterUtils = () => {
 
 const enterPortTool = () => {
   currentPage.value = 'portTool';
+};
+
+const enterProduction = () => {
+  currentPage.value = 'production';
 };
 
 
@@ -112,6 +117,20 @@ const goBack = () => {
         </span>
       </button>
 
+      <button class="menu-button" @click="enterProduction">
+        <span class="btn-icon">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" transform="translate(-1 -1) scale(0.92)"/>
+          </svg>
+        </span>
+        <span class="btn-text">生产工具</span>
+        <span class="btn-arrow">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+            <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
+        </span>
+      </button>
+
       <!--
         ⬆⬆⬆ 新按钮加在上方 ⬆⬆⬆
       -->
@@ -122,6 +141,7 @@ const goBack = () => {
   <App_Utils v-if="currentPage === 'utils'" @back="goBack" />
   <App_PortTool v-else-if="currentPage === 'portTool'" @back="goBack" />
   <App_Settings v-else-if="currentPage === 'settings'" @back="goBack" />
+  <App_Production v-else-if="currentPage === 'production'" @back="goBack" />
 </template>
 
 <style scoped>
