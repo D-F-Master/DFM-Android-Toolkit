@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue';
 import App_Utils from './menu/App_Utils.vue';
 import App_PortTool from './menu/App_PortTool.vue';
+import App_Settings from './menu/App_Settings.vue';
 
 const currentPage = ref('home');
 const appVersion = ref('V2.0.0');
@@ -45,6 +46,14 @@ const goBack = () => {
       <span class="orb orb-3"></span>
       <span class="orb orb-4"></span>
     </div>
+
+    <!-- 右上角设置按钮 -->
+    <button class="settings-button" @click="currentPage = 'settings'">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
 
     <div class="home-menu">
       <div class="card-accent-line"></div>
@@ -112,6 +121,7 @@ const goBack = () => {
   </div>
   <App_Utils v-if="currentPage === 'utils'" @back="goBack" />
   <App_PortTool v-else-if="currentPage === 'portTool'" @back="goBack" />
+  <App_Settings v-else-if="currentPage === 'settings'" @back="goBack" />
 </template>
 
 <style scoped>
@@ -407,5 +417,39 @@ const goBack = () => {
     opacity: 1;
     transform: none;
   }
+}
+
+/* ===== 右上角设置按钮 ===== */
+.settings-button {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--accent);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 2;
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  box-shadow: 0 2px 12px -2px var(--card-shadow);
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.settings-button:hover {
+  background: var(--accent);
+  color: #fff;
+  transform: rotate(90deg);
+  box-shadow: 0 4px 20px -4px var(--accent-glow);
+}
+
+.settings-button:active {
+  transform: rotate(90deg) scale(0.94);
 }
 </style>
