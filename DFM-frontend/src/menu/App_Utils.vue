@@ -590,6 +590,23 @@ const fetchScriptApks = async () => {
   }
 }
 
+// 应用列表（启动/停止/卸载步骤的下拉数据源；轻量接口只拿包名，快）
+const scriptAppPackages = ref<string[]>([])
+const scriptAppLoading = ref(false)
+
+const fetchScriptApps = async () => {
+  if (!selectedDevice.value) return
+  scriptAppLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/apps`, { deviceId: selectedDevice.value })
+    if (res.data.code === 200) scriptAppPackages.value = res.data.data || []
+  } catch {
+    /* 应用列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptAppLoading.value = false
+  }
+}
+
 // 模板图列表（等待组件步骤的下拉数据源）
 const scriptTemplateOptions = ref<Array<{ name: string; width: number; height: number }>>([])
 
@@ -995,9 +1012,10 @@ watch(activeTab, async (tab) => {
   if (tab === 'script') {
     await nextTick()
     if (selectedDevice.value) startScriptStream()
-    // 进入脚本页时准备安装APK / 等待组件步骤的下拉数据
+    // 进入脚本页时准备安装APK / 等待组件 / 应用下拉的数据
     if (scriptApkOptions.value.length === 0) fetchScriptApks()
     fetchScriptTemplates()
+    fetchScriptApps()
   } else {
     stopScriptStream()
   }
@@ -1340,6 +1358,10 @@ const addScriptAdbStep = (type: string) => {
   if (type === 'installApk' && scriptApkOptions.value.length === 0) {
     fetchScriptApks()
   }
+  // 应用管理类步骤用应用列表做下拉：进脚本页时可能列表还是旧的（刚卸载过应用），刷新一次
+  if (type === 'startApp' || type === 'stopApp' || type === 'uninstallApp') {
+    fetchScriptApps()
+  }
   addScriptStep({
     type,
     ...scriptAdbStepDefaults(type),
@@ -1548,19 +1570,20 @@ const runCurrentSteps = async () => {
   }
   scriptRunning.value = true
   try {
+    // 后端同步执行：接口返回时脚本已跑完，失败原因直接在 message 里
     const response = await axios.post(`${API_BASE.value}/api/device/script/run-steps`, {
       deviceId: selectedDevice.value,
       steps: scriptSteps.value,
       repeat: scriptRepeat.value,
       videoWidth: scriptMeta.width,
       videoHeight: scriptMeta.height,
-    })
+    }, { timeout: 600000 })
     if (response.data.code !== 200) {
-      showNotification('执行失败: ' + (response.data.message || '未知错误'), 'error')
+      showNotification(response.data.message || '执行失败', 'error')
       return
     }
     const d = response.data.data || {}
-    showNotification(`已开始执行 ${d.stepCount ?? scriptSteps.value.length} 步 × ${d.repeat ?? scriptRepeat.value} 轮`, 'success')
+    showNotification(`执行完成：${d.stepCount ?? scriptSteps.value.length} 步 × ${d.repeat ?? scriptRepeat.value} 轮`, 'success')
   } catch (error: any) {
     showNotification('执行失败: ' + (error?.response?.data?.message || error.message), 'error')
   } finally {
@@ -7130,19 +7153,24 @@ button.batch-remote-tile-tag:disabled.active {
                               >
                             </div>
                             <div v-if="step.type === 'startApp'" class="script-config-row">
-                              <span>包名</span>
-                              <input type="text" class="script-config-text" v-model="step.packageName" placeholder="com.example.app">
+                              <span>应用</span>
+                              <select class="script-config-select" v-model="step.packageName">
+                                <option value="" disabled>{{ scriptAppLoading ? '加载应用列表中…' : '选择应用' }}</option>
+                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ p }}</option>
+                              </select>
                             </div>
                             <div v-if="step.type === 'startApp'" class="script-config-row">
                               <span>Activity（可选）</span>
                               <input type="text" class="script-config-text" v-model="step.activity" placeholder=".MainActivity">
                             </div>
                             <div v-if="step.type === 'stopApp' || step.type === 'uninstallApp'" class="script-config-row">
-                              <span>包名</span>
-                              <input type="text" class="script-config-text" v-model="step.packageName" placeholder="com.example.app">
+                              <span>应用</span>
+                              <select class="script-config-select" v-model="step.packageName">
+                                <option value="" disabled>{{ scriptAppLoading ? '加载应用列表中…' : '选择应用' }}</option>
+                                <option v-for="p in scriptAppPackages" :key="p" :value="p">{{ p }}</option>
+                              </select>
                             </div>
-                            <div v-if="step.type === 'keyevent'" class="script-config-row">
-                              <span>按键</span>
+                            <div v-if="step.type === 'keyevent'" class="script-config-row">                              <span>按键</span>
                               <select
                                 class="script-config-select"
                                 :value="scriptKeyPresetOf(step)"
