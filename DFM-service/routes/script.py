@@ -462,6 +462,12 @@ def _check_device_online(device_id: str) -> bool:
     return False
 
 
+def _check_package_installed(device_id: str, pkg: str) -> bool:
+    """检查设备上是否安装了指定包（pm path 对不存在的包返回空输出且 exit 1）"""
+    result = execute_adb_command(f'adb -s {device_id} shell pm path "{pkg}"', timeout=30)
+    return bool(result["success"] and (result.get("stdout") or "").strip())
+
+
 def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
     """
     执行一个设备动作类步骤（走 adb 命令，不需要 scrcpy 会话）
@@ -492,27 +498,36 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
 
         elif stype == "startApp":
             pkg = str(step.get("packageName", "")).strip()
+            # 保底：force-stop/monkey 对不存在的包静默成功，先确认装了没有
+            if not _check_package_installed(device_id, pkg):
+                raise RuntimeError(f"设备未安装应用 {pkg}，无法启动")
             activity = str(step.get("activity", "") or "").strip()
             if activity:
                 cmd = f'adb -s {device_id} shell am start -n "{pkg}/{activity}"'
             else:
                 cmd = f'adb -s {device_id} shell monkey -p "{pkg}" -c android.intent.category.LAUNCHER 1'
             result = execute_adb_command(cmd, timeout=60)
-            if not result["success"]:
-                raise RuntimeError((result.get("error") or result.get("stdout") or "start failed").strip())
-            out = (result.get("stdout") or "").strip()
-            # am start 失败（如 Activity 不存在）时 adb 仍返回成功，需检查输出
-            if "Error" in out:
-                raise RuntimeError(out.splitlines()[0][:120])
+            combined = ((result.get("stdout") or "") + (result.get("stderr") or "")).strip()
+            # adb 对启动失败经常宿主侧 exit 0，错误只在输出里（Error type 3 / Error: ...）
+            if not result["success"] and not combined:
+                raise RuntimeError("start failed")
+            if "Error" in combined:
+                raise RuntimeError(combined.splitlines()[0][:120])
 
         elif stype == "stopApp":
             pkg = str(step.get("packageName", "")).strip()
+            # 保底：force-stop 对不存在的包 exit 0 静默返回，必须先查
+            if not _check_package_installed(device_id, pkg):
+                raise RuntimeError(f"设备未安装应用 {pkg}，无法停止")
             result = execute_adb_command(f'adb -s {device_id} shell am force-stop "{pkg}"', timeout=60)
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "force-stop failed").strip())
 
         elif stype == "uninstallApp":
             pkg = str(step.get("packageName", "")).strip()
+            # 保底：先查有没有装，报错比 DELETE_FAILED_INTERNAL_ERROR 清晰
+            if not _check_package_installed(device_id, pkg):
+                raise RuntimeError(f"设备未安装应用 {pkg}，无法卸载")
             result = execute_adb_command(f'adb -s {device_id} uninstall "{pkg}"', timeout=120)
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "uninstall failed").strip())
@@ -769,10 +784,12 @@ def run_script(request: ScriptRunRequest):
 @router.post("/device/script/run-steps")
 def run_steps(request: ScriptRunStepsRequest):
     """
-    直接执行传入的步骤（不落盘）
+    直接执行传入的步骤（不落盘），**同步等待执行完成**并返回真实结果
 
-    面板上「执行/重复」按钮走这里：步骤只在内存里，
-    不再生成 current_xxx.json 临时文件，脚本目录不会被执行动作污染。
+    面板上「执行/重复」按钮走这里。同步是因为步骤里的应用管理/等待组件
+    等动作需要把失败原因（如设备未安装该应用）反馈给用户——之前的异步
+    入队方式错误只进日志，界面上看不到。
+    脚本通常几秒内完成；HTTP 客户端侧另有超时保护。
     """
     try:
         if not _check_device_online(request.deviceId):
@@ -792,19 +809,18 @@ def run_steps(request: ScriptRunStepsRequest):
             script["videoWidth"] = int(request.videoWidth)
             script["videoHeight"] = int(request.videoHeight)
 
-        from config.queue_config import task_queue
-        task_queue.submit_task(
-            _run_script_on_device,
-            request.deviceId,
-            script,
-            repeat,
-        )
-        logger.info(f"Script steps queued on {request.deviceId}, repeat={repeat}, steps={len(script['steps'])}")
+        # 直接在请求线程执行（FastAPI sync endpoint 跑在线程池，不阻塞事件循环）
+        _run_script_on_device(request.deviceId, script, repeat)
+        logger.info(f"Script steps finished on {request.deviceId}, repeat={repeat}, steps={len(script['steps'])}")
         return {
             "code": 200,
             "message": "success",
             "data": {"repeat": repeat, "stepCount": len(script["steps"])},
         }
+    except RuntimeError as e:
+        # 步骤执行失败（未安装应用/等待超时/命令失败等），把原因带回给前端
+        logger.warning(f"Script steps failed on {request.deviceId}: {e}")
+        return {"code": 500, "message": f"执行失败: {str(e)}", "data": None}
     except Exception as e:
         return {"code": 500, "message": f"执行脚本失败: {str(e)}", "data": None}
 
