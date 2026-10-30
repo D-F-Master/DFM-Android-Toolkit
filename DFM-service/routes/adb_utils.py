@@ -2014,20 +2014,24 @@ def get_device_monitor_rate(request: MonitorRateRequest):
     }
 
 
-# 获取设备 CPU 占用 Top 进程（基于 toybox top 单次快照）
+# 获取设备 CPU 占用 Top 进程（基于 toybox top 两轮采样）
 @router.post("/device/monitor/top")
 def get_device_monitor_top(request: MonitorRateRequest):
     """
     获取设备 CPU 占用最高的进程列表（top 命令实时快照）
 
-    执行 `top -bn 1 -m 10 -s 6`，按 %CPU 降序返回前 10 个进程。
-    该命令与 /proc/stat 采样口径不同，数值与 /device/monitor/rate 有差异属正常。
+    执行 `top -bn 2 -d 1 -m 10 -s 9`，只解析第二轮输出：
+    - `-s 9` 按 %CPU 列排序（toybox top 的 -s 参数是列序号；老格式表头
+      显示为 "S[%CPU]"，按列名匹配不到，必须用数字）
+    - 单次快照（-bn 1）采样窗口只有约 0.1-0.3 秒且每次不同，数值跳动失真；
+      第二轮是完整的 1 秒窗口均值，与交互式 top 同口径
+    返回按 %CPU 降序的前 10 个进程。
     """
     device_id = request.deviceId
     logger.info(f"Getting CPU top processes for device: {device_id}")
 
     result = execute_adb_command(
-        f'adb -s {device_id} shell "top -bn 1 -m 10 -s 6"',
+        f'adb -s {device_id} shell "top -bn 2 -d 1 -m 10 -s 9"',
         timeout=15,
     )
     if not result["success"]:
@@ -2036,18 +2040,20 @@ def get_device_monitor_top(request: MonitorRateRequest):
         return {"code": 500, "message": error_msg, "data": None}
 
     lines = result["stdout"].splitlines()
+
+    # -bn 2 输出两屏，只解析第二轮（真实 1 秒窗口）：按最后一个表头行截取
+    header_idx = [
+        i for i, l in enumerate(lines)
+        if l.strip().upper().startswith("PID") and "%CPU" in l.upper()
+    ]
+    if not header_idx:
+        logger.error(f"Monitor top: header not found for {device_id}")
+        return {"code": 500, "message": "解析 top 输出失败", "data": None}
+
     processes = []
-    in_body = False
-    for raw in lines:
+    for raw in lines[header_idx[-1] + 1:]:
         line = raw.strip()
         if not line:
-            continue
-        if not in_body:
-            # 表头行含 %CPU 且以 PID 开头；两种表头格式：
-            # 旧: "PID USER PR NI VIRT RES SHR S[%CPU] %MEM TIME+ ARGS"
-            # 新: "PID USER PR NI VIRT [RES] SHR S %CPU %MEM TIME+ ARGS"
-            if line.upper().startswith("PID") and "%CPU" in line.upper():
-                in_body = True
             continue
         parts = line.split(None, 11)
         # 数据行固定 12 列: PID USER PR NI VIRT RES SHR S %CPU %MEM TIME+ ARGS
