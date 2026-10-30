@@ -1126,24 +1126,44 @@
   "name": "脚本名",
   "repeat": 1,
   "steps": [
-    {
-      "type": "tap",
-      "x1": 540, "y1": 960,
-      "x2": 540, "y2": 1200,
-      "duration": 800,
-      "interval": 500,
-      "count": 1
-    }
+    { "type": "tap", "x1": 540, "y1": 960, "interval": 500, "count": 1 },
+    { "type": "swipe", "x1": 540, "y1": 1200, "x2": 540, "y2": 400, "interval": 500, "count": 1 },
+    { "type": "longpress", "x1": 540, "y1": 960, "duration": 800, "interval": 500, "count": 1 },
+    { "type": "input", "text": "1234", "interval": 500, "count": 1 },
+    { "type": "installApk", "apkName": "demo.apk" },
+    { "type": "deleteFolder", "path": "/sdcard/xxx" },
+    { "type": "startApp", "packageName": "com.x", "activity": ".MainActivity" },
+    { "type": "stopApp", "packageName": "com.x" },
+    { "type": "uninstallApp", "packageName": "com.x" },
+    { "type": "keyevent", "keycode": 4 },
+    { "type": "volume", "action": "up", "stream": "media" },
+    { "type": "reboot" }
   ]
 }
 ```
 
-**步骤字段说明**:
-- `type`: 操作类型 — `tap`（点击）/ `swipe`（滑动）/ `longpress`（长按）
+**步骤类型分两类**:
+
+注入类（`tap`/`swipe`/`longpress`/`input`）走 scrcpy 会话，需要屏幕坐标基准：
 - `x1, y1`: 起点（或点击点）设备坐标；`x2, y2`: 滑动终点（仅 swipe）
 - `duration`: 长按时长 ms（仅 longpress）
+- `text`: 输入文字（仅 input，输入到设备当前聚焦的输入框）
+
+设备动作类（走 adb 命令，不需要 scrcpy 会话）：
+- `installApk`: `apkName` 为 `data/apk/` 中的文件名
+- `deleteFolder`: `path` **仅允许 `/sdcard/` 或 `/storage/` 开头**（防误删系统目录，校验与执行双层拦截）
+- `startApp`: `packageName` 必填；`activity` 可选，填写则用 `am start -n`，否则用 monkey LAUNCHER
+- `stopApp` / `uninstallApp`: `packageName` 必填
+- `keyevent`: `keycode` 数字键值 0-65535（4=返回 3=主页 26=电源 24/25=音量）
+- `volume`: `action` 为 `up`/`down`/`mute`；`stream` 仅静音时生效（media/ring/alarm/notification）
+- `reboot`: 无参数
+
+**通用字段**:
 - `interval`: 该步执行间隔 ms（步与步之间、同一步多次之间的等待）
-- `count`: 该步执行次数
+- `count`: 该步执行次数（设备动作类步骤在 `_exec_adb_step` 内循环）
+
+**包名/Activity 安全校验**: 不允许空格与 `"'&|;$<>\`` 等特殊字符（防 shell 注入）。
+**会话按需创建**: 全脚本无注入类步骤时不会启动 scrcpy 会话，纯 adb 动作脚本执行更快、更稳。
 
 ### 1. 保存脚本
 **接口**: `POST /api/device/script/save`  
@@ -1217,6 +1237,12 @@
 ---
 
 ## 更新日志
+
+### v2.6.0
+- 模拟脚本新增 8 种设备动作类步骤（走 adb 命令，不依赖 scrcpy 会话）：`installApk` / `deleteFolder` / `startApp` / `stopApp` / `uninstallApp` / `keyevent` / `volume` / `reboot`
+- 脚本回放改为按步骤类型分派：注入类走会话注入，动作类走 adb；全脚本无注入步骤时**不启动 scrcpy 会话**
+- 动作类步骤参数校验（包名/Activity 禁空格与特殊字符、删除路径限用户区、键值 0-65535、音量动作白名单）
+- 生产工具与脚本页两处均可编排这些功能（脚本页编排完成后可在生产工具中直接引用执行）
 
 ### v2.5.0
 - 生产流水线新增 8 种步骤类型（p3）：`startApp` / `stopApp` / `uninstallApp` / `keyevent` / `volume` / `reboot` / `rebootLoader` / `cleanMemory`，覆盖 ADB 工具全部动作型功能
