@@ -333,6 +333,30 @@ class ScreenRequest(BaseModel):
     deviceId: str
 
 
+class InstallApkToDeviceRequest(BaseModel):
+    deviceId: str
+    apkName: str
+
+
+@router.post("/device/pipeline/install-apk-to-device")
+def install_apk_to_device(request: InstallApkToDeviceRequest):
+    """把 APK 仓库（data/apk/）里的安装包装到指定设备"""
+    try:
+        apk_name = _safe_name(os.path.splitext(request.apkName)[0]) + ".apk"
+        path = APKS_DIR / apk_name
+        if not path.exists():
+            return {"code": 404, "message": f"APK {apk_name} 不在仓库中", "data": None}
+        logger.info(f"Installing {apk_name} to {request.deviceId} from repo")
+        result = execute_adb_command(f'adb -s {request.deviceId} install -r "{path}"', timeout=600)
+        if not result["success"]:
+            return {"code": 500, "message": (result.get("error") or "install failed").strip()[:200], "data": None}
+        logger.info(f"Installed {apk_name} to {request.deviceId}")
+        return {"code": 200, "message": "success", "data": {"apkName": apk_name, "deviceId": request.deviceId}}
+    except Exception as e:
+        logger.error(f"从仓库安装 APK 失败: {e}")
+        return {"code": 500, "message": f"安装失败: {str(e)}", "data": None}
+
+
 @router.post("/device/pipeline/screen")
 def get_device_screen(request: ScreenRequest):
     """
