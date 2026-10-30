@@ -196,14 +196,6 @@ const batchRemoteGridCols = computed(() => {
   return 3
 })
 
-// 画面容器按设备真实宽高比撑开：竖屏 9:16 不再被固定高度裁掉
-const batchRemoteTileBodyStyle = (card: { width: number; height: number }) => {
-  const w = card && card.width ? card.width : 9
-  const h = card && card.height ? card.height : 16
-  // width:auto 让盒宽由高度 × 宽高比推出，避免先铺满再用 max-height 砍掉导致比例失真
-  return { aspectRatio: `${w} / ${h}`, width: 'auto', maxWidth: '100%' }
-}
-
 const batchRemoteSendMirror = (event: any) => {
   if (batchRemoteWs && batchRemoteWs.readyState === WebSocket.OPEN) {
     batchRemoteWs.send(JSON.stringify({ type: 'mirror', event }))
@@ -4393,7 +4385,9 @@ button.batch-action-btn:disabled {
   overflow-y: auto;
   min-height: 0;
   flex: 1 1 auto;
-  align-content: start;
+  /* 行高按可用高度均分（1fr），卡片再被撑满整行，
+     这样 tile-body 的 flex:1 有确定高度可依，画面才能完整适配 */
+  grid-auto-rows: 1fr;
 }
 
 .batch-remote-tile {
@@ -4403,6 +4397,8 @@ button.batch-action-btn:disabled {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* 行高 1fr 下允许收缩，避免内容把行撑破 */
+  min-height: 0;
 }
 
 .batch-remote-tile.source {
@@ -6389,13 +6385,13 @@ button.batch-remote-tile-tag:disabled.active {
                 </div>
 
                 <!-- 批量投屏画面区（会话建立后显示） -->
-                <div v-if="batchRemoteActive || batchRemoteCards.length > 0" ref="batchRemoteAreaRef" class="batch-remote-area">
+                <div v-if="batchRemoteActive || batchRemoteCards.length > 0" class="batch-remote-area">
                   <div class="batch-remote-header">
                     <span>批量投屏（主控画面操作同步到其他设备 · 单击从机画面或点「设为主控」切换主控）</span>
                     <span class="batch-remote-status" :class="{ live: batchRemoteActive }">{{ batchRemoteWsStatus }}</span>
                   </div>
                   <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
-                  <div class="batch-remote-grid" :style="batchRemoteGridStyle">
+                  <div class="batch-remote-grid" :style="{ gridTemplateColumns: `repeat(${batchRemoteGridCols}, 1fr)` }">
                     <div
                       v-for="card in batchRemoteCards"
                       :key="card.deviceId"
@@ -6418,8 +6414,8 @@ button.batch-remote-tile-tag:disabled.active {
                           {{ card.deviceId === batchRemoteSource ? '★ 主控' : '设为主控' }}
                         </button>
                       </div>
-                      <!-- 画面容器：按设备宽高比撑开，竖屏也能完整显示 -->
-                      <div class="batch-remote-tile-body" :style="batchRemoteTileBodyStyle(card)">
+                      <!-- 画面容器：撑满卡片剩余空间，canvas 用 object-fit:contain 等比完整显示 -->
+                      <div class="batch-remote-tile-body">
                         <canvas
                           :ref="(el) => setBatchRemoteCanvasRef(el, card.index)"
                           class="batch-remote-canvas"
