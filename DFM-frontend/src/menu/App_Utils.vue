@@ -1063,6 +1063,8 @@ const saveScript = async () => {
         name: name.trim(),
         repeat: scriptRepeat.value,
         steps: scriptSteps.value,
+        videoWidth: scriptMeta.width,
+        videoHeight: scriptMeta.height,
       })
       if (response.data.code === 200) {
         showNotification(`脚本「${response.data.data.name}」已保存`, 'success')
@@ -1240,6 +1242,8 @@ const runCurrentSteps = async () => {
       name: `_current_${Date.now()}`,
       repeat: scriptRepeat.value,
       steps: scriptSteps.value,
+      videoWidth: scriptMeta.width,
+      videoHeight: scriptMeta.height,
     })
     if (response.data.code !== 200) {
       showNotification('临时保存失败: ' + (response.data.message || '未知错误'), 'error')
