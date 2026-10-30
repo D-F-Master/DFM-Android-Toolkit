@@ -767,10 +767,10 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                             logger.warning(f"Unknown step type: {stype}")
                             break
                         if i < count - 1:
-                            _interruptible_sleep(interval / 1000, stop_event)
-                # 步与步之间的间隔
+                            _interruptible_sleep(interval, stop_event)
+                # 步与步之间的间隔（interval 单位毫秒）
                 if idx < len(steps) - 1:
-                    _interruptible_sleep(interval / 1000, stop_event)
+                    _interruptible_sleep(interval, stop_event)
     finally:
         _script_runs.pop(device_id, None)
         if session is not None:
