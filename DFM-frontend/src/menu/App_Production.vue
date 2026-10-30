@@ -91,13 +91,48 @@ const stepDefaultParams = (type: string): Record<string, any> => {
     case 'startApp': return { packageName: '', activity: '' };
     case 'stopApp':
     case 'uninstallApp': return { packageName: '' };
-    case 'keyevent': return { keycode: '', repeat: 1 };
+    case 'keyevent': return { keycode: 4, repeat: 1 };
     case 'volume': return { action: 'up', stream: 'media' };
     case 'reboot':
     case 'rebootLoader':
     case 'cleanMemory': return {};
     default: return {};
   }
+};
+
+// 常用按键（下拉选择用），完整键值仍可用「自定义键值」输入
+const COMMON_KEYS: Array<{ code: number; name: string }> = [
+  { code: 4, name: '返回' },
+  { code: 3, name: '主页' },
+  { code: 187, name: '多任务' },
+  { code: 26, name: '电源/锁屏' },
+  { code: 24, name: '音量+' },
+  { code: 25, name: '音量-' },
+  { code: 164, name: '静音键' },
+  { code: 82, name: '菜单' },
+  { code: 23, name: '方向键·确认' },
+  { code: 19, name: '方向键·上' },
+  { code: 20, name: '方向键·下' },
+  { code: 21, name: '方向键·左' },
+  { code: 22, name: '方向键·右' },
+  { code: 66, name: '回车' },
+  { code: 67, name: '退格' },
+  { code: 84, name: '搜索' },
+];
+
+const keyPresetOf = (s: PipelineStep): string => {
+  const hit = COMMON_KEYS.find(k => k.code === Number(s.keycode));
+  return hit ? String(hit.code) : 'custom';
+};
+
+const onKeyPresetChange = (s: PipelineStep, ev: Event) => {
+  const v = (ev.target as HTMLSelectElement).value;
+  s.keycode = v === 'custom' ? '' : Number(v);
+};
+
+const keyNameOf = (keycode: number | string | undefined): string => {
+  const hit = COMMON_KEYS.find(k => k.code === Number(keycode));
+  return hit ? `${hit.name}（${hit.code}）` : `键值 ${keycode ?? '?'}`;
 };
 
 const loadConfig = async () => {
@@ -213,7 +248,7 @@ const stepSummary = (s: PipelineStep): string => {
   if (s.type === 'deleteFolder') return s.path || '';
   if (s.type === 'startApp') return s.activity ? `${s.packageName}/${s.activity}` : (s.packageName || '（未填写包名）');
   if (s.type === 'stopApp' || s.type === 'uninstallApp') return s.packageName || '（未填写包名）';
-  if (s.type === 'keyevent') return `键值 ${s.keycode || '?'} ×${s.repeat || 1}`;
+  if (s.type === 'keyevent') return `${keyNameOf(s.keycode)} ×${s.repeat || 1}`;
   if (s.type === 'volume') return { up: '音量+', down: '音量-', mute: '静音' }[s.action || 'up'] || s.action;
   if (s.type === 'reboot') return 'adb reboot';
   if (s.type === 'rebootLoader') return 'adb reboot bootloader';
@@ -584,11 +619,26 @@ onUnmounted(() => {
                       <input v-model="s.packageName" class="pl-config-input" type="text" placeholder="应用包名，如 com.example.app">
                     </template>
                     <template v-else-if="s.type === 'keyevent'">
-                      <input v-model="s.keycode" class="pl-config-num" type="number" min="0" max="65535" placeholder="键值" title="如 4=返回 3=HOME 26=电源 24/25=音量">
+                      <select
+                        class="pl-config-select"
+                        :value="keyPresetOf(s)"
+                        @change="onKeyPresetChange(s, $event)"
+                      >
+                        <option v-for="k in COMMON_KEYS" :key="k.code" :value="String(k.code)">{{ k.name }}（{{ k.code }}）</option>
+                        <option value="custom">自定义键值...</option>
+                      </select>
+                      <input
+                        v-if="keyPresetOf(s) === 'custom'"
+                        v-model="s.keycode"
+                        class="pl-config-num"
+                        type="number"
+                        min="0"
+                        max="65535"
+                        placeholder="键值"
+                      >
                       <label class="pl-config-label">次数
                         <input v-model.number="s.repeat" type="number" min="1" max="20" class="pl-config-num">
                       </label>
-                      <span class="pl-config-hint">4=返回 3=HOME 26=电源 24/25=音量</span>
                     </template>
                     <template v-else-if="s.type === 'volume'">
                       <select v-model="s.action" class="pl-config-select">
