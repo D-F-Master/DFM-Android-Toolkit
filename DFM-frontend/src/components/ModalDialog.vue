@@ -145,21 +145,33 @@ const handleEnter = () => {
   }
 };
 
-watch(() => props.visible, (newVal) => {
-  if (newVal && props.type === 'prompt') {
-    inputValue.value = '';
-    setTimeout(() => {
-      inputRef.value?.focus();
-    }, 100);
-  } else if (newVal && props.type === 'list') {
-    selectedListValue.value = '';
-  } else if (newVal && props.type === 'notification') {
-    // 自动关闭通知
-    setTimeout(() => {
-      close();
-    }, 4000);
+// 自动关闭定时器：notification 弹出后 4 秒自动消失；
+// 类型切换（如 toast 后立刻弹 prompt）时必须清掉，否则会把新弹窗误关
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(
+  () => [props.visible, props.type] as const,
+  ([newVal, newType]) => {
+    if (autoCloseTimer) {
+      clearTimeout(autoCloseTimer);
+      autoCloseTimer = null;
+    }
+    if (newVal && newType === 'prompt') {
+      inputValue.value = '';
+      setTimeout(() => {
+        inputRef.value?.focus();
+      }, 100);
+    } else if (newVal && newType === 'list') {
+      selectedListValue.value = '';
+    } else if (newVal && newType === 'notification') {
+      // 自动关闭通知
+      autoCloseTimer = setTimeout(() => {
+        autoCloseTimer = null;
+        close();
+      }, 4000);
+    }
   }
-});
+);
 </script>
 
 <style scoped>
