@@ -24,7 +24,20 @@ interface PipelineStep {
   saveDir?: string;
   path?: string;
   command?: string;
+  _uid?: number;
 }
+let _stepUid = 0;
+const normalizeSteps = (raw: any[]): PipelineStep[] =>
+  (raw || []).map(s => ({
+    ...s,
+    command: s.command ?? '',
+    apkName: s.apkName ?? '',
+    scriptName: s.scriptName ?? '',
+    repeat: s.repeat ?? 1,
+    saveDir: s.saveDir ?? '',
+    path: s.path ?? '',
+    _uid: ++_stepUid,
+  }));
 const pipelineName = ref(`流水线_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`);
 const steps = ref<PipelineStep[]>([]);
 const savedNames = ref<string[]>([]);
@@ -94,11 +107,11 @@ const clearSelection = () => {
 
 // ===== 流水线编辑 =====
 const addStep = (type: PipelineStep['type']) => {
-  if (type === 'installApk') steps.value.push({ type, apkName: apkOptions.value[0]?.name || '' });
-  else if (type === 'simulate') steps.value.push({ type, scriptName: scriptOptions.value[0] || '', repeat: 1 });
-  else if (type === 'screenshot') steps.value.push({ type, saveDir: '' });
-  else if (type === 'shell') steps.value.push({ type, command: '' });
-  else steps.value.push({ type, path: '/sdcard/' });
+  if (type === 'installApk') steps.value.push({ type, apkName: apkOptions.value[0]?.name || '', _uid: ++_stepUid });
+  else if (type === 'simulate') steps.value.push({ type, scriptName: scriptOptions.value[0] || '', repeat: 1, _uid: ++_stepUid });
+  else if (type === 'screenshot') steps.value.push({ type, saveDir: '', _uid: ++_stepUid });
+  else if (type === 'shell') steps.value.push({ type, command: '', _uid: ++_stepUid });
+  else steps.value.push({ type, path: '/sdcard/', _uid: ++_stepUid });
 };
 
 const removeStep = (idx: number) => {
@@ -224,7 +237,7 @@ const loadPipelineByName = async (name: string) => {
     const response = await axios.post(`${API_BASE.value}/api/device/pipeline/load`, { name });
     if (response.data.code === 200) {
       pipelineName.value = response.data.data.name;
-      steps.value = response.data.data.steps || [];
+      steps.value = normalizeSteps(response.data.data.steps);
     } else {
       alert(response.data.message || '加载失败');
     }
@@ -273,6 +286,7 @@ const runId = ref('');
 const running = ref(false);
 const runLogs = ref<LogEntry[]>([]);
 const logCursor = ref(0);
+const logFilePath = ref('');               // 本次运行落盘的 run.log 路径
 const logBoxEl = ref<HTMLDivElement | null>(null);
 let logTimer: ReturnType<typeof setInterval> | null = null;
 let logPolling = false;
@@ -298,6 +312,7 @@ const startRun = async () => {
       running.value = true;
       runLogs.value = [];
       logCursor.value = 0;
+      logFilePath.value = (response.data.data.logDir ? response.data.data.logDir + '\\run.log' : '');
       const offline = response.data.data.offline || [];
       if (offline.length > 0) {
         appendLogs(offline.map((d: string) => ({
@@ -437,16 +452,16 @@ onUnmounted(() => {
               <div v-if="steps.length === 0" class="pl-steps-empty">
                 还没有步骤，从下方「添加步骤」开始组装流水线
               </div>
-              <div v-for="(s, idx) in steps" :key="idx" class="pl-step">
-                <div class="pl-step-index">{{ idx + 1 }}</div>
+              <div v-for="s in steps" :key="s._uid" class="pl-step">
+                <div class="pl-step-index">{{ steps.indexOf(s) + 1 }}</div>
                 <div class="pl-step-body">
                   <div class="pl-step-head">
                     <span class="pl-step-type">{{ STEP_META[s.type].icon }} {{ STEP_META[s.type].label }}</span>
                     <span class="pl-step-summary">{{ stepSummary(s) }}</span>
                     <span class="pl-step-actions">
-                      <button class="pl-step-btn" title="上移" :disabled="idx === 0" @click="moveStep(idx, -1)">↑</button>
-                      <button class="pl-step-btn" title="下移" :disabled="idx === steps.length - 1" @click="moveStep(idx, 1)">↓</button>
-                      <button class="pl-step-btn pl-step-del" title="删除" @click="removeStep(idx)">✕</button>
+                      <button class="pl-step-btn" title="上移" :disabled="steps.indexOf(s) === 0" @click="moveStep(steps.indexOf(s), -1)">↑</button>
+                      <button class="pl-step-btn" title="下移" :disabled="steps.indexOf(s) === steps.length - 1" @click="moveStep(steps.indexOf(s), 1)">↓</button>
+                      <button class="pl-step-btn pl-step-del" title="删除" @click="removeStep(steps.indexOf(s))">✕</button>
                     </span>
                   </div>
                   <!-- 步骤参数配置 -->
@@ -508,7 +523,10 @@ onUnmounted(() => {
 
             <!-- 日志 -->
             <div class="pl-log-card">
-              <div class="pl-log-head">执行日志</div>
+              <div class="pl-log-head">
+                <span>执行日志</span>
+                <span v-if="logFilePath" class="pl-log-file" :title="logFilePath">落盘: {{ logFilePath }}</span>
+              </div>
               <div ref="logBoxEl" class="pl-log-box">
                 <div v-if="runLogs.length === 0" class="pl-log-empty">暂无日志</div>
                 <div v-for="(log, i) in runLogs" :key="i" class="pl-log-line" :class="levelClass(log.level)">
@@ -964,11 +982,24 @@ onUnmounted(() => {
 }
 
 .pl-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 14px;
   font-size: 13px;
   font-weight: 600;
   color: #9fb3c8;
   background: #182030;
+}
+
+.pl-log-file {
+  font-size: 11px;
+  font-weight: 400;
+  color: #5f7189;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pl-log-box {
