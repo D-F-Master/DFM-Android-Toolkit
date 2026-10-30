@@ -327,6 +327,131 @@ def delete_pipeline_apk(request: PipelineNameRequest):
         return {"code": 500, "message": f"删除 APK 失败: {str(e)}", "data": None}
 
 
+# ========== 设备画面快照 ==========
+
+class ScreenRequest(BaseModel):
+    deviceId: str
+
+
+@router.post("/device/pipeline/screen")
+def get_device_screen(request: ScreenRequest):
+    """
+    截取设备当前画面，返回 JPEG base64（生产工具页 3 列画面网格用）
+
+    raw screencap（~650ms）比 PNG（~4s）快得多；JPEG 质量 70 体积小，
+    多设备并发轮询时网络传输更轻。
+    """
+    try:
+        import base64
+        import struct
+        import numpy as np
+        import cv2
+        from routes.vision import capture_screen
+
+        arr = capture_screen(request.deviceId)          # BGR (H, W, 3)
+        ok, buf = cv2.imencode('.jpg', arr, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ok:
+            return {"code": 500, "message": "JPEG 编码失败", "data": None}
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "image": base64.b64encode(buf.tobytes()).decode('ascii'),
+                "width": int(arr.shape[1]),
+                "height": int(arr.shape[0]),
+            },
+        }
+    except Exception as e:
+        logger.error(f"截取设备画面失败: {e}")
+        return {"code": 500, "message": f"截取画面失败: {str(e)}", "data": None}
+
+
+# ========== 快捷执行脚本（不编排流水线，直接跑） ==========
+
+class RunScriptRequest(BaseModel):
+    deviceIds: List[str]
+    scriptName: str
+
+
+@router.post("/device/pipeline/run-script")
+def run_quick_script(request: RunScriptRequest):
+    """
+    对多台设备直接执行一个已保存的模拟脚本（复用流水线执行引擎与日志体系）
+
+    内部把脚本包装成单步流水线：[{type: simulate, scriptName: xxx, repeat: 1}]
+    """
+    try:
+        if not request.deviceIds:
+            return {"code": 400, "message": "请至少选择一台设备", "data": None}
+        script_name = _safe_name(request.scriptName)
+        path = SCRIPTS_DIR / f"{script_name}.json"
+        if not path.exists():
+            return {"code": 404, "message": f"脚本 {script_name} 不存在", "data": None}
+        return _start_quick_run(script_name, request.deviceIds)
+    except Exception as e:
+        return {"code": 500, "message": f"启动脚本执行失败: {str(e)}", "data": None}
+
+
+def _start_quick_run(script_name: str, device_ids: List[str]):
+    """快捷执行的真实启动逻辑：单步 simulate 流水线，复用日志/停止/轮询全套设施"""
+    path = SCRIPTS_DIR / f"{script_name}.json"
+    with open(path, "r", encoding="utf-8") as f:
+        script = json.load(f)
+
+    online, offline = _check_devices_online(device_ids)
+    if not online:
+        return {"code": 400, "message": "所选设备均不在线", "data": None}
+
+    run_id = uuid.uuid4().hex[:12]
+    log_dir = os.path.join(PIPELINE_LOG_ROOT, f"脚本_{script_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "run.log")
+    file_handle = open(log_path, "a", encoding="utf-8")
+
+    run = {
+        "logs": [],
+        "lock": threading.Lock(),
+        "stop": threading.Event(),
+        "running": True,
+        "file_handle": file_handle,
+    }
+    file_handle.write(f"===== 脚本 [{script_name}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+                      f"设备={','.join(online)} =====\n")
+    file_handle.flush()
+
+    with _runs_lock:
+        while len(_pipeline_runs) >= 20:
+            oldest = next(iter(_pipeline_runs))
+            del _pipeline_runs[oldest]
+        _pipeline_runs[run_id] = run
+
+    # 单步流水线：simulate 步骤
+    pipeline = {
+        "name": f"quick_{script_name}",
+        "steps": [{"type": "simulate", "scriptName": script_name, "repeat": 1}],
+    }
+    t = threading.Thread(
+        target=_run_pipeline,
+        args=(run_id, pipeline, online, "parallel"),
+        name=f"quick-{run_id}",
+        daemon=True,
+    )
+    t.start()
+
+    logger.info(f"Quick script {script_name} started: runId={run_id}, devices={online}")
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "runId": run_id,
+            "online": online,
+            "offline": offline,
+            "stepCount": 1,
+            "logDir": log_dir,
+        },
+    }
+
+
 # ========== 执行引擎 ==========
 
 class PipelineRunRequest(BaseModel):
