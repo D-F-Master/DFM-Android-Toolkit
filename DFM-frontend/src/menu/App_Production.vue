@@ -17,13 +17,19 @@ const selectedDevices = ref<string[]>([]);  // 多选
 
 // ===== 流水线编辑 =====
 interface PipelineStep {
-  type: 'installApk' | 'simulate' | 'screenshot' | 'deleteFolder' | 'shell';
+  type: string;
   apkName?: string;
   scriptName?: string;
   repeat?: number;
   saveDir?: string;
   path?: string;
   command?: string;
+  packageName?: string;
+  activity?: string;
+  keycode?: number | string;
+  action?: string;
+  stream?: string;
+  delayAfter?: number | string;
   _uid?: number;
 }
 let _stepUid = 0;
@@ -36,6 +42,12 @@ const normalizeSteps = (raw: any[]): PipelineStep[] =>
     repeat: s.repeat ?? 1,
     saveDir: s.saveDir ?? '',
     path: s.path ?? '',
+    packageName: s.packageName ?? '',
+    activity: s.activity ?? '',
+    keycode: s.keycode ?? '',
+    action: s.action ?? 'up',
+    stream: s.stream ?? 'media',
+    delayAfter: s.delayAfter ?? '',
     _uid: ++_stepUid,
   }));
 const pipelineName = ref(`流水线_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`);
@@ -51,6 +63,41 @@ const STEP_META: Record<string, { label: string; icon: string }> = {
   screenshot: { label: '获取画面', icon: '📷' },
   deleteFolder: { label: '删除文件夹', icon: '🗑️' },
   shell: { label: '执行Shell命令', icon: '⌨️' },
+  startApp: { label: '启动应用', icon: '🚀' },
+  stopApp: { label: '停止应用', icon: '⏹️' },
+  uninstallApp: { label: '卸载应用', icon: '🧹' },
+  keyevent: { label: '模拟按键', icon: '🔘' },
+  volume: { label: '音量控制', icon: '🔊' },
+  reboot: { label: '重启设备', icon: '🔄' },
+  rebootLoader: { label: '重启进Loader', icon: '⚠️' },
+  cleanMemory: { label: '清理内存', icon: '💾' },
+};
+
+// p3：ADB工具全部动作型功能，按分类组织（查看型功能如投屏/文件管理/日志窗口为交互界面，不纳入流水线）
+const STEP_CATEGORIES: Array<{ name: string; types: string[] }> = [
+  { name: '基础', types: ['installApk', 'simulate', 'screenshot', 'deleteFolder', 'shell'] },
+  { name: '应用管理', types: ['startApp', 'stopApp', 'uninstallApp'] },
+  { name: '设备控制', types: ['keyevent', 'volume', 'reboot', 'rebootLoader'] },
+  { name: '系统维护', types: ['cleanMemory'] },
+];
+
+const stepDefaultParams = (type: string): Record<string, any> => {
+  switch (type) {
+    case 'installApk': return { apkName: apkOptions.value[0]?.name || '' };
+    case 'simulate': return { scriptName: scriptOptions.value[0] || '', repeat: 1 };
+    case 'screenshot': return { saveDir: '' };
+    case 'shell': return { command: '' };
+    case 'deleteFolder': return { path: '/sdcard/' };
+    case 'startApp': return { packageName: '', activity: '' };
+    case 'stopApp':
+    case 'uninstallApp': return { packageName: '' };
+    case 'keyevent': return { keycode: '', repeat: 1 };
+    case 'volume': return { action: 'up', stream: 'media' };
+    case 'reboot':
+    case 'rebootLoader':
+    case 'cleanMemory': return {};
+    default: return {};
+  }
 };
 
 const loadConfig = async () => {
@@ -106,12 +153,45 @@ const clearSelection = () => {
 };
 
 // ===== 流水线编辑 =====
-const addStep = (type: PipelineStep['type']) => {
-  if (type === 'installApk') steps.value.push({ type, apkName: apkOptions.value[0]?.name || '', _uid: ++_stepUid });
-  else if (type === 'simulate') steps.value.push({ type, scriptName: scriptOptions.value[0] || '', repeat: 1, _uid: ++_stepUid });
-  else if (type === 'screenshot') steps.value.push({ type, saveDir: '', _uid: ++_stepUid });
-  else if (type === 'shell') steps.value.push({ type, command: '', _uid: ++_stepUid });
-  else steps.value.push({ type, path: '/sdcard/', _uid: ++_stepUid });
+// p3：最近使用的步骤类型（localStorage 持久化，最多 5 个，按最近点击顺序）
+const RECENT_KEY = 'dfm_pipeline_recent_steps';
+const recentSteps = ref<string[]>([]);
+const RECENT_MAX = 5;
+const RECENT_BASE = ['installApk', 'simulate', 'screenshot', 'deleteFolder', 'shell'];
+
+const loadRecentSteps = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+    if (Array.isArray(saved)) {
+      recentSteps.value = saved.filter((t: any) => typeof t === 'string' && !!STEP_META[t]).slice(0, RECENT_MAX);
+    }
+  } catch { /* 忽略损坏的存储 */ }
+};
+
+const recordStepUsage = (type: string) => {
+  const next = [type, ...recentSteps.value.filter(t => t !== type)].slice(0, RECENT_MAX);
+  recentSteps.value = next;
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch { /* 忽略 */ }
+};
+
+// 添加行展示：有历史用历史（不足补基础类型），无历史用基础类型
+const visibleAddSteps = computed(() => {
+  const list = recentSteps.value.length > 0
+    ? [...recentSteps.value]
+    : [...RECENT_BASE];
+  for (const t of RECENT_BASE) {
+    if (list.length >= RECENT_MAX) break;
+    if (!list.includes(t)) list.push(t);
+  }
+  return list.slice(0, RECENT_MAX);
+});
+
+const moreVisible = ref(false);            // 「更多」步骤弹窗
+
+const addStep = (type: string) => {
+  if (!STEP_META[type]) return;
+  steps.value.push({ type, ...stepDefaultParams(type), _uid: ++_stepUid });
+  recordStepUsage(type);
 };
 
 const removeStep = (idx: number) => {
@@ -130,7 +210,15 @@ const stepSummary = (s: PipelineStep): string => {
   if (s.type === 'simulate') return `${s.scriptName || '（未选择脚本）'} ×${s.repeat || 1}`;
   if (s.type === 'screenshot') return s.saveDir || '默认 D:\\log\\{设备SN}\\';
   if (s.type === 'shell') return s.command || '（未填写命令）';
-  return s.path || '';
+  if (s.type === 'deleteFolder') return s.path || '';
+  if (s.type === 'startApp') return s.activity ? `${s.packageName}/${s.activity}` : (s.packageName || '（未填写包名）');
+  if (s.type === 'stopApp' || s.type === 'uninstallApp') return s.packageName || '（未填写包名）';
+  if (s.type === 'keyevent') return `键值 ${s.keycode || '?'} ×${s.repeat || 1}`;
+  if (s.type === 'volume') return { up: '音量+', down: '音量-', mute: '静音' }[s.action || 'up'] || s.action;
+  if (s.type === 'reboot') return 'adb reboot';
+  if (s.type === 'rebootLoader') return 'adb reboot bootloader';
+  if (s.type === 'cleanMemory') return '杀后台+释放页缓存';
+  return '';
 };
 
 const fetchMaterials = async () => {
@@ -369,6 +457,7 @@ const levelClass = (level: string) =>
   level === 'err' ? 'log-err' : level === 'ok' ? 'log-ok' : 'log-info';
 
 onMounted(async () => {
+  loadRecentSteps();
   await loadConfig();
   fetchDevices();
   fetchMaterials();
@@ -487,9 +576,43 @@ onUnmounted(() => {
                     <template v-else-if="s.type === 'shell'">
                       <input v-model="s.command" class="pl-config-input" type="text" placeholder="设备 shell 命令，如 rm -rf /sdcard/xxx 或 am start -n pkg/.MainActivity">
                     </template>
-                    <template v-else>
+                    <template v-else-if="s.type === 'startApp'">
+                      <input v-model="s.packageName" class="pl-config-input" type="text" placeholder="应用包名，如 com.example.app">
+                      <input v-model="s.activity" class="pl-config-input" type="text" placeholder="Activity（可选），如 .MainActivity">
+                    </template>
+                    <template v-else-if="s.type === 'stopApp' || s.type === 'uninstallApp'">
+                      <input v-model="s.packageName" class="pl-config-input" type="text" placeholder="应用包名，如 com.example.app">
+                    </template>
+                    <template v-else-if="s.type === 'keyevent'">
+                      <input v-model="s.keycode" class="pl-config-num" type="number" min="0" max="65535" placeholder="键值" title="如 4=返回 3=HOME 26=电源 24/25=音量">
+                      <label class="pl-config-label">次数
+                        <input v-model.number="s.repeat" type="number" min="1" max="20" class="pl-config-num">
+                      </label>
+                      <span class="pl-config-hint">4=返回 3=HOME 26=电源 24/25=音量</span>
+                    </template>
+                    <template v-else-if="s.type === 'volume'">
+                      <select v-model="s.action" class="pl-config-select">
+                        <option value="up">音量+</option>
+                        <option value="down">音量-</option>
+                        <option value="mute">静音</option>
+                      </select>
+                      <select v-model="s.stream" class="pl-config-select" :disabled="s.action !== 'mute'" title="仅静音时生效">
+                        <option value="media">媒体</option>
+                        <option value="ring">铃声</option>
+                        <option value="alarm">闹钟</option>
+                        <option value="notification">通知</option>
+                      </select>
+                    </template>
+                    <template v-else-if="s.type === 'deleteFolder'">
                       <input v-model="s.path" class="pl-config-input" type="text" placeholder="设备上的文件夹路径，如 /sdcard/xxx">
                     </template>
+                    <template v-else>
+                      <span class="pl-config-hint">{{ stepSummary(s) }}</span>
+                    </template>
+                    <label v-if="['screenshot','deleteFolder','keyevent','reboot','rebootLoader','cleanMemory'].includes(s.type)" class="pl-config-label">
+                      完成后等待(s)
+                      <input v-model.number="s.delayAfter" type="number" min="0" class="pl-config-num" placeholder="0">
+                    </label>
                   </div>
                 </div>
               </div>
@@ -498,11 +621,10 @@ onUnmounted(() => {
             <!-- 添加步骤 -->
             <div class="pl-add-row">
               <span class="pl-add-label">添加步骤：</span>
-              <button class="pl-add-btn" @click="addStep('installApk')">📦 安装APK</button>
-              <button class="pl-add-btn" @click="addStep('simulate')">👆 模拟操作</button>
-              <button class="pl-add-btn" @click="addStep('screenshot')">📷 获取画面</button>
-              <button class="pl-add-btn" @click="addStep('deleteFolder')">🗑️ 删除文件夹</button>
-              <button class="pl-add-btn" @click="addStep('shell')">⌨️ 执行Shell命令</button>
+              <button v-for="t in visibleAddSteps" :key="t" class="pl-add-btn" @click="addStep(t)">
+                {{ STEP_META[t].icon }} {{ STEP_META[t].label }}
+              </button>
+              <button class="pl-add-btn" @click="moreVisible = true">⋯ 更多</button>
               <button class="pl-add-btn pl-add-apk" @click="openApkRepo">🗄️ APK仓库</button>
               <input ref="apkInputEl" type="file" accept=".apk" style="display:none" @change="onApkChosen">
             </div>
@@ -561,6 +683,33 @@ onUnmounted(() => {
               <button class="apk-repo-del" @click="removeApk(a.name)">删除</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 更多步骤弹窗（p3：按分类展示全部步骤类型） -->
+    <div v-if="moreVisible" class="apk-repo-mask" @click.self="moreVisible = false">
+      <div class="apk-repo-dialog step-more-dialog">
+        <div class="apk-repo-head">
+          <span>添加步骤 · 全部功能</span>
+          <button class="apk-repo-close" @click="moreVisible = false">✕</button>
+        </div>
+        <div class="apk-repo-body step-more-body">
+          <div v-for="cat in STEP_CATEGORIES" :key="cat.name" class="step-more-cat">
+            <div class="step-more-cat-name">{{ cat.name }}</div>
+            <div class="step-more-grid">
+              <button
+                v-for="t in cat.types"
+                :key="t"
+                class="step-more-item"
+                @click="addStep(t); moreVisible = false"
+              >
+                <span class="step-more-icon">{{ STEP_META[t].icon }}</span>
+                <span>{{ STEP_META[t].label }}</span>
+              </button>
+            </div>
+          </div>
+          <div class="step-more-note">投屏、文件管理、日志窗口等查看型功能为交互界面，不作为流水线步骤</div>
         </div>
       </div>
     </div>
@@ -881,6 +1030,65 @@ onUnmounted(() => {
   gap: 6px;
   font-size: 12px;
   color: #666;
+}
+
+.pl-config-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+/* ===== 更多步骤弹窗 ===== */
+.step-more-dialog {
+  width: 620px;
+}
+
+.step-more-body {
+  overflow-y: auto;
+  gap: 14px;
+}
+
+.step-more-cat-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+  margin-bottom: 8px;
+}
+
+.step-more-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.step-more-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  background: #fafafa;
+  border: 1px solid #e5e9ee;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #444;
+  transition: all 0.15s ease;
+}
+
+.step-more-item:hover {
+  border-color: #4caf50;
+  color: #2e7d32;
+  background: #f6fbf6;
+}
+
+.step-more-icon {
+  font-size: 16px;
+}
+
+.step-more-note {
+  font-size: 12px;
+  color: #aaa;
+  border-top: 1px dashed #e5e9ee;
+  padding-top: 10px;
 }
 
 /* ===== 添加步骤 ===== */
