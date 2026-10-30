@@ -2252,6 +2252,49 @@ const confirmDisconnect = (deviceId: string) => {
   })
 };
 
+// 导出设备信息：把卡片上展示的 9 项拼成「标签：值」逐行文本复制到剪贴板
+const exportDeviceInfo = async () => {
+  const info = deviceInfo.value
+  if (!info) {
+    showNotification('设备信息尚未加载，无法导出', 'error')
+    return
+  }
+  const rows: Array<[string, string]> = [
+    ['设备状态', info.status || '未知'],
+    ['设备序列号', info.deviceId || '未知'],
+    ['设备名称', info.deviceName || info.model || '未知'],
+    ['安卓版本', info.androidVersion || info.version || '未知'],
+    ['版本信息', info.displayVersion || '未知'],
+    ['构建日期', info.buildDate || '未知'],
+    ['SN号', info.sn || '未知'],
+    ['WiFi MAC', info.wifiMac || '未知'],
+    ['以太网 MAC', info.ethMac || '未知'],
+  ]
+  // 值里可能含换行（如构建日期），压成空格避免破坏「一行一项」的结构
+  const text = rows.map(([label, value]) => `${label}：${String(value).replace(/\s*\r?\n\s*/g, ' ').trim()}`).join('\n')
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // 降级方案：与 copyToClipboard 保持一致
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-1000px'
+      textarea.style.left = '-1000px'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    showNotification('已复制设置信息到粘贴板')
+  } catch (error) {
+    console.error('导出设备信息失败:', error)
+    showNotification('复制设备信息失败', 'error')
+  }
+};
+
 // 断开全部网络设备连接（仅断开 IP:端口 形式的网络设备，USB 设备不受影响）
 const disconnectAllLoading = ref(false)
 const confirmDisconnectAll = () => {
@@ -3304,6 +3347,39 @@ watch(serialScheme, async (scheme) => {
   display: flex;
   align-items: center;
   color: #4caf50;
+}
+
+/* 卡片头部右侧操作按钮（如设备信息「导出」） */
+.card-header-action {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  color: #555;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.card-header-action:hover:not(:disabled) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+.card-header-action:active:not(:disabled) {
+  background: #c8e6c9;
+}
+
+.card-header-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .card-body {
@@ -5918,6 +5994,19 @@ button.batch-remote-tile-tag:disabled.active {
                       </svg>
                     </span>
                     <span>设备信息</span>
+                    <button
+                      class="card-header-action"
+                      :disabled="!deviceInfo"
+                      @click="exportDeviceInfo"
+                      title="复制设备信息到剪贴板"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                      </svg>
+                      <span>导出</span>
+                    </button>
                   </div>
                   <div class="card-body">
                     <div v-if="deviceInfo" class="info-grid-2col">
