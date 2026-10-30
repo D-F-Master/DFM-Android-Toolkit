@@ -77,6 +77,15 @@ class ScriptRunRequest(BaseModel):
     repeat: Optional[int] = None  # 不传则用脚本自身保存的 repeat
 
 
+class ScriptRunStepsRequest(BaseModel):
+    """直接执行内存中的步骤：不落盘，避免产生 current_xxx.json 临时文件"""
+    deviceId: str
+    steps: List[dict]
+    repeat: int = 1
+    videoWidth: Optional[int] = None
+    videoHeight: Optional[int] = None
+
+
 class ScriptImportRequest(BaseModel):
     """导入脚本：content 为脚本 JSON 原文"""
     content: str
@@ -455,6 +464,49 @@ def run_script(request: ScriptRunRequest):
             "code": 200,
             "message": "success",
             "data": {"name": name, "repeat": repeat, "stepCount": len(script.get("steps", []))},
+        }
+    except Exception as e:
+        return {"code": 500, "message": f"执行脚本失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/run-steps")
+def run_steps(request: ScriptRunStepsRequest):
+    """
+    直接执行传入的步骤（不落盘）
+
+    面板上「执行/重复」按钮走这里：步骤只在内存里，
+    不再生成 current_xxx.json 临时文件，脚本目录不会被执行动作污染。
+    """
+    try:
+        if not _check_device_online(request.deviceId):
+            return {"code": 400, "message": f"设备 {request.deviceId} 不在线", "data": None}
+
+        error = _validate_steps(request.steps)
+        if error:
+            return {"code": 400, "message": f"步骤校验失败: {error}", "data": None}
+
+        repeat = max(1, int(request.repeat or 1))
+        script = {
+            "steps": _normalize_steps(request.steps),
+            "repeat": repeat,
+        }
+        # 坐标换算基准：与保存脚本时一致，保证面板坐标按当前会话比例还原
+        if request.videoWidth and request.videoHeight:
+            script["videoWidth"] = int(request.videoWidth)
+            script["videoHeight"] = int(request.videoHeight)
+
+        from config.queue_config import task_queue
+        task_queue.submit_task(
+            _run_script_on_device,
+            request.deviceId,
+            script,
+            repeat,
+        )
+        logger.info(f"Script steps queued on {request.deviceId}, repeat={repeat}, steps={len(script['steps'])}")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"repeat": repeat, "stepCount": len(script["steps"])},
         }
     except Exception as e:
         return {"code": 500, "message": f"执行脚本失败: {str(e)}", "data": None}
