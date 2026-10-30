@@ -6881,7 +6881,6 @@ button.batch-remote-tile-tag:disabled.active {
                       <button :class="{ active: rateViewMode === 'chart' }" @click="rateViewMode = 'chart'">折线图</button>
                       <button :class="{ active: rateViewMode === 'top' }" @click="rateViewMode = 'top'">TOP进程</button>
                     </div>
-                    <span class="monitor-live-tag" v-if="monitorActive">实时刷新中</span>
                   </div>
                   <div class="card-body">
                     <template v-if="rateViewMode === 'chart'">
