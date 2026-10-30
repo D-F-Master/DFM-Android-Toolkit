@@ -2012,3 +2012,71 @@ def get_device_monitor_rate(request: MonitorRateRequest):
             "network": interfaces,
         },
     }
+
+
+# 获取设备 CPU 占用 Top 进程（基于 toybox top 单次快照）
+@router.post("/device/monitor/top")
+def get_device_monitor_top(request: MonitorRateRequest):
+    """
+    获取设备 CPU 占用最高的进程列表（top 命令实时快照）
+
+    执行 `top -bn 1 -m 10 -s 6`，按 %CPU 降序返回前 10 个进程。
+    该命令与 /proc/stat 采样口径不同，数值与 /device/monitor/rate 有差异属正常。
+    """
+    device_id = request.deviceId
+    logger.info(f"Getting CPU top processes for device: {device_id}")
+
+    result = execute_adb_command(
+        f'adb -s {device_id} shell "top -bn 1 -m 10 -s 6"',
+        timeout=15,
+    )
+    if not result["success"]:
+        error_msg = (result.get("error") or "获取 Top 进程失败").strip()
+        logger.error(f"Monitor top failed for {device_id}: {error_msg}")
+        return {"code": 500, "message": error_msg, "data": None}
+
+    lines = result["stdout"].splitlines()
+    processes = []
+    in_body = False
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if not in_body:
+            # 表头行含 %CPU 且以 PID 开头；两种表头格式：
+            # 旧: "PID USER PR NI VIRT RES SHR S[%CPU] %MEM TIME+ ARGS"
+            # 新: "PID USER PR NI VIRT [RES] SHR S %CPU %MEM TIME+ ARGS"
+            if line.upper().startswith("PID") and "%CPU" in line.upper():
+                in_body = True
+            continue
+        parts = line.split(None, 11)
+        # 数据行固定 12 列: PID USER PR NI VIRT RES SHR S %CPU %MEM TIME+ ARGS
+        # （旧版表头显示为 "S[%CPU]" 合并列，但数据行始终是分开的两个字段）
+        if len(parts) < 11:
+            continue
+        try:
+            if not parts[0].isdigit() or len(parts[7]) != 1 or not parts[7].isalpha():
+                continue
+            processes.append({
+                "pid": int(parts[0]),
+                "user": parts[1],
+                "stat": parts[7],
+                "cpuPercent": float(parts[8]),
+                "memPercent": float(parts[9]),
+                "command": parts[11] if len(parts) > 11 else "",
+            })
+        except (ValueError, IndexError):
+            # 解析失败的行直接跳过
+            continue
+
+    if not processes:
+        logger.error(f"Monitor top: no process parsed for {device_id}")
+        return {"code": 500, "message": "解析 top 输出失败", "data": None}
+
+    logger.info(f"Monitor top done for {device_id}: {len(processes)} process(es)")
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {"processes": processes},
+    }
