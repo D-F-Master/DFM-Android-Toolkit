@@ -3943,14 +3943,23 @@ button.file-act-btn.delete:hover {
   overflow: hidden;
 }
 
+/* 批量操作 Tab 同理：需要确定高度，投屏区才能在剩余空间内滚而不撑高整页 */
+.tab-content:has(> .batch-page) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .batch-page {
   display: flex;
   flex-direction: column;
   height: 100%;
   /* 底部留白与左右两侧的 10px 保持一致 */
   padding-bottom: 10px;
-  /* 会话建立后允许整页滚动以展示投屏画面 */
-  overflow-y: auto;
+  gap: 12px;
+  /* 整页不滚动：设备区与投屏区在剩余空间内自行分配，投影区内部滚 */
+  min-height: 0;
 }
 
 .batch-card {
@@ -3960,7 +3969,9 @@ button.file-act-btn.delete:hover {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* 不写死 height:100%：与下方投屏区共享剩余空间，避免撑高整页 */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .batch-header {
@@ -4266,12 +4277,15 @@ button.batch-action-btn:disabled {
 
 /* ===== 批量投屏画面区 ===== */
 .batch-remote-area {
-  margin-top: 12px;
   padding: 12px 16px;
   background: #fafafa;
   border-radius: 8px;
-  /* 不参与 batch-card 的内部布局，独立可伸缩 */
-  flex: 0 0 auto;
+  /* 高度受控：最多占页面 55%，避免把设备区与功能区挤出视口 */
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 55%;
+  display: flex;
+  flex-direction: column;
 }
 
 .batch-remote-header {
@@ -4282,6 +4296,7 @@ button.batch-action-btn:disabled {
   font-size: 13px;
   font-weight: 600;
   color: #333;
+  flex: 0 0 auto;
 }
 
 .batch-remote-status {
@@ -4310,6 +4325,11 @@ button.batch-action-btn:disabled {
 .batch-remote-grid {
   display: grid;
   gap: 10px;
+  /* 画面超出可视区时在网格内部滚动，不影响整页布局 */
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
 }
 
 .batch-remote-tile {
@@ -4317,6 +4337,8 @@ button.batch-action-btn:disabled {
   background: #000;
   border-radius: 8px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .batch-remote-tile.source {
@@ -4383,14 +4405,26 @@ button.batch-remote-tile-tag:disabled.active {
   color: #fff;
 }
 
-/* 画面按宽度等比缩放，但限制最大高度，避免把上方设备列表挤出视口。
-   注意：canvas 上 object-fit 无效，用 max-width 兜底等比（height auto 跟随） */
+/* 画面容器：固定高度上限，canvas 在其中等比缩放。
+   之前直接把 canvas 放在 tile 里且用 width:auto，浏览器优先满足宽度约束，
+   9:16 画面高度会撑到上千像素，把上方设备区与功能区挤出视口。 */
+.batch-remote-tile-body {
+  position: relative;
+  flex: 0 0 auto;
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* canvas 上 object-fit 无效，用 max-width/max-height 双约束实现等比缩放 */
 .batch-remote-canvas {
   display: block;
   width: auto;
-  max-width: 100%;
-  max-height: 280px;
   height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  background: #2a3040;
   touch-action: none;
   user-select: none;
   -webkit-user-drag: none;
@@ -4407,7 +4441,7 @@ button.batch-remote-tile-tag:disabled.active {
 
 .batch-remote-tile-loading {
   position: absolute;
-  inset: 28px 0 0 0;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6241,15 +6275,18 @@ button.batch-remote-tile-tag:disabled.active {
                           {{ card.deviceId === batchRemoteSource ? '★ 主控' : '设为主控' }}
                         </button>
                       </div>
-                      <canvas
-                        :ref="(el) => setBatchRemoteCanvasRef(el, card.index)"
-                        class="batch-remote-canvas"
-                        @pointerdown.stop="batchRemoteOnPointer($event, card)"
-                        @pointermove.stop="batchRemoteOnPointer($event, card)"
-                        @pointerup.stop="batchRemoteOnPointer($event, card)"
-                        @pointercancel.stop="batchRemoteOnPointer($event, card)"
-                      ></canvas>
-                      <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
+                      <!-- 画面容器：固定高度上限，canvas 在其中等比缩放 -->
+                      <div class="batch-remote-tile-body">
+                        <canvas
+                          :ref="(el) => setBatchRemoteCanvasRef(el, card.index)"
+                          class="batch-remote-canvas"
+                          @pointerdown.stop="batchRemoteOnPointer($event, card)"
+                          @pointermove.stop="batchRemoteOnPointer($event, card)"
+                          @pointerup.stop="batchRemoteOnPointer($event, card)"
+                          @pointercancel.stop="batchRemoteOnPointer($event, card)"
+                        ></canvas>
+                        <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
+                      </div>
                     </div>
                   </div>
                 </div>
