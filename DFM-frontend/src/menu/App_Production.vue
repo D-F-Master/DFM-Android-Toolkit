@@ -17,12 +17,13 @@ const selectedDevices = ref<string[]>([]);  // 多选
 
 // ===== 流水线编辑 =====
 interface PipelineStep {
-  type: 'installApk' | 'simulate' | 'screenshot' | 'deleteFolder';
+  type: 'installApk' | 'simulate' | 'screenshot' | 'deleteFolder' | 'shell';
   apkName?: string;
   scriptName?: string;
   repeat?: number;
   saveDir?: string;
   path?: string;
+  command?: string;
 }
 const pipelineName = ref(`流水线_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`);
 const steps = ref<PipelineStep[]>([]);
@@ -36,6 +37,7 @@ const STEP_META: Record<string, { label: string; icon: string }> = {
   simulate: { label: '模拟操作', icon: '👆' },
   screenshot: { label: '获取画面', icon: '📷' },
   deleteFolder: { label: '删除文件夹', icon: '🗑️' },
+  shell: { label: '执行Shell命令', icon: '⌨️' },
 };
 
 const loadConfig = async () => {
@@ -95,6 +97,7 @@ const addStep = (type: PipelineStep['type']) => {
   if (type === 'installApk') steps.value.push({ type, apkName: apkOptions.value[0]?.name || '' });
   else if (type === 'simulate') steps.value.push({ type, scriptName: scriptOptions.value[0] || '', repeat: 1 });
   else if (type === 'screenshot') steps.value.push({ type, saveDir: '' });
+  else if (type === 'shell') steps.value.push({ type, command: '' });
   else steps.value.push({ type, path: '/sdcard/' });
 };
 
@@ -113,6 +116,7 @@ const stepSummary = (s: PipelineStep): string => {
   if (s.type === 'installApk') return s.apkName || '（未选择APK）';
   if (s.type === 'simulate') return `${s.scriptName || '（未选择脚本）'} ×${s.repeat || 1}`;
   if (s.type === 'screenshot') return s.saveDir || '默认 D:\\log\\{设备SN}\\';
+  if (s.type === 'shell') return s.command || '（未填写命令）';
   return s.path || '';
 };
 
@@ -135,6 +139,13 @@ const fetchMaterials = async () => {
 
 const apkUploading = ref(false);
 const apkInputEl = ref<HTMLInputElement | null>(null);
+const apkRepoVisible = ref(false);          // APK 仓库弹窗
+
+const openApkRepo = () => {
+  apkRepoVisible.value = true;
+  fetchMaterials();
+};
+
 const pickApk = () => apkInputEl.value?.click();
 
 const onApkChosen = async (event: Event) => {
@@ -149,9 +160,6 @@ const onApkChosen = async (event: Event) => {
     const response = await axios.post(`${API_BASE.value}/api/device/pipeline/upload-apk`, form);
     if (response.data.code === 200) {
       await fetchMaterials();
-      const newName = response.data.data.name;
-      const newest = steps.value.find(s => s.type === 'installApk' && !s.apkName);
-      if (newest) newest.apkName = newName;
     } else {
       alert(response.data.message || '上传失败');
     }
@@ -160,6 +168,25 @@ const onApkChosen = async (event: Event) => {
   } finally {
     apkUploading.value = false;
   }
+};
+
+const removeApk = async (name: string) => {
+  if (!confirm(`确定删除 APK 素材 ${name} 吗？`)) return;
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/pipeline/delete-apk`, { name });
+    if (response.data.code === 200) {
+      await fetchMaterials();
+    } else {
+      alert(response.data.message || '删除失败');
+    }
+  } catch (error: any) {
+    alert(`删除失败: ${error.message}`);
+  }
+};
+
+const formatSize = (size: number): string => {
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 };
 
 // ===== 保存 / 加载 / 导出 / 导入 =====
@@ -442,6 +469,9 @@ onUnmounted(() => {
                     <template v-else-if="s.type === 'screenshot'">
                       <input v-model="s.saveDir" class="pl-config-input" type="text" placeholder="保存目录，留空 = D:\log\{设备SN}\">
                     </template>
+                    <template v-else-if="s.type === 'shell'">
+                      <input v-model="s.command" class="pl-config-input" type="text" placeholder="设备 shell 命令，如 rm -rf /sdcard/xxx 或 am start -n pkg/.MainActivity">
+                    </template>
                     <template v-else>
                       <input v-model="s.path" class="pl-config-input" type="text" placeholder="设备上的文件夹路径，如 /sdcard/xxx">
                     </template>
@@ -457,9 +487,8 @@ onUnmounted(() => {
               <button class="pl-add-btn" @click="addStep('simulate')">👆 模拟操作</button>
               <button class="pl-add-btn" @click="addStep('screenshot')">📷 获取画面</button>
               <button class="pl-add-btn" @click="addStep('deleteFolder')">🗑️ 删除文件夹</button>
-              <button class="pl-add-btn pl-add-apk" :disabled="apkUploading" @click="pickApk">
-                {{ apkUploading ? '上传中...' : '⬆ 上传APK素材' }}
-              </button>
+              <button class="pl-add-btn" @click="addStep('shell')">⌨️ 执行Shell命令</button>
+              <button class="pl-add-btn pl-add-apk" @click="openApkRepo">🗄️ APK仓库</button>
               <input ref="apkInputEl" type="file" accept=".apk" style="display:none" @change="onApkChosen">
             </div>
 
@@ -491,6 +520,32 @@ onUnmounted(() => {
         </div>
       </div>
     </main>
+
+    <!-- APK 仓库弹窗 -->
+    <div v-if="apkRepoVisible" class="apk-repo-mask" @click.self="apkRepoVisible = false">
+      <div class="apk-repo-dialog">
+        <div class="apk-repo-head">
+          <span>APK 仓库</span>
+          <button class="apk-repo-close" @click="apkRepoVisible = false">✕</button>
+        </div>
+        <div class="apk-repo-body">
+          <div class="apk-repo-actions">
+            <button class="pl-btn" :disabled="apkUploading" @click="pickApk">
+              {{ apkUploading ? '上传中...' : '⬆ 上传 APK' }}
+            </button>
+            <span class="apk-repo-hint">文件存放于服务端 data\apk\ 目录</span>
+          </div>
+          <div class="apk-repo-list">
+            <div v-if="apkOptions.length === 0" class="apk-repo-empty">仓库为空，先上传 APK</div>
+            <div v-for="a in apkOptions" :key="a.name" class="apk-repo-item">
+              <span class="apk-repo-name" :title="a.name">📦 {{ a.name }}</span>
+              <span class="apk-repo-size">{{ formatSize(a.size) }}</span>
+              <button class="apk-repo-del" @click="removeApk(a.name)">删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -937,4 +992,136 @@ onUnmounted(() => {
 .log-info { color: #b7c5d6; }
 .log-ok { color: #7cd992; }
 .log-err { color: #ff8a80; }
+
+/* ===== APK 仓库弹窗 ===== */
+.apk-repo-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.apk-repo-dialog {
+  width: 520px;
+  max-width: 92vw;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.apk-repo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.apk-repo-close {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.apk-repo-close:hover {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.apk-repo-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.apk-repo-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.apk-repo-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+.apk-repo-list {
+  flex: 1;
+  min-height: 120px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+}
+
+.apk-repo-empty {
+  padding: 32px;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
+}
+
+.apk-repo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f5f6f8;
+  font-size: 13px;
+}
+
+.apk-repo-item:last-child {
+  border-bottom: none;
+}
+
+.apk-repo-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #333;
+}
+
+.apk-repo-size {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.apk-repo-del {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: #fff;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.apk-repo-del:hover {
+  background: #ffebee;
+}
 </style>
