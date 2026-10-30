@@ -488,51 +488,6 @@ const scriptOpConfig = ref<Record<'tap' | 'swipe' | 'longpress', { interval: num
 const scriptRepeat = ref(1)
 const scriptSaving = ref(false)
 
-// 快捷导入：下拉选择器（列出 data/scripts 下的脚本），选中即载入面板
-const scriptQuickOptions = ref<Array<{ value: string; label: string; desc?: string }>>([])
-const scriptQuickSelected = ref('')
-const scriptQuickLoading = ref(false)
-
-const loadScriptQuickOptions = async () => {
-  scriptQuickLoading.value = true
-  try {
-    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
-    if (response.data.code === 200) {
-      const scripts = response.data.data || []
-      // 过滤掉执行过程自动生成的临时脚本（current_xxx / _current_xxx）
-      scriptQuickOptions.value = scripts
-        .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
-        .map((s: any) => ({
-          value: s.name,
-          label: s.name,
-          desc: `${s.stepCount} 步 · ${s.repeat} 轮`,
-        }))
-    }
-  } catch {
-    // 服务端不可达时保持旧列表
-  } finally {
-    scriptQuickLoading.value = false
-  }
-}
-
-// 选中脚本即导入：把选中脚本载入到当前面板
-const onScriptQuickChange = async (name: string) => {
-  if (!name) return
-  try {
-    scriptSaving.value = true
-    const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name })
-    if (loaded.data.code !== 200) {
-      showNotification('读取脚本失败: ' + (loaded.data.message || '未知错误'), 'error')
-      return
-    }
-    applyImportedSteps(loaded.data.data.steps, loaded.data.data.repeat, loaded.data.data.name)
-  } catch (error: any) {
-    showNotification('读取脚本失败: ' + error.message, 'error')
-  } finally {
-    scriptSaving.value = false
-  }
-}
-
 let scriptWs: WebSocket | null = null
 let scriptDecoder: VideoDecoder | null = null
 let scriptCodecConfig: Uint8Array | null = null
@@ -835,7 +790,6 @@ const stopScriptStream = () => {
 // 进入/离开 Tab 时开关屏幕流
 watch(activeTab, async (tab) => {
   if (tab === 'script') {
-    loadScriptQuickOptions()
     await nextTick()
     if (selectedDevice.value) startScriptStream()
   } else {
@@ -1157,32 +1111,6 @@ const clearScriptSteps = () => {
   scriptSteps.value = []
 }
 
-// ---------- 输入文字步骤 ----------
-
-// 右侧控制区的输入框内容
-const scriptInputText = ref('')
-
-// 追加一个输入步骤：不存坐标，执行时输入到设备当前聚焦的输入框
-// （通常紧跟在一次点击之后，点哪个框就往哪个框里打字）
-const addScriptInputStep = () => {
-  const text = scriptInputText.value
-  if (!text) {
-    showNotification('请输入要输入的文字', 'error')
-    return
-  }
-  const step = {
-    type: 'input' as const,
-    x1: 0,
-    y1: 0,
-    text,
-    interval: scriptOpConfig.value.tap.interval,
-    count: 1,
-  }
-  scriptSteps.value.push(step)
-  showNotification(`已添加第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
-  scriptInputText.value = ''
-}
-
 // 点击步骤：选中并展开执行参数（再点一次收起）
 const toggleStepEdit = (idx: number) => {
   scriptEditingStep.value = scriptEditingStep.value === idx ? null : idx
@@ -1219,7 +1147,6 @@ const saveScript = async () => {
       })
       if (response.data.code === 200) {
         showNotification(`脚本「${response.data.data.name}」已保存`, 'success')
-        loadScriptQuickOptions()
       } else {
         showNotification('保存失败: ' + (response.data.message || '未知错误'), 'error')
       }
@@ -1350,13 +1277,14 @@ const openImportMenu = () => {
   )
 }
 
-const runScript = async (name?: string, repeat?: number) => {
+// 执行当前步骤：直接把步骤发给后端执行，不落盘（不再产生 current_xxx.json 临时文件）
+const runCurrentSteps = async () => {
   if (!selectedDevice.value) {
     showMessage('请先选择设备', '提示')
     return
   }
-  if (!name) {
-    showMessage('没有可执行的脚本，请先保存', '提示')
+  if (scriptSteps.value.length === 0) {
+    showMessage('没有步骤可执行，请先录制', '提示')
     return
   }
   if (scriptRunning.value) {
@@ -1365,45 +1293,23 @@ const runScript = async (name?: string, repeat?: number) => {
   }
   scriptRunning.value = true
   try {
-    const response = await axios.post(`${API_BASE.value}/api/device/script/run`, {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/run-steps`, {
       deviceId: selectedDevice.value,
-      name,
-      repeat,
-    })
-    if (response.data.code === 200) {
-      showNotification(`脚本「${name}」已开始执行（${response.data.data.repeat} 轮）`, 'success')
-    } else {
-      showNotification('执行失败: ' + (response.data.message || '未知错误'), 'error')
-    }
-  } catch (error: any) {
-    showNotification('执行失败: ' + error.message, 'error')
-  } finally {
-    scriptRunning.value = false
-  }
-}
-
-// 执行当前未保存的步骤：先自动保存再执行
-const runCurrentSteps = async () => {
-  if (scriptSteps.value.length === 0) {
-    showMessage('没有步骤可执行，请先录制', '提示')
-    return
-  }
-  scriptSaving.value = true
-  try {
-    const response = await axios.post(`${API_BASE.value}/api/device/script/save`, {
-      name: `_current_${Date.now()}`,
-      repeat: scriptRepeat.value,
       steps: scriptSteps.value,
+      repeat: scriptRepeat.value,
       videoWidth: scriptMeta.width,
       videoHeight: scriptMeta.height,
     })
     if (response.data.code !== 200) {
-      showNotification('临时保存失败: ' + (response.data.message || '未知错误'), 'error')
+      showNotification('执行失败: ' + (response.data.message || '未知错误'), 'error')
       return
     }
-    await runScript(response.data.data.name, scriptRepeat.value)
+    const d = response.data.data || {}
+    showNotification(`已开始执行 ${d.stepCount ?? scriptSteps.value.length} 步 × ${d.repeat ?? scriptRepeat.value} 轮`, 'success')
+  } catch (error: any) {
+    showNotification('执行失败: ' + (error?.response?.data?.message || error.message), 'error')
   } finally {
-    scriptSaving.value = false
+    scriptRunning.value = false
   }
 }
 
@@ -5347,35 +5253,6 @@ button.batch-remote-tile-tag:disabled.active {
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
-/* 录制按钮与快捷导入下拉纵向排布 */
-.script-section .script-quick-select {
-  margin-top: 10px;
-  width: 100%;
-}
-
-/* 输入文字：输入框 + 插入按钮同一行 */
-.script-input-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.script-input-field {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid #dfe3e8;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: inherit;
-  color: #333;
-}
-
-.script-input-field:focus {
-  outline: none;
-  border-color: #4caf50;
-}
-
 .script-config-row {
   display: flex;
   align-items: center;
@@ -5454,35 +5331,6 @@ button.batch-remote-tile-tag:disabled.active {
 .script-mini-btn:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-/* 快捷导入下拉（Element Plus el-select）：适配头部小尺寸与暗色模式 */
-.script-quick-select {
-  width: 150px;
-}
-
-.script-quick-select :deep(.el-select__wrapper) {
-  min-height: 24px;
-  padding: 0 6px;
-  font-size: 12px;
-  border-radius: 6px;
-}
-
-.script-quick-select :deep(.el-select__placeholder) {
-  font-size: 12px;
-}
-
-.script-quick-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-}
-
-.script-quick-option-desc {
-  font-size: 11px;
-  color: #999;
 }
 
 .script-steps-list {
@@ -5634,10 +5482,6 @@ button.batch-remote-tile-tag:disabled.active {
   .script-step-config {
     background: #33363e;
     border-color: #40434a;
-  }
-
-  .script-quick-option-desc {
-    color: #7a7f8a;
   }
 }
 
@@ -6853,49 +6697,11 @@ button.batch-remote-tile-tag:disabled.active {
 
                   <!-- 右：控制区 -->
                   <div class="script-side-panel">
-                    <!-- 上：录制控制 + 快捷导入 -->
+                    <!-- 上：录制控制 -->
                     <div class="script-section">
                       <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
                         {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
                       </button>
-                      <el-select
-                        v-model="scriptQuickSelected"
-                        class="script-quick-select"
-                        size="small"
-                        :loading="scriptQuickLoading"
-                        :disabled="scriptQuickLoading || scriptQuickOptions.length === 0"
-                        placeholder="导入已保存脚本…"
-                        :no-data-text="scriptQuickLoading ? '加载中…' : '暂无脚本'"
-                        @change="onScriptQuickChange"
-                      >
-                        <el-option
-                          v-for="opt in scriptQuickOptions"
-                          :key="opt.value"
-                          :value="opt.value"
-                          :label="opt.label"
-                        >
-                          <span class="script-quick-option">
-                            <span>{{ opt.label }}</span>
-                            <span class="script-quick-option-desc">{{ opt.desc }}</span>
-                          </span>
-                        </el-option>
-                      </el-select>
-
-                      <!-- 输入文字：追加一个 input 步骤，执行时输入到设备当前聚焦的输入框 -->
-                      <div class="script-input-row">
-                        <input
-                          v-model="scriptInputText"
-                          class="script-input-field"
-                          type="text"
-                          placeholder="输入要填的文字…"
-                          @keyup.enter="addScriptInputStep"
-                        >
-                        <button
-                          class="script-mini-btn"
-                          @click="addScriptInputStep"
-                          :disabled="!scriptInputText"
-                        >插入输入</button>
-                      </div>
                     </div>
 
                     <!-- 下：脚本列表 + 底部按钮 -->
