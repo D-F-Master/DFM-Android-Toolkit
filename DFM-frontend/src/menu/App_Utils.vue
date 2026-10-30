@@ -828,6 +828,8 @@ const stopScriptStream = () => {
   scriptStreaming.value = false
   scriptWsStatus.value = '未连接'
   scriptRecording.value = false
+  // 流断开后不再接管键盘，避免打字继续发往已关闭的连接
+  scriptReleaseKeyboard()
 }
 
 // 进入/离开 Tab 时开关屏幕流
@@ -889,10 +891,122 @@ const scriptSendTouch = (action: number, p: { x: number; y: number }) => {
   }
 }
 
+// 把一段文字发到设备（走 mirror 的 text 通道，后端 session.inject_text）
+const scriptSendText = (text: string) => {
+  if (!text) return
+  if (scriptWs && scriptWs.readyState === WebSocket.OPEN) {
+    scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'text', text } }))
+  }
+}
+
+// ---------- 录制时捕获电脑键盘输入 ----------
+
+// 点过画面后接管键盘，敲的字实时发到设备并记入步骤
+const scriptKeyboardActive = ref(false)
+// 连续输入的字符合并到同一个输入步骤（不是每个字母一步）
+let scriptTypingStep: { text: string } | null = null
+let scriptTypingIndex = -1
+let scriptTypingTimer: any = null
+
+// 结束当前输入步骤的合并窗口
+const scriptFlushTyping = () => {
+  clearTimeout(scriptTypingTimer)
+  scriptTypingTimer = null
+  scriptTypingStep = null
+  scriptTypingIndex = -1
+}
+
+// 退出键盘接管状态
+const scriptReleaseKeyboard = () => {
+  scriptKeyboardActive.value = false
+  scriptFlushTyping()
+}
+
+const scriptOnKeyDown = (ev: KeyboardEvent) => {
+  if (!scriptKeyboardActive.value || !scriptStreaming.value) return
+  // 正在页面上的输入框里打字时不拦截（右侧输入框、保存弹窗等），否则会吞掉正常输入
+  const el = ev.target as HTMLElement | null
+  if (el) {
+    const tag = el.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return
+  }
+  // 只处理可见字符与退格/回车，其余（方向键、F1 等）交给默认行为
+  const key = ev.key
+  const isBackspace = key === 'Backspace'
+  const isEnter = key === 'Enter'
+  const isPrintable = key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey
+
+  if (!isPrintable && !isBackspace && !isEnter) return
+
+  // 吞掉默认行为，避免触发页面快捷键（Ctrl 组合已在上面排除）
+  ev.preventDefault()
+
+  if (isBackspace) {
+    // 退格发给设备；录制时同步删掉步骤里最后一个字符
+    scriptSendKey('backspace')
+    if (scriptTypingStep && scriptTypingIndex >= 0) {
+      scriptTypingStep.text = scriptTypingStep.text.slice(0, -1)
+      // 步骤文字被删空了就移除这一步
+      if (!scriptTypingStep.text) {
+        scriptSteps.value.splice(scriptTypingIndex, 1)
+        scriptTypingStep = null
+        scriptTypingIndex = -1
+      }
+    }
+    return
+  }
+
+  if (isEnter) {
+    scriptSendKey('enter')
+    scriptFlushTyping()
+    return
+  }
+
+  // 可打印字符：发到设备
+  scriptSendText(key)
+
+  if (scriptRecording.value) {
+    if (!scriptTypingStep) {
+      // 新建一个输入步骤；后续连续字符都追加进来
+      const step = {
+        type: 'input' as const,
+        x1: 0, y1: 0,
+        text: key,
+        interval: scriptOpConfig.value.tap.interval,
+        count: 1,
+      }
+      scriptSteps.value.push(step)
+      scriptTypingIndex = scriptSteps.value.length - 1
+      scriptTypingStep = step as any
+      showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
+    } else {
+      scriptTypingStep.text += key
+    }
+    // 停顿一段时间后认为这段输入结束，下次输入另起一步
+    clearTimeout(scriptTypingTimer)
+    scriptTypingTimer = setTimeout(() => { scriptTypingStep = null; scriptTypingIndex = -1 }, 1500)
+  }
+}
+
+// 特殊键：走 key 通道（后端 inject_keycode）
+const scriptSendKey = (name: 'backspace' | 'enter') => {
+  if (!scriptWs || scriptWs.readyState !== WebSocket.OPEN) return
+  // Android KeyEvent：BACKSPACE=67，ENTER=66
+  const code = name === 'backspace' ? 67 : 66
+  scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 0 } }))
+  scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 1 } }))
+}
+
+
 const scriptOnPointerDown = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   ev.preventDefault()
   const p = canvasPoint(ev)
+
+  // 点画面即接管键盘：之后敲电脑键盘的文字会实时发到设备并在录制时记为输入步骤
+  scriptKeyboardActive.value = true
+  // 点别处意味着上一段输入结束
+  scriptFlushTyping()
 
   // 显示步骤时优先命中标记：命中则进入拖拽编辑，不注入设备也不记录新步骤
   if (scriptShowMarkers.value && !scriptRecording.value) {
@@ -2996,11 +3110,13 @@ watch(selectedDevice, async (deviceId) => {
 
 onMounted(() => {
   window.addEventListener('resize', resizeMonitorCharts)
+  window.addEventListener('keydown', scriptOnKeyDown)
 })
 
 onUnmounted(() => {
   // 组件销毁时务必停掉轮询并释放图表实例
   window.removeEventListener('resize', resizeMonitorCharts)
+  window.removeEventListener('keydown', scriptOnKeyDown)
   stopMonitor()
   disposeMonitorCharts()
   // 关闭批量投屏会话
@@ -5042,6 +5158,30 @@ button.batch-remote-tile-tag:disabled.active {
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
+/* 键盘接管提示：点过画面后出现，提示可直接敲键盘打字 */
+.script-kbd-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.script-kbd-exit {
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: #2e7d32;
+  font-size: 11px;
+  font-family: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* ===== 画面步骤标记开关 ===== */
 .script-switch {
   display: inline-flex;
@@ -6661,6 +6801,10 @@ button.batch-remote-tile-tag:disabled.active {
                       <span>屏幕预览</span>
                       <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
                       <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
+                      <span v-if="scriptKeyboardActive" class="script-kbd-tag" title="点击画面空白处可退出键盘接管">
+                        ⌨ 键盘已接管，可直接打字
+                        <button class="script-kbd-exit" @click.stop="scriptReleaseKeyboard">退出</button>
+                      </span>
                       <label class="script-switch" :class="{ on: scriptShowMarkers }">
                         <input type="checkbox" v-model="scriptShowMarkers" />
                         <span class="script-switch-track"></span>
