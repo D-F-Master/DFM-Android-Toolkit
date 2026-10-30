@@ -944,15 +944,35 @@ const scriptOnKeyDown = (ev: KeyboardEvent) => {
   if (isBackspace) {
     // 退格发给设备；录制时同步删掉步骤里最后一个字符
     scriptSendKey('backspace')
-    if (scriptTypingStep && scriptTypingIndex >= 0) {
-      scriptTypingStep.text = scriptTypingStep.text.slice(0, -1)
-      // 步骤文字被删空了就移除这一步
-      if (!scriptTypingStep.text) {
-        scriptSteps.value.splice(scriptTypingIndex, 1)
-        scriptTypingStep = null
-        scriptTypingIndex = -1
+    if (!scriptRecording.value) return
+    // 定位被编辑的输入步骤：优先用正在合并的那一步，否则退回列表里最后一个输入步骤。
+    // 否则打完字停顿超过合并窗口（1.5s）再按退格，步骤不会变化——这在实际使用中最常见。
+    let idx = scriptTypingIndex
+    if (
+      idx < 0 ||
+      !scriptSteps.value[idx] ||
+      scriptSteps.value[idx].type !== 'input'
+    ) {
+      idx = -1
+      for (let i = scriptSteps.value.length - 1; i >= 0; i--) {
+        if (scriptSteps.value[i].type === 'input') { idx = i; break }
       }
     }
+    if (idx < 0) return
+    const target = scriptSteps.value[idx]
+    target.text = (target.text || '').slice(0, -1)
+    // 把删除后的这一步继续接回合并窗口，后续输入仍追加到它后面
+    scriptTypingStep = target
+    scriptTypingIndex = idx
+    // 步骤文字被删空了就移除这一步
+    if (!target.text) {
+      scriptSteps.value.splice(idx, 1)
+      scriptFlushTyping()
+      return
+    }
+    // 接回后同样按停顿判定结束，避免状态一直挂着
+    clearTimeout(scriptTypingTimer)
+    scriptTypingTimer = setTimeout(() => { scriptTypingStep = null; scriptTypingIndex = -1 }, 1500)
     return
   }
 
