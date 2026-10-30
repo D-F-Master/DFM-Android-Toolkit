@@ -79,10 +79,6 @@ const files = ref<FileInfo[]>([])
 const fileLoading = ref(false)
 const currentPath = ref('/sdcard')
 const activeTab = ref('info')
-
-// 左栏设备管理收缩：悬停边框显示把手，点击收起/展开
-const sidebarCollapsed = ref(false)
-const sidebarHover = ref(false)
 const route = ref('')
 const wirelessIp = ref('192.168.0.')
 const wirelessStatus = ref('')
@@ -3711,50 +3707,6 @@ watch(serialScheme, async (scheme) => {
   flex-direction: column;
   width: 250px;
   height: 100%;
-  position: relative;
-  transition: width 0.25s ease;
-}
-
-/* 收起状态：细条宽度，内容隐藏 */
-.container.sidebar-collapsed .sidebar {
-  width: 28px;
-}
-
-/* 收缩把手：悬停在右边框上显示 */
-.sidebar-toggle {
-  position: absolute;
-  top: 50%;
-  right: -12px;
-  transform: translateY(-50%);
-  z-index: 30;
-  width: 24px;
-  height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  background: #fff;
-  color: #888;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-}
-
-/* 悬停侧栏或已收起时可见（收起时把手贴在细条上） */
-.sidebar-toggle.visible {
-  opacity: 1;
-}
-
-.container.sidebar-collapsed .sidebar-toggle {
-  right: 2px;
-}
-
-.sidebar-toggle:hover {
-  background: #e8f5e9;
-  color: #2e7d32;
 }
 
 .device-list-container {
@@ -6488,21 +6440,8 @@ button.batch-remote-tile-tag:disabled.active {
     </div>
     <button class="back-button" @click="goHome">&lt;</button>
     <main>
-      <div class="container" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-        <div class="sidebar" @mouseenter="sidebarHover = true" @mouseleave="sidebarHover = false">
-          <!-- 收缩把手：悬停在边框区域显示 -->
-          <button
-            class="sidebar-toggle"
-            :class="{ visible: sidebarHover || sidebarCollapsed }"
-            :title="sidebarCollapsed ? '展开设备列表' : '收起设备列表'"
-            @click="sidebarCollapsed = !sidebarCollapsed"
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline v-if="!sidebarCollapsed" points="15 18 9 12 15 6" />
-              <polyline v-else points="9 18 15 12 9 6" />
-            </svg>
-          </button>
-          <template v-if="!sidebarCollapsed">
+      <div class="container">
+        <div class="sidebar">
           <div class="device-header">
             <h2>设备管理</h2>
             <button class="refresh-button" @click="fetchDevices">刷新</button>
@@ -6552,7 +6491,6 @@ button.batch-remote-tile-tag:disabled.active {
               {{ wirelessStatus }}
             </div>
           </div>
-          </template>
         </div>
         <div class="content">
           <div v-if="!selectedDevice">请选择一个设备</div>
