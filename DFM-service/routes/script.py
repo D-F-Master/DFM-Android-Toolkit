@@ -39,12 +39,15 @@
   按步骤顺序注入：每步循环 count 次，步间等待 interval ms；
   全部步骤跑完算一轮，共 repeat 轮。
 """
+import base64
 import json
 import re
 import time
 import threading
 
-from fastapi import APIRouter
+import cv2
+
+from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -59,6 +62,7 @@ router = APIRouter(
 
 SCRIPTS_DIR = get_data_path() / "scripts"
 APKS_DIR = get_data_path() / "apk"
+TEMPLATES_DIR = get_data_path() / "templates"   # 视觉匹配模板图（等待组件出现）
 
 
 def _ensure_scripts_dir():
@@ -113,7 +117,9 @@ ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
     "keyevent", "volume", "reboot",
 )
-VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES
+# 视觉等待：反复截屏搜索模板图，命中才继续
+VISION_STEP_TYPES = ("waitFor",)
+VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES + VISION_STEP_TYPES
 
 
 def _validate_steps(steps) -> str:
@@ -150,6 +156,27 @@ def _validate_steps(steps) -> str:
             error = _validate_adb_step(step_type, step, i + 1)
             if error:
                 return error
+            continue
+
+        # 视觉等待步骤：校验模板与超时
+        if step_type == "waitFor":
+            template = str(step.get("template", "")).strip()
+            if not template:
+                return f"第 {i + 1} 步是等待组件步骤，未选择模板图"
+            if "/" in template or "\\" in template or ".." in template:
+                return f"第 {i + 1} 步的模板名不能包含路径分隔符"
+            try:
+                timeout = float(step.get("timeout", 15))
+            except (TypeError, ValueError):
+                return f"第 {i + 1} 步的超时时间无效"
+            if timeout <= 0 or timeout > 600:
+                return f"第 {i + 1} 步的超时时间需在 0-600 秒之间"
+            try:
+                threshold = float(step.get("threshold", 0.85))
+            except (TypeError, ValueError):
+                return f"第 {i + 1} 步的匹配阈值无效"
+            if not (0.5 <= threshold <= 1.0):
+                return f"第 {i + 1} 步的匹配阈值需在 0.5-1.0 之间"
             continue
 
         for field in ("x1", "y1"):
@@ -236,6 +263,17 @@ def _normalize_steps(steps) -> List[dict]:
             normalized.append({
                 "type": "input",
                 "text": step.get("text", ""),
+                "interval": step.get("interval", 0),
+                "count": step.get("count", 1),
+            })
+            continue
+        # 视觉等待步骤：保留模板与匹配参数
+        if step["type"] == "waitFor":
+            normalized.append({
+                "type": "waitFor",
+                "template": step.get("template", ""),
+                "threshold": step.get("threshold", 0.85),
+                "timeout": step.get("timeout", 15),
                 "interval": step.get("interval", 0),
                 "count": step.get("count", 1),
             })
@@ -515,6 +553,64 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
             time.sleep(max(0, int(step.get("interval", 0))) / 1000)
 
 
+def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int):
+    """
+    执行「等待组件出现」步骤
+
+    模板图按录制时的画面分辨率保存。若回放时设备分辨率不同，
+    需要把模板按比例缩放到当前屏幕尺寸，否则同一组件在不同分辨率下
+    尺寸不匹配会一直等不到（不是点击坐标那种简单平移能解决的）。
+    """
+    from routes.vision import load_template, wait_for_template, capture_screen
+
+    template_name = str(step.get("template", "")).strip()
+    path = TEMPLATES_DIR / template_name
+    template = load_template(str(path))
+
+    threshold = float(step.get("threshold", 0.85))
+    timeout = float(step.get("timeout", 15))
+
+    # 模板尺寸换算：以录制分辨率为基准，对齐当前屏幕
+    try:
+        screen_w, screen_h = _current_screen_size(device_id, base_w, base_h)
+    except Exception:
+        screen_w, screen_h = 0, 0
+
+    if screen_w and screen_h and base_w and base_h and (base_w != screen_w or base_h != screen_h):
+        scale_x = screen_w / base_w
+        scale_y = screen_h / base_h
+        th, tw = template.shape[:2]
+        new_w = max(1, int(round(tw * scale_x)))
+        new_h = max(1, int(round(th * scale_y)))
+        if new_w != tw or new_h != th:
+            template = cv2.resize(template, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            logger.info(
+                f"模板按分辨率换算: 录制 {base_w}x{base_h} -> 当前 {screen_w}x{screen_h}，"
+                f"{tw}x{th} -> {new_w}x{new_h}"
+            )
+
+    found, elapsed, score, attempts = wait_for_template(
+        device_id, template, threshold=threshold, timeout=timeout
+    )
+    if not found:
+        raise RuntimeError(
+            f"等待组件超时：模板 {template_name} 在 {elapsed:.1f}s 内未出现"
+            f"（最高分 {score:.3f} < 阈值 {threshold}，尝试 {attempts} 次）"
+        )
+    logger.info(f"[{device_id}] 等待组件 {template_name} 命中，耗时 {elapsed:.2f}s（分数 {score:.3f}）")
+
+
+def _current_screen_size(device_id: str, base_w: int, base_h: int):
+    """取当前设备屏幕像素尺寸（wm size 解析），失败返回 (0, 0)"""
+    result = execute_adb_command(f"adb -s {device_id} shell wm size", timeout=15)
+    if not result["success"]:
+        return 0, 0
+    m = re.search(r'(\d+)x(\d+)', result.get("stdout") or "")
+    if not m:
+        return 0, 0
+    return int(m.group(1)), int(m.group(2))
+
+
 def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     在设备上回放脚本（阻塞，运行于 task_queue 工作线程）
@@ -532,7 +628,8 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     from routes.remote_ws import acquire_session, release_session
 
     steps = script.get("steps", [])
-    # 全脚本没有注入类步骤时不需要 scrcpy 会话（纯 adb 动作脚本更快、更稳）
+    # 全脚本没有注入类步骤时不需要 scrcpy 会话
+    # （设备动作与视觉等待都走 adb，纯这类脚本更快、更稳）
     needs_session = any(s.get("type") in INJECT_STEP_TYPES for s in steps)
 
     session = None
@@ -575,8 +672,15 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 count = max(1, int(step.get("count", 1)))
                 interval = max(0, int(step.get("interval", 0)))
 
+                # 视觉等待步骤：反复截屏搜索模板，命中才继续
+                if stype in VISION_STEP_TYPES:
+                    # 基准分辨率优先用脚本保存的录制尺寸，缺失则用会话尺寸
+                    base_w = int(script.get("videoWidth") or 0) or w
+                    base_h = int(script.get("videoHeight") or 0) or h
+                    for _ in range(count):
+                        _exec_wait_step(device_id, step, base_w, base_h)
                 # 设备动作类步骤走 adb 命令（不依赖 scrcpy 会话），count 在函数内部循环
-                if stype in ADB_STEP_TYPES:
+                elif stype in ADB_STEP_TYPES:
                     _exec_adb_step(device_id, step, count)
                 else:
                     for i in range(count):
@@ -703,3 +807,114 @@ def run_steps(request: ScriptRunStepsRequest):
         }
     except Exception as e:
         return {"code": 500, "message": f"执行脚本失败: {str(e)}", "data": None}
+
+
+# ========== 视觉匹配模板管理 ==========
+
+class TemplateNameRequest(BaseModel):
+    name: str
+
+
+class TemplateUploadBase64Request(BaseModel):
+    """前端从投屏画面裁剪出的模板（base64 PNG）"""
+    name: str
+    image: str
+
+
+def _ensure_templates_dir():
+    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@router.post("/device/script/upload-template")
+async def upload_template(template: UploadFile = File(..., description="模板图片(PNG)")):
+    """上传视觉匹配模板图到 data/templates/"""
+    try:
+        _ensure_templates_dir()
+        raw_name = os.path.splitext(template.filename or "template")[0]
+        filename = _safe_name(raw_name) + ".png"
+        path = TEMPLATES_DIR / filename
+        with open(path, "wb") as f:
+            while True:
+                chunk = await template.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        # 立即校验能否解码，避免存进去一个坏图运行时才炸
+        from routes.vision import load_template
+        img = load_template(str(path))
+        size = path.stat().st_size
+        logger.info(f"Template uploaded: {path} ({img.shape[1]}x{img.shape[0]}, {size} bytes)")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"name": filename, "width": img.shape[1], "height": img.shape[0], "size": size},
+        }
+    except Exception as e:
+        logger.error(f"上传模板失败: {e}")
+        return {"code": 500, "message": f"上传模板失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/save-template")
+def save_template(request: TemplateUploadBase64Request):
+    """保存前端从画面上裁剪出的模板（base64 PNG）"""
+    try:
+        _ensure_templates_dir()
+        data_uri = request.image or ""
+        # 兼容带 data:image/png;base64, 前缀的形式
+        if "," in data_uri:
+            data_uri = data_uri.split(",", 1)[1]
+        raw = base64.b64decode(data_uri)
+        filename = _safe_name(request.name) + ".png"
+        path = TEMPLATES_DIR / filename
+        with open(path, "wb") as f:
+            f.write(raw)
+
+        from routes.vision import load_template
+        img = load_template(str(path))
+        logger.info(f"Template saved from canvas: {path} ({img.shape[1]}x{img.shape[0]})")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"name": filename, "width": img.shape[1], "height": img.shape[0]},
+        }
+    except Exception as e:
+        logger.error(f"保存模板失败: {e}")
+        return {"code": 500, "message": f"保存模板失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/list-templates")
+def list_templates():
+    """列出所有模板图（名称 + 尺寸）"""
+    try:
+        _ensure_templates_dir()
+        from routes.vision import load_template
+        items = []
+        for f in sorted(TEMPLATES_DIR.glob("*.png")):
+            try:
+                img = load_template(str(f))
+                items.append({
+                    "name": f.name,
+                    "width": img.shape[1],
+                    "height": img.shape[0],
+                    "size": f.stat().st_size,
+                })
+            except Exception:
+                continue
+        return {"code": 200, "message": "success", "data": items}
+    except Exception as e:
+        return {"code": 500, "message": f"获取模板列表失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/delete-template")
+def delete_template(request: TemplateNameRequest):
+    """删除模板图"""
+    try:
+        _ensure_templates_dir()
+        name = _safe_name(os.path.splitext(request.name)[0]) + ".png"
+        path = TEMPLATES_DIR / name
+        if path.exists():
+            path.unlink()
+            logger.info(f"Template deleted: {path}")
+        return {"code": 200, "message": "success", "data": None}
+    except Exception as e:
+        return {"code": 500, "message": f"删除模板失败: {str(e)}", "data": None}
