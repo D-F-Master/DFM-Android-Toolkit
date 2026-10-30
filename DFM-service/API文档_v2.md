@@ -1,4 +1,4 @@
-﻿# 工具通用服务器 API 文档 v2.0
+# 工具通用服务器 API 文档 v2.0
 
 ## 基础信息
 
@@ -725,6 +725,54 @@
 
 ---
 
+### 31. 获取 CPU 占用 Top 进程
+**接口**: `POST /api/device/monitor/top`  
+**描述**: 执行设备端 `top -bn 1 -m 10 -s 6`，按 CPU 占用降序返回前 10 个进程快照  
+**请求体**:
+```json
+{
+  "deviceId": "device_serial_number"
+}
+```
+**参数说明**:
+- `deviceId`: 设备ID（必填）
+
+**响应**:
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "processes": [
+      {
+        "pid": 5024,
+        "user": "u0_a173",
+        "stat": "S",
+        "cpuPercent": 50.0,
+        "memPercent": 14.6,
+        "command": "com.yqsh.morningcheck.qindao"
+      }
+    ]
+  }
+}
+```
+
+**字段说明**:
+- `pid`: 进程 ID
+- `user`: 进程属主（如 `system`、`u0_a173`、`root`）
+- `stat`: 进程状态单字符（`S` 睡眠 / `R` 运行 / `D` 磁盘等待等）
+- `cpuPercent`: 最近一次采样窗口的 CPU 占用率（%，top 自身口径）
+- `memPercent`: 物理内存占用率（%）
+- `command`: 进程名 / 启动命令
+
+**说明**:
+- 单次 adb 往返，实测约 0.3-0.5 秒，可按 2 秒轮询实时刷新
+- `top` 的 CPU 口径与 `/device/monitor/rate` 的 `/proc/stat` 采样口径不同，两者数值有差异属正常现象
+- 无效数据行（如内核线程名含空格）解析时跳过；一条进程都解析不出时返回 code 500
+- 设备不在线时立即返回 code 500（`device not found`），不会挂起
+
+---
+
 ## 二、端口管理接口
 
 ### 1. 检查端口占用
@@ -1079,6 +1127,7 @@
 ### v2.4.0
 - 新增日志抓取接口 `POST /api/device/logs/capture/start` / `stop`（持续抓取前台应用日志，保存到 D:\log\{SN}\{时间}.log）
 - 新增模拟脚本接口：`POST /api/device/script/save|list|load|delete|run`（脚本保存/回放执行）
+- 新增 CPU Top 进程接口 `POST /api/device/monitor/top`（top 命令实时快照，按 CPU 降序前 10 进程）
 
 ### v2.3.0
 - 新增创建文件接口 `POST /api/device/files/create`
