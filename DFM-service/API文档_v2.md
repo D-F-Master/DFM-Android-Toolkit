@@ -774,6 +774,80 @@
 
 ---
 
+## 五、生产流水线接口
+
+生产工具页的流水线编排与多设备执行。数据结构（保存为 `data/pipelines/{name}.json`）：
+
+```json
+{
+  "name": "流水线名",
+  "steps": [
+    { "type": "installApk", "apkName": "素材库中的APK文件名" },
+    { "type": "simulate",   "scriptName": "模拟脚本名", "repeat": 1 },
+    { "type": "screenshot", "saveDir": "" },
+    { "type": "deleteFolder", "path": "/sdcard/xxx" }
+  ]
+}
+```
+
+- `installApk`：从流水线素材库（`data/pipelines/apks/`）选择 APK 安装
+- `simulate`：引用「模拟脚本」Tab 保存的脚本，`repeat` 为脚本重复轮数
+- `screenshot`：`screencap` 截图 pull 到本机，`saveDir` 留空默认 `D:\log\{设备SN}\`
+- `deleteFolder`：`rm -rf` 删除设备文件夹，**仅允许 `/sdcard/` 或 `/storage/` 开头的路径**（防误删系统目录）
+
+### 32. 保存流水线
+**接口**: `POST /api/device/pipeline/save`  
+**请求体**: `{"name": "流水线名", "steps": [ ... ]}`（结构见上）  
+**响应**: `{"code": 200, "data": {"name": "...", "path": "..."}}`；步骤校验失败返回 code 400
+
+### 33. 流水线列表 / 加载 / 删除
+**接口**: `POST /api/device/pipeline/list`（无参数）/ `load`（`{"name"}`）/ `delete`（`{"name"}`）  
+**list 响应**: `[{"name": "...", "stepCount": 2}]`；load 返回完整 JSON；不存在返回 code 404
+
+### 34. 导入流水线
+**接口**: `POST /api/device/pipeline/import`  
+**请求体**: `{"content": "流水线JSON原文", "name": "可选，不传用内容里的name"}`  
+**说明**: 与模拟脚本导入同套路——先校验再落盘，同名覆盖并在 data.overwritten 标记
+
+### 35. 上传 / 列出 / 删除 APK 素材
+**接口**:
+- `POST /api/device/pipeline/upload-apk`（multipart/form-data，字段 `apk`）
+- `POST /api/device/pipeline/list-apks`（无参数）
+- `POST /api/device/pipeline/delete-apk`（`{"name": "xxx.apk"}`）
+
+**说明**: 素材存放于 `data/pipelines/apks/`，文件名经安全过滤（中英文数字下划线连字符）
+
+### 36. 执行流水线
+**接口**: `POST /api/device/pipeline/run`  
+**请求体**:
+```json
+{
+  "name": "流水线名（须先保存）",
+  "deviceIds": ["192.168.0.110:5555"],
+  "mode": "parallel"
+}
+```
+**参数说明**:
+- `mode=parallel`：按步骤推进，每步所有在线设备并发执行，全部完成进入下一步
+- `mode=serial`：每台设备依次跑完整条流水线，再轮到下一台
+- 某设备某步失败后该设备退出本次执行，不影响其他设备
+
+**响应**: `{"code": 200, "data": {"runId": "...", "online": [...], "offline": [...], "stepCount": n, "mode": "..."}}`  
+**说明**: 后台线程执行，立即返回 runId；全部设备不在线返回 code 400
+
+### 37. 拉取执行日志
+**接口**: `POST /api/device/pipeline/logs`  
+**请求体**: `{"runId": "...", "cursor": 0}`（cursor 传上次返回的 total）  
+**响应**: `{"code": 200, "data": {"logs": [{"time","deviceId","step","level","message"}], "total": n, "running": bool}}`  
+**说明**: 增量拉取，前端建议 1 秒轮询；`running=false` 表示执行结束；运行记录仅保留最近 20 次
+
+### 38. 停止执行
+**接口**: `POST /api/device/pipeline/stop`  
+**请求体**: `{"name": "<runId>"}`（runId 通过 name 字段传入）  
+**说明**: 发送停止请求，当前步骤完成后生效
+
+---
+
 ## 二、端口管理接口
 
 ### 1. 检查端口占用
@@ -1129,6 +1203,7 @@
 - 新增日志抓取接口 `POST /api/device/logs/capture/start` / `stop`（持续抓取前台应用日志，保存到 D:\log\{SN}\{时间}.log）
 - 新增模拟脚本接口：`POST /api/device/script/save|list|load|delete|run`（脚本保存/回放执行）
 - 新增 CPU Top 进程接口 `POST /api/device/monitor/top`（top 命令实时快照，按 CPU 降序前 10 进程）
+- 新增生产流水线接口：`POST /api/device/pipeline/save|list|load|delete|import|upload-apk|list-apks|delete-apk|run|logs|stop`（多设备步骤编排执行，支持并发/单线程、实时日志、APK 素材库）
 
 ### v2.3.0
 - 新增创建文件接口 `POST /api/device/files/create`
