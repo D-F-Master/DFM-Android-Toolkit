@@ -2252,11 +2252,11 @@ const confirmDisconnect = (deviceId: string) => {
   })
 };
 
-// 导出设备信息：把卡片上展示的 9 项拼成「标签：值」逐行文本复制到剪贴板
-const exportDeviceInfo = async () => {
+// 复制设备信息：把卡片上展示的 9 项拼成「标签：值」逐行文本复制到剪贴板
+const copyDeviceInfo = async () => {
   const info = deviceInfo.value
   if (!info) {
-    showNotification('设备信息尚未加载，无法导出', 'error')
+    showNotification('设备信息尚未加载，无法复制', 'error')
     return
   }
   const rows: Array<[string, string]> = [
@@ -2288,9 +2288,9 @@ const exportDeviceInfo = async () => {
       document.execCommand('copy')
       document.body.removeChild(textarea)
     }
-    showNotification('已复制设置信息到粘贴板')
+    showNotification('已复制设备信息到粘贴板')
   } catch (error) {
-    console.error('导出设备信息失败:', error)
+    console.error('复制设备信息失败:', error)
     showNotification('复制设备信息失败', 'error')
   }
 };
@@ -3349,7 +3349,7 @@ watch(serialScheme, async (scheme) => {
   color: #4caf50;
 }
 
-/* 卡片头部右侧操作按钮（如设备信息「导出」） */
+/* 卡片头部右侧操作按钮（如设备信息「复制」） */
 .card-header-action {
   margin-left: auto;
   display: inline-flex;
@@ -5997,15 +5997,14 @@ button.batch-remote-tile-tag:disabled.active {
                     <button
                       class="card-header-action"
                       :disabled="!deviceInfo"
-                      @click="exportDeviceInfo"
+                      @click="copyDeviceInfo"
                       title="复制设备信息到剪贴板"
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
+                        <rect x="9" y="9" width="12" height="12" rx="2"/>
+                        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                       </svg>
-                      <span>导出</span>
+                      <span>复制</span>
                     </button>
                   </div>
                   <div class="card-body">
