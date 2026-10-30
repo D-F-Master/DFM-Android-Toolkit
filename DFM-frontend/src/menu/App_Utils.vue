@@ -488,6 +488,59 @@ const expandedOpConfig = ref<'tap' | 'swipe' | 'longpress' | null>(null)
 const scriptRepeat = ref(1)
 const scriptSaving = ref(false)
 
+// 快捷导入：常驻下拉选择器（列出 data/scripts 下的脚本），点导入直接载入面板
+const scriptQuickOptions = ref<Array<{ value: string; label: string; desc?: string }>>([])
+const scriptQuickSelected = ref('')
+const scriptQuickLoading = ref(false)
+
+const loadScriptQuickOptions = async () => {
+  scriptQuickLoading.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
+    if (response.data.code === 200) {
+      const scripts = response.data.data || []
+      // 过滤掉执行过程自动生成的临时脚本（current_xxx / _current_xxx）
+      scriptQuickOptions.value = scripts
+        .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
+        .map((s: any) => ({
+          value: s.name,
+          label: s.name,
+          desc: `${s.stepCount} 步 · ${s.repeat} 轮`,
+        }))
+      // 当前选中项被删掉时清空选择
+      if (scriptQuickSelected.value && !scriptQuickOptions.value.some((s: any) => s.value === scriptQuickSelected.value)) {
+        scriptQuickSelected.value = ''
+      }
+    }
+  } catch {
+    // 服务端不可达时保持旧列表，导入时会报网络错误
+  } finally {
+    scriptQuickLoading.value = false
+  }
+}
+
+// 快捷导入：把选中脚本载入到当前面板
+const importScriptQuick = async () => {
+  if (!scriptQuickSelected.value) {
+    showNotification('请先选择要导入的脚本', 'error')
+    return
+  }
+  const name = scriptQuickSelected.value
+  try {
+    scriptSaving.value = true
+    const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name })
+    if (loaded.data.code !== 200) {
+      showNotification('读取脚本失败: ' + (loaded.data.message || '未知错误'), 'error')
+      return
+    }
+    applyImportedSteps(loaded.data.data.steps, loaded.data.data.repeat, loaded.data.data.name)
+  } catch (error: any) {
+    showNotification('读取脚本失败: ' + error.message, 'error')
+  } finally {
+    scriptSaving.value = false
+  }
+}
+
 let scriptWs: WebSocket | null = null
 let scriptDecoder: VideoDecoder | null = null
 let scriptCodecConfig: Uint8Array | null = null
@@ -783,6 +836,7 @@ const stopScriptStream = () => {
 // 进入/离开 Tab 时开关屏幕流
 watch(activeTab, async (tab) => {
   if (tab === 'script') {
+    loadScriptQuickOptions()
     await nextTick()
     if (selectedDevice.value) startScriptStream()
   } else {
@@ -1012,6 +1066,7 @@ const saveScript = async () => {
       })
       if (response.data.code === 200) {
         showNotification(`脚本「${response.data.data.name}」已保存`, 'success')
+        loadScriptQuickOptions()
       } else {
         showNotification('保存失败: ' + (response.data.message || '未知错误'), 'error')
       }
@@ -5206,6 +5261,30 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: default;
 }
 
+/* 快捷导入下拉：与 serial-select 同规格，适配头部小尺寸 */
+.script-quick-select {
+  height: 24px;
+  max-width: 150px;
+  padding: 0 6px;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+}
+
+.script-quick-select:focus {
+  outline: none;
+  border-color: #4caf50;
+}
+
+.script-quick-select:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .script-steps-list {
   flex: 1;
   overflow-y: auto;
@@ -6612,11 +6691,26 @@ button.batch-remote-tile-tag:disabled.active {
                       <div class="script-list-header">
                         <span>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
+                          <select
+                            v-model="scriptQuickSelected"
+                            class="script-quick-select"
+                            :disabled="scriptQuickLoading || scriptQuickOptions.length === 0"
+                          >
+                            <option value="" disabled>{{ scriptQuickLoading ? '加载中…' : (scriptQuickOptions.length === 0 ? '暂无脚本' : '选择脚本') }}</option>
+                            <option v-for="opt in scriptQuickOptions" :key="opt.value" :value="opt.value">
+                              {{ opt.label }}（{{ opt.desc }}）
+                            </option>
+                          </select>
+                          <button
+                            class="script-mini-btn"
+                            @click="importScriptQuick"
+                            :disabled="!scriptQuickSelected || scriptSaving || scriptRunning"
+                          >导入</button>
                           <button
                             class="script-mini-btn"
                             @click="openImportMenu"
                             :disabled="scriptSaving || scriptRunning"
-                          >导入</button>
+                          >导入▾</button>
                           <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
                         </div>
                       </div>
