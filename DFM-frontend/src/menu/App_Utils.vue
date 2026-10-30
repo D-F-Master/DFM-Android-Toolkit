@@ -1737,11 +1737,12 @@ const installApp = async (event: Event) => {
   input.click()
 }
 
-// 全页拖入 APK 安装：选中设备后，页面任意位置都可拖入
+// 全页拖入 APK 安装：选中设备后，页面任意位置都可拖入（仅应用管理页生效）
 const apkDragOver = ref(false)
 
-// 拖拽经过页面：仅拖的是文件且已选设备时亮提示
+// 拖拽经过页面：仅拖的是文件、已选设备且当前在应用管理页时亮提示
 const onPageDragOver = (event: DragEvent) => {
+  if (activeTab.value !== 'apps') return
   const types = event.dataTransfer?.types
   if (!types || !Array.from(types).includes('Files') || !selectedDevice.value) return
   apkDragOver.value = true
@@ -1757,6 +1758,8 @@ const onApkDragLeave = (event: DragEvent) => {
 
 const onApkDrop = async (event: DragEvent) => {
   apkDragOver.value = false
+  // 只在应用管理页生效，其他页面忽略拖入
+  if (activeTab.value !== 'apps') return
   if (!selectedDevice.value) {
     showNotification('请先选择一个设备再拖入 APK', 'error')
     return
