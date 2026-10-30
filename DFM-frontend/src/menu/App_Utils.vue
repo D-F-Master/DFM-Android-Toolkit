@@ -635,12 +635,8 @@ const SCRIPT_MARKER_COLORS: Record<string, string> = {
 
 // 在画面上绘制脚本步骤标记（画布坐标系即设备分辨率）
 const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
-  if (!scriptShowMarkers.value || scriptSteps.value.length === 0) return
-
-  const radius = Math.max(18, Math.round(scriptMeta.width / 40))
-  const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
-
-  // 框选中的矩形（虚线高亮）
+  // 框选中的矩形（虚线高亮）：必须在早退之前画，
+  // 否则「显示步骤」关闭或步骤为空时拖框没有任何视觉反馈
   if (scriptCropRegion.value) {
     const r = scriptCropRegion.value
     const left = Math.min(r.x1, r.x2)
@@ -654,6 +650,11 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
     ctx.strokeRect(left, top, w, h)
     ctx.restore()
   }
+
+  if (!scriptShowMarkers.value || scriptSteps.value.length === 0) return
+
+  const radius = Math.max(18, Math.round(scriptMeta.width / 40))
+  const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
 
   scriptSteps.value.forEach((step, idx) => {
     // 输入步骤与设备动作步骤没有坐标，画面上不画标记（序号也就不占位）
@@ -837,9 +838,10 @@ const finishCropRegion = async () => {
   const top = Math.min(region.y1, region.y2)
   const w = Math.abs(region.x2 - region.x1)
   const h = Math.abs(region.y2 - region.y1)
-  // 太小基本是误触
+  // 太小基本是误触：留在框选模式里让用户重框，不退出
   if (w < 12 || h < 12) {
-    showNotification('框选区域太小，请框住完整的组件图案', 'error')
+    scriptCropMode.value = true
+    showNotification('框选区域太小，请重新框住完整的组件图案', 'error')
     scriptRedrawMarkers()
     return
   }
@@ -1312,8 +1314,13 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
   // elapsed >= 600ms 且未移动的长按已在 timer 里记录
 }
 
-// 指针被中断（取消/离开窗口）：静默结束拖拽
+// 指针被中断（取消/离开窗口）：静默结束拖拽；框选中丢弃当前框但保留模式
 const scriptOnPointerCancel = () => {
+  if (scriptCropMode.value) {
+    scriptCropRegion.value = null
+    scriptRedrawMarkers()
+    return
+  }
   if (scriptDragging.value) {
     scriptDragging.value = null
     return
