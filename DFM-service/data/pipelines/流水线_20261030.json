@@ -1,0 +1,11 @@
+{
+  "name": "流水线_20261030",
+  "steps": [
+    {
+      "type": "keyevent",
+      "keycode": 4,
+      "repeat": 1,
+      "_uid": 3
+    }
+  ]
+}
