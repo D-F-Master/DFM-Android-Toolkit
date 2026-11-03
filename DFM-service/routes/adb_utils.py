@@ -19,6 +19,9 @@ router = APIRouter(
     tags=["ADB工具"]
 )
 
+# 上传文件（adb push）的超时时间（秒），大文件走 USB 也够用
+UPLOAD_TIMEOUT = 600
+
 
 def execute_adb_command(command: str, timeout: int = 5) -> dict:
     """
@@ -1032,26 +1035,34 @@ async def upload_file(
     remotePath: str = Form("/sdcard/", description="远程路径，默认为/sdcard/")
 ):
     import tempfile
-    
-    # 创建临时文件
-    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
-        content = await file.read()
-        tmp_file.write(content)
-        tmp_path = tmp_file.name
-    
+
+    content = await file.read()
+
+    def _push() -> dict:
+        # 写临时文件与 adb push 都是阻塞调用，必须在工作线程里跑，
+        # 否则会卡住事件循环，导致上传期间其他请求全部排队等待
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+        try:
+            # 构建目标路径
+            dest_path = f"{remotePath}/{file.filename}" if not remotePath.endswith('/') else f"{remotePath}{file.filename}"
+
+            return execute_adb_command(f'adb -s {deviceId} push "{tmp_path}" "{dest_path}"', timeout=UPLOAD_TIMEOUT)
+        finally:
+            # 删除临时文件
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     try:
-        # 构建目标路径
-        dest_path = f"{remotePath}/{file.filename}" if not remotePath.endswith('/') else f"{remotePath}{file.filename}"
-        
-        result = execute_adb_command(f'adb -s {deviceId} push "{tmp_path}" "{dest_path}"')
+        result = await asyncio.to_thread(_push)
         if result["success"]:
             return {"code": 200, "message": "success", "data": None}
         else:
             return {"code": 500, "message": result.get("error", "Upload failed"), "data": None}
-    finally:
-        # 删除临时文件
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    except Exception as e:
+        logger.error(f"Upload file failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
 
 
 # 下载文件
