@@ -44,6 +44,7 @@ import json
 import os
 import re
 import time
+import asyncio
 import threading
 
 import cv2
@@ -978,8 +979,9 @@ async def upload_template(template: UploadFile = File(..., description="模板�
                     break
                 f.write(chunk)
         # 立即校验能否解码，避免存进去一个坏图运行时才炸
+        # 解码是 CPU 阻塞操作，放线程池里跑，避免卡住事件循环拖慢其他请求
         from routes.vision import load_template
-        img = load_template(str(path))
+        img = await asyncio.to_thread(load_template, str(path))
         size = path.stat().st_size
         logger.info(f"Template uploaded: {path} ({img.shape[1]}x{img.shape[0]}, {size} bytes)")
         return {
