@@ -1896,6 +1896,7 @@ const modalMessage = ref('')
 const modalPlaceholder = ref('')
 const modalConfirmText = ref('确定')
 const modalVariant = ref<'success' | 'error' | 'info'>('success')
+const modalProgress = ref(false)
 const modalCallback = ref<Function | null>(null)
 // list 类型弹窗的数据
 const modalListItems = ref<Array<{ value: string; label: string; desc?: string }>>([])
@@ -2070,6 +2071,8 @@ const importFile = async () => {
     formData.append('deviceId', selectedDevice.value)
     formData.append('remotePath', currentPath.value + '/')
     
+    const startedAt = Date.now()
+    showProgressNotification(`正在导入 ${file.name}（${formatBytes(file.size)}）…`)
     try {
       const response = await axios.post(
         `${API_BASE.value}/api/device/files/upload`,
@@ -2077,14 +2080,17 @@ const importFile = async () => {
         { headers: { 'Content-Type': 'multipart/form-data' } }
       )
       if (response.data.code === 200) {
-        showMessage('文件导入成功')
+        hideProgressNotification()
+        showNotification(`已导入 ${file.name}，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`)
         fetchFiles(selectedDevice.value, currentPath.value)
       } else {
-        showMessage('文件导入失败: ' + (response.data.message || '未知错误'))
+        hideProgressNotification()
+        showNotification('文件导入失败: ' + (response.data.message || '未知错误'), 'error')
       }
     } catch (error) {
       console.error('导入文件失败:', error)
-      showMessage('导入文件失败')
+      hideProgressNotification()
+      showNotification('文件导入失败', 'error')
     }
   }
   
@@ -2856,8 +2862,25 @@ const showList = (
 const showNotification = (message: string, variant: 'success' | 'error' | 'info' = 'success') => {
   modalType.value = 'notification'
   modalVariant.value = variant
+  modalProgress.value = false
   modalMessage.value = message
   modalVisible.value = true
+};
+
+// 长耗时操作的右上角进度通知：不定进度（adb push 走管道拿不到百分比），不自动消失
+const showProgressNotification = (message: string) => {
+  modalType.value = 'notification'
+  modalVariant.value = 'info'
+  modalProgress.value = true
+  modalMessage.value = message
+  modalVisible.value = true
+};
+
+const hideProgressNotification = () => {
+  if (modalType.value === 'notification' && modalProgress.value) {
+    modalProgress.value = false
+    modalVisible.value = false
+  }
 };
 
 const handleModalConfirm = (value?: string) => {
@@ -8103,6 +8126,7 @@ button.batch-remote-tile-tag:disabled.active {
       :placeholder="modalPlaceholder"
       :confirm-text="modalConfirmText"
       :variant="modalVariant"
+      :progress="modalProgress"
       :list-items="modalListItems"
       :empty-text="modalEmptyText"
       @close="modalVisible = false"

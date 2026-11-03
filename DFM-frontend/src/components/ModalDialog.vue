@@ -7,6 +7,12 @@
       </div>
       <div class="modal-body">
         <p v-if="type === 'message' || type === 'confirm' || type === 'notification'">{{ message }}</p>
+        <!-- 进度通知：不定进度动画，用于 adb 这类拿不到百分比的长耗时操作 -->
+        <div v-if="type === 'notification' && progress" class="notification-progress">
+          <div class="notification-progress-track">
+            <div class="notification-progress-bar"></div>
+          </div>
+        </div>
         <input 
           v-if="type === 'prompt'" 
           v-model="inputValue" 
@@ -102,6 +108,10 @@ const props = defineProps({
     type: String,
     default: 'success',
     validator: (value: string) => ['success', 'error', 'info'].includes(value)
+  },
+  progress: {
+    type: Boolean,
+    default: false
   }
 });
 
@@ -164,11 +174,13 @@ watch(
     } else if (newVal && newType === 'list') {
       selectedListValue.value = '';
     } else if (newVal && newType === 'notification') {
-      // 自动关闭通知
-      autoCloseTimer = setTimeout(() => {
-        autoCloseTimer = null;
-        close();
-      }, 4000);
+      // 自动关闭通知；进度通知由调用方控制显隐，不能定时关掉
+      if (!props.progress) {
+        autoCloseTimer = setTimeout(() => {
+          autoCloseTimer = null;
+          close();
+        }, 4000);
+      }
     }
   }
 );
@@ -465,5 +477,40 @@ watch(
 
 .notification-info {
   border-left: 4px solid #2196f3;
+}
+
+/* 不定进度条：adb 走管道时没有百分比输出，只能表示「进行中」 */
+.notification-progress {
+  margin-top: 10px;
+}
+
+.notification-progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background-color: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.notification-progress-bar {
+  width: 40%;
+  height: 100%;
+  border-radius: 2px;
+  background-color: #2196f3;
+  animation: notificationProgressIndeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes notificationProgressIndeterminate {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .notification-progress-track {
+    background-color: rgba(255, 255, 255, 0.12);
+  }
 }
 </style>
