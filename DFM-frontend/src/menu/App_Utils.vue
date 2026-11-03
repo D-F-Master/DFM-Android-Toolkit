@@ -7,6 +7,7 @@ import * as echarts from 'echarts/core';
 import { LineChart, BarChart, GaugeChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
+import { useAppConfig } from '../composables/useAppConfig';
 
 // 按需注册 ECharts 模块，避免全量引入导致打包体积膨胀
 echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
@@ -14,6 +15,35 @@ echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, L
 const emit = defineEmits(['back']);
 
 const API_BASE = ref('http://localhost:3000');
+
+// ===== 全局配置 =====
+const { config: appConfig, isFeatureOn } = useAppConfig();
+
+// ===== Tab 注册表（key 对应 config.json 的 features.utilsTabs 键） =====
+const TAB_ITEMS = [
+  { key: 'info',    label: '设备信息' },
+  { key: 'apps',    label: '应用管理' },
+  { key: 'files',   label: '文件管理' },
+  { key: 'keys',    label: '设备投屏' },
+  { key: 'batch',   label: '批量操作' },
+  { key: 'script',  label: '模拟脚本' },
+  { key: 'serial',  label: '模拟串口' },
+  { key: 'monitor', label: '性能监控' }
+];
+
+// 按配置过滤后的 Tab（未配置的默认显示）
+const visibleTabs = computed(() =>
+  TAB_ITEMS.filter(tab => isFeatureOn(`utilsTabs.${tab.key}`))
+);
+
+const activeTab = ref('info');
+
+// 配置异步加载后，若当前 Tab 被关掉，自动跳到第一个可见 Tab
+watch(visibleTabs, (tabs) => {
+  if (tabs.length && !tabs.some(t => t.key === activeTab.value)) {
+    activeTab.value = tabs[0].key;
+  }
+});
 
 const loadConfig = async () => {
   try {
@@ -78,7 +108,6 @@ const appLoading = ref(false)
 const files = ref<FileInfo[]>([])
 const fileLoading = ref(false)
 const currentPath = ref('/sdcard')
-const activeTab = ref('info')
 const route = ref('')
 const wirelessIp = ref('192.168.0.')
 const wirelessStatus = ref('')
@@ -6855,63 +6884,15 @@ button.batch-remote-tile-tag:disabled.active {
           <div v-if="!selectedDevice">请选择一个设备</div>
           <div v-else style="height: 100%; display: flex; flex-direction: column; overflow: hidden;">
             <div class="tabs">
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'info' }"
-                @click="activeTab = 'info'"
+              <button
+                v-for="tab in visibleTabs"
+                :key="tab.key"
+                class="tab-button"
+                :class="{ active: activeTab === tab.key }"
+                @click="activeTab = tab.key"
               >
-                设备信息
+                {{ tab.label }}
               </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'apps' }"
-                @click="activeTab = 'apps'"
-              >
-                应用管理
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'files' }"
-                @click="activeTab = 'files'"
-              >
-                文件管理
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'keys' }"
-                @click="activeTab = 'keys'"
-              >
-                设备投屏
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'batch' }"
-                @click="activeTab = 'batch'"
-              >
-                批量操作
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'script' }"
-                @click="activeTab = 'script'"
-              >
-                模拟脚本
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'serial' }"
-                @click="activeTab = 'serial'"
-              >
-                模拟串口
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'monitor' }"
-                @click="activeTab = 'monitor'"
-              >
-                性能监控
-              </button>
-              
             </div>
             
             <div class="tab-content">
