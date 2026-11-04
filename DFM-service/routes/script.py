@@ -40,12 +40,14 @@
   全部步骤跑完算一轮，共 repeat 轮。
 """
 import base64
+import io
 import json
 import os
 import re
 import time
 import asyncio
 import threading
+import zipfile
 
 import cv2
 
@@ -112,6 +114,18 @@ class ScriptImportRequest(BaseModel):
     """导入脚本：content 为脚本 JSON 原文"""
     content: str
     name: Optional[str] = None  # 不传则用脚本内的 name，或按内容生成
+
+
+class ScriptExportRequest(BaseModel):
+    """导出脚本包：把脚本 JSON + 引用的 APK/模板图 打成 zip"""
+    name: str
+
+
+class ScriptImportZipResult(BaseModel):
+    """（仅类型参考）zip 导入结果"""
+    scriptName: Optional[str] = None
+    apkNames: Optional[List[str]] = None
+    templateNames: Optional[List[str]] = None
 
 
 # ========== 脚本校验 ==========
@@ -457,6 +471,205 @@ def import_script(request: ScriptImportRequest):
 
 
 # ========== 脚本执行 ==========
+
+# 导出包内各资源的子目录名（zip 内的固定布局）
+EXPORT_APK_DIR = "apk"
+EXPORT_TEMPLATE_DIR = "templates"
+
+
+def _script_referenced_files(script: dict) -> tuple[List[str], List[str]]:
+    """
+    扫描脚本步骤，收集引用的 APK 文件名与模板图文件名（去重、保持出现顺序）
+
+    返回 (apk_names, template_names)
+    """
+    apk_names: List[str] = []
+    template_names: List[str] = []
+    for step in script.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        if step.get("type") == "installApk":
+            apk = str(step.get("apkName", "")).strip()
+            if apk and apk not in apk_names:
+                apk_names.append(apk)
+        elif step.get("type") == "waitFor":
+            tpl = str(step.get("template", "")).strip()
+            if tpl and tpl not in template_names:
+                template_names.append(tpl)
+    return apk_names, template_names
+
+
+@router.post("/device/script/export-zip")
+def export_script_zip(request: ScriptExportRequest):
+    """
+    导出脚本为可迁移的 zip 包：脚本 JSON + 它引用的全部 APK/模板图
+
+    zip 布局：
+      script.json          脚本原文（与 data/scripts/{name}.json 完全一致）
+      apk/{apkName}        脚本引用的 APK（installApk 步骤）
+      templates/{tpl}.png  脚本引用的模板图（waitFor 步骤）
+
+    zip 写到 D:\\log\\script_exports\\{name}.zip，前端提示保存位置。
+    """
+    try:
+        _ensure_scripts_dir()
+        name = _safe_name(request.name)
+        path = SCRIPTS_DIR / f"{name}.json"
+        if not path.exists():
+            return {"code": 404, "message": f"脚本 {name} 不存在", "data": None}
+
+        with open(path, "r", encoding="utf-8") as f:
+            script = json.load(f)
+
+        apk_names, template_names = _script_referenced_files(script)
+
+        # 先收集缺失的资源，全部列出后一次性报错，避免导出一个不完整的包
+        missing = []
+        apk_paths: List = []
+        for apk in apk_names:
+            p = APKS_DIR / apk
+            if p.exists():
+                apk_paths.append(p)
+            else:
+                missing.append(f"APK {apk}")
+        tpl_paths: List = []
+        for tpl in template_names:
+            p = TEMPLATES_DIR / tpl
+            if p.exists():
+                tpl_paths.append(p)
+            else:
+                missing.append(f"模板图 {tpl}")
+        if missing:
+            return {"code": 400, "message": "以下资源缺失，请先补齐再导出: " + "、".join(missing), "data": None}
+
+        export_root = r"D:\log\script_exports"
+        os.makedirs(export_root, exist_ok=True)
+        zip_path = os.path.join(export_root, f"{name}.zip")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(path, "script.json")
+            for p in apk_paths:
+                zf.write(p, f"{EXPORT_APK_DIR}/{p.name}")
+            for p in tpl_paths:
+                zf.write(p, f"{EXPORT_TEMPLATE_DIR}/{p.name}")
+
+        size = os.path.getsize(zip_path)
+        logger.info(f"Script exported: {zip_path} (apk={len(apk_paths)}, templates={len(tpl_paths)}, {size} bytes)")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "path": zip_path,
+                "size": size,
+                "apkNames": [p.name for p in apk_paths],
+                "templateNames": [p.name for p in tpl_paths],
+            },
+        }
+    except Exception as e:
+        logger.error(f"导出脚本包失败: {e}")
+        return {"code": 500, "message": f"导出脚本包失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/import-zip")
+async def import_script_zip(script: UploadFile = File(..., description="脚本导出包(.zip)")):
+    """
+    导入脚本 zip 包：落脚本 JSON + 把包内 apk/templates 资源还原到对应目录
+
+    与 /script/import 相同的校验链：内容不可信，先校验再落盘。
+    """
+    try:
+        raw = await script.read()
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile:
+            return {"code": 400, "message": "不是有效的 zip 文件", "data": None}
+
+        with zf:
+            # 定位脚本 JSON（固定名 script.json，兼容只有单个 .json 的旧包）
+            names = zf.namelist()
+            script_member = "script.json" if "script.json" in names else None
+            if script_member is None:
+                json_members = [n for n in names if n.lower().endswith(".json") and "/" not in n]
+                if len(json_members) == 1:
+                    script_member = json_members[0]
+            if script_member is None:
+                return {"code": 400, "message": "包内未找到 script.json", "data": None}
+
+            try:
+                data = json.loads(zf.read(script_member).decode("utf-8-sig"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                return {"code": 400, "message": f"脚本 JSON 解析失败: {str(e)}", "data": None}
+
+            if not isinstance(data, dict):
+                return {"code": 400, "message": "脚本根节点必须是对象", "data": None}
+
+            steps = data.get("steps")
+            error = _validate_steps(steps)
+            if error:
+                return {"code": 400, "message": f"脚本校验失败: {error}", "data": None}
+
+            repeat = data.get("repeat", 1)
+            if not isinstance(repeat, int) or repeat < 1:
+                repeat = 1
+
+            raw_name = data.get("name") or os.path.splitext(os.path.basename(script_member))[0]
+            name = _safe_name(str(raw_name))
+
+            # 还原资源：只收 apk/ 与 templates/ 顶层目录下的文件，防路径穿越
+            imported_apks: List[str] = []
+            imported_templates: List[str] = []
+            _ensure_templates_dir()
+            for member in names:
+                if member.endswith("/"):
+                    continue
+                parts = member.split("/")
+                if len(parts) != 2:
+                    continue  # 只认顶层 apk/xxx、templates/xxx，忽略嵌套与杂项
+                folder, filename = parts
+                filename = os.path.basename(filename)  # 双重保险：去掉任何路径成分
+                if not filename:
+                    continue
+                if folder == EXPORT_APK_DIR and filename.lower().endswith(".apk"):
+                    target_dir = APKS_DIR
+                    imported_apks.append(filename)
+                elif folder == EXPORT_TEMPLATE_DIR and filename.lower().endswith(".png"):
+                    target_dir = TEMPLATES_DIR
+                    imported_templates.append(filename)
+                else:
+                    continue
+                target_dir.mkdir(parents=True, exist_ok=True)
+                with open(target_dir / filename, "wb") as f:
+                    f.write(zf.read(member))
+
+            # 资源就位后再落脚本，保证导入完成即可执行
+            _ensure_scripts_dir()
+            target = SCRIPTS_DIR / f"{name}.json"
+            existed = target.exists()
+            normalized = {
+                "name": name,
+                "repeat": repeat,
+                "steps": _normalize_steps(steps),
+            }
+            with open(target, "w", encoding="utf-8") as f:
+                json.dump(normalized, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"Script zip imported: {target} (apk={len(imported_apks)}, templates={len(imported_templates)})")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "name": name,
+                "path": str(target),
+                "stepCount": len(normalized["steps"]),
+                "repeat": repeat,
+                "overwritten": existed,
+                "apkNames": imported_apks,
+                "templateNames": imported_templates,
+            },
+        }
+    except Exception as e:
+        logger.error(f"导入脚本包失败: {e}")
+        return {"code": 500, "message": f"导入脚本包失败: {str(e)}", "data": None}
+
 
 def _check_device_online(device_id: str) -> bool:
     result = execute_adb_command("adb devices")

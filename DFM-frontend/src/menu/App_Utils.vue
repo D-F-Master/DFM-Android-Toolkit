@@ -1615,6 +1615,78 @@ const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
   showNotification(`已导入脚本「${name}」，共 ${steps.length} 个步骤`, 'success')
 }
 
+// ---------- 导出脚本包（zip：脚本 JSON + 引用的 APK/模板图） ----------
+
+const scriptExporting = ref(false)
+
+const exportScriptZip = async () => {
+  if (scriptSteps.value.length === 0) {
+    showMessage('没有步骤可导出，请先录制或导入脚本', '提示')
+    return
+  }
+  showPrompt('请输入要导出的脚本名称（需已保存过）', async (name?: string) => {
+    if (!name || !name.trim()) return
+    scriptExporting.value = true
+    try {
+      const response = await axios.post(`${API_BASE.value}/api/device/script/export-zip`, { name: name.trim() })
+      if (response.data.code === 200) {
+        const d = response.data.data
+        const parts = [`脚本「${d.path}」导出成功`, `大小 ${formatBytes(d.size)}`]
+        if (d.apkNames?.length) parts.push(`含 APK：${d.apkNames.join('、')}`)
+        if (d.templateNames?.length) parts.push(`含模板图：${d.templateNames.join('、')}`)
+        showNotification(parts.join('\n'), 'success')
+      } else {
+        showNotification('导出失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+    } catch (error: any) {
+      showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
+    } finally {
+      scriptExporting.value = false
+    }
+  }, '', '导出脚本包')
+}
+
+// 从导出 zip 包一键导入：脚本 + 资源一次到位
+const importScriptFromZip = () => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.zip,application/zip'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    scriptSaving.value = true
+    try {
+      const form = new FormData()
+      form.append('script', file)
+      const response = await axios.post(`${API_BASE.value}/api/device/script/import-zip`, form)
+      if (response.data.code !== 200) {
+        showNotification('导入失败: ' + (response.data.message || '未知错误'), 'error')
+        return
+      }
+      const d = response.data.data
+      // 导入后读回标准化的脚本载入面板
+      const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name: d.name })
+      if (loaded.data.code !== 200) {
+        showNotification('导入后读取失败: ' + (loaded.data.message || '未知错误'), 'error')
+        return
+      }
+      applyImportedSteps(loaded.data.data.steps, loaded.data.data.repeat, loaded.data.data.name)
+      const extras: string[] = []
+      if (d.apkNames?.length) extras.push(`APK ${d.apkNames.length} 个`)
+      if (d.templateNames?.length) extras.push(`模板图 ${d.templateNames.length} 张`)
+      showNotification(
+        `已导入脚本「${d.name}」（${d.stepCount} 个步骤${extras.length ? '，含' + extras.join('和') : ''}）${d.overwritten ? '，已覆盖同名脚本' : ''}`,
+        'success'
+      )
+    } catch (error: any) {
+      showNotification('导入失败: ' + (error?.response?.data?.message || error.message), 'error')
+    } finally {
+      scriptSaving.value = false
+    }
+  }
+  input.click()
+}
+
 // 从本地 JSON 文件导入：选择文件 -> 读内容 -> 调后端校验并保存 -> 载入面板
 const importScriptFromFile = () => {
   const input = document.createElement('input')
@@ -1695,15 +1767,18 @@ const importScriptFromList = async () => {
   }
 }
 
-// 导入按钮：弹出选择（本地文件 / 已保存列表）
+// 导入按钮：弹出选择（导出 zip 包 / 本地 JSON 文件 / 已保存列表）
 const openImportMenu = () => {
   showList(
     [
+      { value: 'zip', label: '从导出包（zip）导入', desc: '脚本 + 引用的 APK/模板图一次导入' },
       { value: 'file', label: '从本地 JSON 文件导入', desc: '选择一个 .json 脚本文件' },
       { value: 'saved', label: '从已保存脚本载入', desc: '载入 data/scripts 下已有的脚本' },
     ],
     (choice?: string) => {
-      if (choice === 'file') {
+      if (choice === 'zip') {
+        importScriptFromZip()
+      } else if (choice === 'file') {
         importScriptFromFile()
       } else if (choice === 'saved') {
         importScriptFromList()
@@ -7927,6 +8002,7 @@ button.batch-remote-tile-tag:disabled.active {
                       </div>
                       <div class="script-actions">
                         <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
+                        <button class="script-action-btn" @click="exportScriptZip" :disabled="scriptExporting || scriptSaving" title="导出为 zip 包（脚本 + 引用的 APK/模板图），拷到其他电脑导入即可用">导出</button>
                         <button class="script-action-btn" @click="runCurrentSteps" :disabled="scriptRunning || scriptSaving">执行</button>
                         <button v-if="scriptRunning" class="script-action-btn script-stop-btn" @click="stopScriptRun">停止</button>
                         <button v-if="!scriptRunning" class="script-action-btn" @click="repeatRun" :disabled="scriptSaving">重复</button>
