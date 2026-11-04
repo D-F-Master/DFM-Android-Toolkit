@@ -219,6 +219,12 @@ class PathRequest(BaseModel):
     path: str
 
 
+class RenameRequest(BaseModel):
+    deviceId: str
+    path: str
+    newPath: str
+
+
 class KeycodeRequest(BaseModel):
     deviceId: str
     keycode: int
@@ -916,7 +922,7 @@ def browse_files(request: PathRequest):
     # 添加末尾斜杠确保获取目录内容
     command_path = actual_path if actual_path.endswith('/') else actual_path + '/'
     
-    result = execute_adb_command(f'adb -s {request.deviceId} shell ls -la "{command_path}"')
+    result = execute_adb_command(f"adb -s {request.deviceId} shell ls -la {_shell_quote(command_path)}")
     if result and result.get("success"):
         files = []
         stdout = result.get("stdout", "") or ""
@@ -974,7 +980,7 @@ def read_file(request: FileReadRequest):
     if not request.remotePath:
         return {"code": 400, "message": "remotePath is required", "data": None}
 
-    result = execute_adb_command(f"adb -s {request.deviceId} shell cat '{request.remotePath}'")
+    result = execute_adb_command(f"adb -s {request.deviceId} shell cat {_shell_quote(request.remotePath)}")
     if not result["success"]:
         error_msg = (result.get("error") or "Read file failed").strip()
         return {"code": 500, "message": error_msg, "data": None}
@@ -1006,7 +1012,8 @@ def read_file_base64(request: FileReadRequest):
         return {"code": 400, "message": "remotePath is required", "data": None}
 
     adb_path = get_adb_path()
-    cmd = [adb_path, "-s", request.deviceId, "shell", f"wc -c < '{request.remotePath}'"]
+    # adb 会把参数用空格拼接后交给设备 sh 解析，路径必须自带引号
+    cmd = [adb_path, "-s", request.deviceId, "shell", f"wc -c < {_shell_quote(request.remotePath)}"]
     logger.info(f"Executing ADB command: {request.deviceId} shell wc -c < {request.remotePath}")
     try:
         stat = subprocess.run(cmd, capture_output=True, timeout=10)
@@ -1030,7 +1037,7 @@ def read_file_base64(request: FileReadRequest):
             "data": None,
         }
 
-    cmd = [adb_path, "-s", request.deviceId, "exec-out", "base64", request.remotePath]
+    cmd = [adb_path, "-s", request.deviceId, "exec-out", "base64", _shell_quote(request.remotePath)]
     logger.info(f"Executing ADB command: {request.deviceId} exec-out base64 {request.remotePath}")
     try:
         result = subprocess.run(
@@ -1112,6 +1119,38 @@ def delete_file(request: PathRequest):
         return {"code": 200, "message": "success", "data": None}
     else:
         return {"code": 500, "message": result.get("error", "Delete failed"), "data": None}
+
+
+# 重命名/移动文件或文件夹
+@router.post("/device/files/rename")
+def rename_file(request: RenameRequest):
+    if not request.path or not request.newPath:
+        return {"code": 400, "message": "path and newPath are required", "data": None}
+
+    # 同名视为无操作
+    if request.path == request.newPath:
+        return {"code": 200, "message": "success", "data": None}
+
+    # 源路径与目标路径都要做顶层保护（防止把 /system 移走或覆盖）
+    for p in (request.path, request.newPath):
+        normalized = p.rstrip("/") or "/"
+        if normalized in PROTECTED_DELETE_PATHS:
+            return {"code": 400, "message": f"拒绝操作顶层目录 {normalized}（保护性拦截）", "data": None}
+
+    # 目标已存在时 mv 会直接覆盖，先检查拒绝，避免误覆盖
+    exists = execute_adb_command(
+        f"adb -s {request.deviceId} shell test -e {_shell_quote(request.newPath)} && echo Y"
+    )
+    if (exists.get("stdout") or "").strip().endswith("Y"):
+        return {"code": 400, "message": "目标路径已存在，请换一个名字", "data": None}
+
+    result = execute_adb_command(
+        f"adb -s {request.deviceId} shell mv {_shell_quote(request.path)} {_shell_quote(request.newPath)}"
+    )
+    if result["success"]:
+        return {"code": 200, "message": "success", "data": None}
+    else:
+        return {"code": 500, "message": result.get("error", "Rename failed"), "data": None}
 
 
 # 上传文件
