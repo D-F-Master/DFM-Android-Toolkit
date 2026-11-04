@@ -1058,13 +1058,25 @@ def read_file_base64(request: FileReadRequest):
     }
 
 
+# 删除顶层目录（根、系统分区等）会造成不可逆的严重后果，直接拒绝
+PROTECTED_DELETE_PATHS = {
+    "/", "/sdcard", "/system", "/data", "/vendor", "/product", "/storage",
+    "/odm", "/oem", "/cache", "/persist", "/mnt", "/dev", "/etc", "/bin",
+}
+
+
+def _shell_quote(path: str) -> str:
+    """把路径包成单引号并转义内部单引号，防止空格/特殊字符改变 shell 语义"""
+    return "'" + path.replace("'", "'\\''") + "'"
+
+
 # 创建文件夹
 @router.post("/device/files/mkdir")
 def create_directory(request: PathRequest):
     if not request.path:
         return {"code": 400, "message": "Path is required", "data": None}
-    
-    result = execute_adb_command(f"adb -s {request.deviceId} shell mkdir -p {request.path}")
+
+    result = execute_adb_command(f"adb -s {request.deviceId} shell mkdir -p {_shell_quote(request.path)}")
     if result["success"]:
         return {"code": 200, "message": "success", "data": None}
     else:
@@ -1076,8 +1088,8 @@ def create_directory(request: PathRequest):
 def create_file(request: PathRequest):
     if not request.path:
         return {"code": 400, "message": "Path is required", "data": None}
-    
-    result = execute_adb_command(f"adb -s {request.deviceId} shell touch '{request.path}'")
+
+    result = execute_adb_command(f"adb -s {request.deviceId} shell touch {_shell_quote(request.path)}")
     if result["success"]:
         return {"code": 200, "message": "success", "data": None}
     else:
@@ -1089,8 +1101,13 @@ def create_file(request: PathRequest):
 def delete_file(request: PathRequest):
     if not request.path:
         return {"code": 400, "message": "Path is required", "data": None}
-    
-    result = execute_adb_command(f"adb -s {request.deviceId} shell rm -rf {request.path}")
+
+    # 规范化后比对（去掉尾部斜杠），防止 "/sdcard/" 绕过顶层保护
+    normalized = request.path.rstrip("/") or "/"
+    if normalized in PROTECTED_DELETE_PATHS:
+        return {"code": 400, "message": f"拒绝删除顶层目录 {normalized}（保护性拦截）", "data": None}
+
+    result = execute_adb_command(f"adb -s {request.deviceId} shell rm -rf {_shell_quote(request.path)}")
     if result["success"]:
         return {"code": 200, "message": "success", "data": None}
     else:
