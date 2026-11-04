@@ -3,6 +3,7 @@ import axios from 'axios'
 import { onMounted, onUnmounted, onBeforeUnmount, ref, computed, nextTick, watch } from 'vue';
 import ModalDialog from '../components/ModalDialog.vue';
 import FileEditorDialog from '../components/FileEditorDialog.vue';
+import FileImageViewer from '../components/FileImageViewer.vue';
 import * as echarts from 'echarts/core';
 import { LineChart, BarChart, GaugeChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
@@ -2238,6 +2239,80 @@ const handleEditorSave = async (newContent: string) => {
 const handleEditorClose = () => {
   editorVisible.value = false
   editorTarget = null
+}
+
+// ==================== 图片在线查看 ====================
+// 链路：后端 /api/device/files/base64 读出 base64 → 前端拼 data: URL 交给弹窗预览
+const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp']
+const IMAGE_MAX_BYTES = 20 * 1024 * 1024 // 与后端 IMAGE_PREVIEW_MAX_BYTES 保持一致
+
+const imageViewerVisible = ref(false)
+const imageViewerName = ref('')
+const imageViewerSrc = ref('')
+const imageViewerLoading = ref(false)
+const imageViewerError = ref('')
+const imageViewerSize = ref(0)
+
+const isViewableImageFile = (file: { name: string; isDirectory: boolean; size?: string }) => {
+  if (file.isDirectory) return false
+  const ext = (file.name.split('.').pop() || '').toLowerCase()
+  if (!IMAGE_EXTS.includes(ext)) return false
+  const sizeNum = Number(file.size)
+  if (!isNaN(sizeNum) && sizeNum > IMAGE_MAX_BYTES) return false
+  return true
+}
+
+// 图片不可查看的具体原因，用于禁用按钮的悬浮提示
+const viewDisabledReason = (file: { name: string; isDirectory: boolean; size?: string }): string => {
+  if (file.isDirectory) return '目录不支持预览'
+  const ext = (file.name.split('.').pop() || '').toLowerCase()
+  if (!IMAGE_EXTS.includes(ext)) return `不支持预览 .${ext} 类型的文件`
+  const sizeNum = Number(file.size)
+  if (!isNaN(sizeNum) && sizeNum > IMAGE_MAX_BYTES) {
+    return `文件过大（${formatBytes(sizeNum)}），超过 ${formatBytes(IMAGE_MAX_BYTES, 0)} 不支持在线预览，可先导出`
+  }
+  return '不支持预览'
+}
+
+const openImageViewer = async (file: { path: string; name: string; size?: string }) => {
+  if (!selectedDevice.value) return
+  if (!isViewableImageFile(file)) {
+    showMessage('该文件类型或大小不支持在线预览')
+    return
+  }
+
+  imageViewerName.value = file.name
+  imageViewerSrc.value = ''
+  imageViewerError.value = ''
+  imageViewerSize.value = Number(file.size) || 0
+  imageViewerLoading.value = true
+  imageViewerVisible.value = true
+
+  try {
+    const resp = await axios.post(`${API_BASE.value}/api/device/files/base64`, {
+      deviceId: selectedDevice.value,
+      remotePath: file.path
+    })
+    if (resp.data.code === 200 && resp.data.data?.base64) {
+      const ext = (file.name.split('.').pop() || '').toLowerCase()
+      const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`
+      imageViewerSrc.value = `data:${mime};base64,${resp.data.data.base64}`
+      if (resp.data.data.size) imageViewerSize.value = resp.data.data.size
+    } else {
+      throw new Error(resp.data.message || '读取图片失败')
+    }
+  } catch (error: any) {
+    console.error('打开图片预览失败:', error)
+    imageViewerError.value = `无法读取图片: ${error.message}`
+  } finally {
+    imageViewerLoading.value = false
+  }
+}
+
+const handleImageViewerClose = () => {
+  imageViewerVisible.value = false
+  // 释放 data URL 引用，尽快让 GC 回收大字符串
+  imageViewerSrc.value = ''
 }
 
 const selectDevice = (deviceId: string) => {
@@ -7174,6 +7249,20 @@ button.batch-remote-tile-tag:disabled.active {
                           <template v-else-if="file.size">共 {{ file.size }} 项</template>
                         </div>
                         <div class="file-item-actions">
+                          <button v-if="isViewableImageFile(file)" class="file-act-btn export" @click.stop="openImageViewer(file)" title="查看图片">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                              <rect x="3" y="3" width="18" height="18" rx="2"/>
+                              <circle cx="8.5" cy="8.5" r="1.5"/>
+                              <polyline points="21 15 16 10 5 21"/>
+                            </svg>
+                          </button>
+                          <button v-else-if="!file.isDirectory" class="file-act-btn export" disabled :title="viewDisabledReason(file)" style="opacity:0.35;">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                              <rect x="3" y="3" width="18" height="18" rx="2"/>
+                              <circle cx="8.5" cy="8.5" r="1.5"/>
+                              <polyline points="21 15 16 10 5 21"/>
+                            </svg>
+                          </button>
                           <button v-if="isEditableTextFile(file)" class="file-act-btn export" @click.stop="openFileEditor(file)" title="编辑">
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                               <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
@@ -8144,6 +8233,17 @@ button.batch-remote-tile-tag:disabled.active {
       :saving="editorSaving"
       @save="handleEditorSave"
       @close="handleEditorClose"
+    />
+
+    <!-- 图片查看器 -->
+    <FileImageViewer
+      :visible="imageViewerVisible"
+      :file-name="imageViewerName"
+      :src="imageViewerSrc"
+      :loading="imageViewerLoading"
+      :load-error="imageViewerError"
+      :file-size="imageViewerSize"
+      @close="handleImageViewerClose"
     />
 
     <!-- APK 仓库弹窗（应用管理页） -->
