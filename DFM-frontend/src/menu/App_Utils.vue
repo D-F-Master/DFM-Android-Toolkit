@@ -2008,9 +2008,12 @@ const fetchFiles = async (deviceId: string, path: string = '/sdcard') => {
     if (response.data.code === 200) {
       files.value = response.data.data?.files || []
       currentPath.value = response.data.data?.currentPath || path
+    } else {
+      showMessage('获取文件列表失败: ' + (response.data.message || '未知错误'))
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('获取文件列表失败:', error)
+    showMessage('获取文件列表失败: ' + (error.message || '网络异常'))
   } finally {
     fileLoading.value = false
   }
@@ -2654,7 +2657,7 @@ const createFile = async () => {
 
 const deleteFile = async (path: string, isDirectory: boolean) => {
   if (!selectedDevice.value) return
-  
+
   showConfirm(`确定要删除${isDirectory ? '文件夹' : '文件'}吗？`, async () => {
     try {
       const response = await axios.post(`${API_BASE.value}/api/device/files/delete`, {
@@ -2662,10 +2665,14 @@ const deleteFile = async (path: string, isDirectory: boolean) => {
         path: path
       })
       if (response.data.code === 200) {
+        showMessage('删除成功')
         fetchFiles(selectedDevice.value, currentPath.value)
+      } else {
+        showMessage('删除失败: ' + (response.data.message || '未知错误'))
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('删除失败:', error)
+      showMessage('删除失败: ' + (error.message || '网络异常'))
     }
   }, '确认删除')
 }
