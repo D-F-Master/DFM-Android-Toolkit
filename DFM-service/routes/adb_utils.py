@@ -946,21 +946,25 @@ def browse_files(request: PathRequest):
                     size = '-' if is_directory else parts[4]
                     # 文件名可能从第7个部分开始（因为日期时间可能包含空格）
                     name = ' '.join(parts[7:])
-                    
+
                     # 跳过 . 和 .. 两个目录自引用项：前端把返回的 path 直接作为下次浏览路径，
                     # 进入 . 会让路径不断累积成 /xxx/././.
                     if name in ('.', '..'):
                         continue
-                    
+
+                    # 修改时间（ls -la: perms links owner group size date time name）
+                    mtime = f"{parts[5]} {parts[6]}" if len(parts) >= 9 else ""
+
                     # 构建完整路径
                     file_path = f"{actual_path}/{name}" if not actual_path.endswith('/') else f"{actual_path}{name}"
-                    
+
                     files.append({
                         "name": name,
                         "path": file_path,
                         "isDirectory": is_directory,
                         "size": size,
-                        "permissions": permissions
+                        "permissions": permissions,
+                        "mtime": mtime
                     })
         
         return {"code": 200, "message": "success", "data": {"files": files, "currentPath": actual_path}}
@@ -1037,7 +1041,8 @@ def read_file_base64(request: FileReadRequest):
             "data": None,
         }
 
-    cmd = [adb_path, "-s", request.deviceId, "exec-out", "base64", _shell_quote(request.remotePath)]
+    # adb 会把所有 argv 用空格拼接后交给设备 sh 解析，必须拼成单条带引号的命令
+    cmd = [adb_path, "-s", request.deviceId, "exec-out", f"base64 {_shell_quote(request.remotePath)}"]
     logger.info(f"Executing ADB command: {request.deviceId} exec-out base64 {request.remotePath}")
     try:
         result = subprocess.run(
