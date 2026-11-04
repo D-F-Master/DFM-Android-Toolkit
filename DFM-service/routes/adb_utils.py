@@ -988,6 +988,76 @@ def read_file(request: FileReadRequest):
     }
 
 
+# 图片预览大小上限（字节）：超过不返回，避免拉几十 MB 的图片卡死前端
+IMAGE_PREVIEW_MAX_BYTES = 20 * 1024 * 1024
+
+
+# 读取设备上的图片文件（base64）
+@router.post("/device/files/base64")
+def read_file_base64(request: FileReadRequest):
+    """
+    读取设备上的二进制文件（图片预览用），返回 base64 编码。
+
+    经 `adb exec-out base64 <path>` 读取：exec-out 不经 pty，字节流原样透传，
+    比 `shell cat` 可靠（shell 模式会把 0x0a/0x0d 做转换，损坏二进制）。
+    返回 data: {base64: str}，不带 data: 前缀，由前端自行拼接 MIME。
+    """
+    if not request.remotePath:
+        return {"code": 400, "message": "remotePath is required", "data": None}
+
+    adb_path = get_adb_path()
+    cmd = [adb_path, "-s", request.deviceId, "shell", f"wc -c < '{request.remotePath}'"]
+    logger.info(f"Executing ADB command: {request.deviceId} shell wc -c < {request.remotePath}")
+    try:
+        stat = subprocess.run(cmd, capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        logger.error(f"ADB command timeout: wc -c {request.remotePath}")
+        return {"code": 500, "message": "Read file timeout", "data": None}
+    except Exception as e:
+        logger.error(f"ADB command error: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+    if stat.returncode != 0:
+        error_msg = (stat.stderr or b"Read file failed").decode("utf-8", "replace").strip()
+        return {"code": 500, "message": error_msg, "data": None}
+    try:
+        size = int((stat.stdout or b"0").decode("ascii", "replace").strip().split()[-1])
+    except ValueError:
+        return {"code": 500, "message": "无法识别文件大小", "data": None}
+    if size > IMAGE_PREVIEW_MAX_BYTES:
+        return {
+            "code": 500,
+            "message": f"文件过大（{size // 1024 // 1024}MB），超过预览上限，请先导出查看",
+            "data": None,
+        }
+
+    cmd = [adb_path, "-s", request.deviceId, "exec-out", "base64", request.remotePath]
+    logger.info(f"Executing ADB command: {request.deviceId} exec-out base64 {request.remotePath}")
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        logger.error(f"ADB command timeout: base64 {request.remotePath}")
+        return {"code": 500, "message": "Read file timeout", "data": None}
+    except Exception as e:
+        logger.error(f"ADB command error: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+
+    if result.returncode != 0:
+        error_msg = (result.stderr or b"Read file failed").decode("utf-8", "replace").strip()
+        return {"code": 500, "message": error_msg, "data": None}
+
+    b64 = result.stdout.decode("ascii", "replace").replace("\r", "").replace("\n", "")
+    if not b64:
+        return {"code": 500, "message": "文件内容为空", "data": None}
+
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {"path": request.remotePath, "size": size, "base64": b64},
+    }
+
+
 # 创建文件夹
 @router.post("/device/files/mkdir")
 def create_directory(request: PathRequest):
