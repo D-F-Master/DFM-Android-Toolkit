@@ -79,6 +79,31 @@ interface FileInfo {
   isDirectory: boolean;
   size?: string;
   permissions?: string;
+  mtime?: string;
+}
+
+// 文件列表排序：目录优先，再按所选字段（名称/大小/时间）
+type FileSortKey = 'name' | 'size' | 'time'
+const fileSortKey = ref<FileSortKey>('name')
+const fileSortAsc = ref(true)
+const sortedFiles = computed(() => {
+  const list = [...files.value]
+  const dirFirst = (a: FileInfo, b: FileInfo) => (a.isDirectory === b.isDirectory ? 0 : a.isDirectory ? -1 : 1)
+  const cmp: Record<FileSortKey, (a: FileInfo, b: FileInfo) => number> = {
+    name: (a, b) => a.name.localeCompare(b.name, 'zh-CN'),
+    size: (a, b) => (Number(a.size) || 0) - (Number(b.size) || 0),
+    time: (a, b) => (a.mtime || '').localeCompare(b.mtime || '')
+  }
+  list.sort((a, b) => dirFirst(a, b) || (fileSortAsc.value ? cmp[fileSortKey.value](a, b) : cmp[fileSortKey.value](b, a)))
+  return list
+})
+const toggleFileSort = (key: FileSortKey) => {
+  if (fileSortKey.value === key) {
+    fileSortAsc.value = !fileSortAsc.value
+  } else {
+    fileSortKey.value = key
+    fileSortAsc.value = true
+  }
 }
 
 interface DeviceInfo {
@@ -2064,38 +2089,47 @@ const importFile = async () => {
   
   const input = document.createElement('input')
   input.type = 'file'
+  input.multiple = true
   
   input.onchange = async (e: Event) => {
     const target = e.target as HTMLInputElement
-    const file = target.files?.[0]
-    if (!file) return
+    const picked = Array.from(target.files || [])
+    if (picked.length === 0) return
     
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('deviceId', selectedDevice.value)
-    formData.append('remotePath', currentPath.value + '/')
-    
+    // 逐个上传（adb push 本身串行，进度通知逐个显示），任一失败继续后面的文件
+    let okCount = 0
+    const failed: string[] = []
     const startedAt = Date.now()
-    showProgressNotification(`正在导入 ${file.name}（${formatBytes(file.size)}）…`)
-    try {
-      const response = await axios.post(
-        `${API_BASE.value}/api/device/files/upload`,
-        formData,
-        { headers: { 'Content-Type': 'multipart/form-data' } }
-      )
-      if (response.data.code === 200) {
-        hideProgressNotification()
-        showNotification(`已导入 ${file.name}，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`)
-        fetchFiles(selectedDevice.value, currentPath.value)
-      } else {
-        hideProgressNotification()
-        showNotification('文件导入失败: ' + (response.data.message || '未知错误'), 'error')
+    for (const file of picked) {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('deviceId', selectedDevice.value)
+      formData.append('remotePath', currentPath.value + '/')
+      
+      showProgressNotification(`正在导入 ${file.name}（${formatBytes(file.size)}）… ${okCount + 1}/${picked.length}`)
+      try {
+        const response = await axios.post(
+          `${API_BASE.value}/api/device/files/upload`,
+          formData,
+          { headers: { 'Content-Type': 'multipart/form-data' } }
+        )
+        if (response.data.code === 200) {
+          okCount++
+        } else {
+          failed.push(`${file.name}: ${response.data.message || '未知错误'}`)
+        }
+      } catch (error) {
+        console.error('导入文件失败:', error)
+        failed.push(`${file.name}: 网络异常`)
       }
-    } catch (error) {
-      console.error('导入文件失败:', error)
-      hideProgressNotification()
-      showNotification('文件导入失败', 'error')
     }
+    hideProgressNotification()
+    if (failed.length === 0) {
+      showNotification(`已导入 ${okCount} 个文件，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`)
+    } else {
+      showNotification(`导入完成 ${okCount}/${picked.length}，失败：\n${failed.join('\n')}`, 'error')
+    }
+    fetchFiles(selectedDevice.value, currentPath.value)
   }
   
   input.click()
@@ -2247,7 +2281,17 @@ const handleEditorClose = () => {
 // ==================== 图片在线查看 ====================
 // 链路：后端 /api/device/files/base64 读出 base64 → 前端拼 data: URL 交给弹窗预览
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp']
+const VIDEO_EXTS = ['mp4', 'webm', 'mkv', '3gp', 'mov']
 const IMAGE_MAX_BYTES = 20 * 1024 * 1024 // 与后端 IMAGE_PREVIEW_MAX_BYTES 保持一致
+
+// 预览类型：图片（缩放/拖拽查看）或视频（浏览器播放器），都不支持返回 ''
+const previewKindOf = (file: { name: string; isDirectory: boolean; size?: string }): 'image' | 'video' | '' => {
+  if (file.isDirectory) return ''
+  const ext = (file.name.split('.').pop() || '').toLowerCase()
+  if (IMAGE_EXTS.includes(ext)) return 'image'
+  if (VIDEO_EXTS.includes(ext)) return 'video'
+  return ''
+}
 
 const imageViewerVisible = ref(false)
 const imageViewerName = ref('')
@@ -2255,21 +2299,29 @@ const imageViewerSrc = ref('')
 const imageViewerLoading = ref(false)
 const imageViewerError = ref('')
 const imageViewerSize = ref(0)
+const imageViewerKind = ref<'image' | 'video'>('image')
+// 多图导航：当前目录里可预览的图片列表 + 当前下标
+const imageViewerList = ref<Array<{ path: string; name: string; size?: string }>>([])
+const imageViewerIndex = ref(0)
+const imageViewerTotal = computed(() => imageViewerList.value.length)
 
-const isViewableImageFile = (file: { name: string; isDirectory: boolean; size?: string }) => {
-  if (file.isDirectory) return false
-  const ext = (file.name.split('.').pop() || '').toLowerCase()
-  if (!IMAGE_EXTS.includes(ext)) return false
+// 文件是否可预览（类型 + 大小上限）
+const isViewableFile = (file: { name: string; isDirectory: boolean; size?: string }) => {
+  if (!previewKindOf(file)) return false
   const sizeNum = Number(file.size)
-  if (!isNaN(sizeNum) && sizeNum > IMAGE_MAX_BYTES) return false
-  return true
+  return isNaN(sizeNum) || sizeNum <= IMAGE_MAX_BYTES
 }
 
-// 图片不可查看的具体原因，用于禁用按钮的悬浮提示
+// 图片可预览判定（保留给可能的外部引用；主流程走 previewKindOf）
+const isViewableImageFile = (file: { name: string; isDirectory: boolean; size?: string }) => {
+  return previewKindOf(file) === 'image' && isViewableFile(file)
+}
+
+// 图片/视频不可预览的具体原因，用于禁用按钮的悬浮提示
 const viewDisabledReason = (file: { name: string; isDirectory: boolean; size?: string }): string => {
   if (file.isDirectory) return '目录不支持预览'
-  const ext = (file.name.split('.').pop() || '').toLowerCase()
-  if (!IMAGE_EXTS.includes(ext)) return `不支持预览 .${ext} 类型的文件`
+  const kind = previewKindOf(file)
+  if (!kind) return '不支持预览该类型的文件'
   const sizeNum = Number(file.size)
   if (!isNaN(sizeNum) && sizeNum > IMAGE_MAX_BYTES) {
     return `文件过大（${formatBytes(sizeNum)}），超过 ${formatBytes(IMAGE_MAX_BYTES, 0)} 不支持在线预览，可先导出`
@@ -2279,11 +2331,23 @@ const viewDisabledReason = (file: { name: string; isDirectory: boolean; size?: s
 
 const openImageViewer = async (file: { path: string; name: string; size?: string }) => {
   if (!selectedDevice.value) return
-  if (!isViewableImageFile(file)) {
+  if (!isViewableFile(file)) {
     showMessage('该文件类型或大小不支持在线预览')
     return
   }
 
+  // 收集当前目录的可预览文件（图片+视频），用于上一个/下一个导航
+  imageViewerList.value = files.value.filter((f: any) => isViewableFile(f))
+  imageViewerIndex.value = Math.max(0, imageViewerList.value.findIndex((f: any) => f.path === file.path))
+
+  await loadViewerFile(file)
+}
+
+const loadViewerFile = async (file: { path: string; name: string; size?: string }) => {
+  if (!selectedDevice.value) return
+
+  const kind = previewKindOf(file) || 'image'
+  imageViewerKind.value = kind
   imageViewerName.value = file.name
   imageViewerSrc.value = ''
   imageViewerError.value = ''
@@ -2298,17 +2362,32 @@ const openImageViewer = async (file: { path: string; name: string; size?: string
     })
     if (resp.data.code === 200 && resp.data.data?.base64) {
       const ext = (file.name.split('.').pop() || '').toLowerCase()
-      const mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`
+      let mime: string
+      if (kind === 'video') {
+        // mkv/3gp 浏览器支持有限，但仍按真实类型给，播不了由 <video> 原生报错
+        mime = ext === 'mkv' ? 'video/x-matroska' : ext === 'mov' ? 'video/quicktime' : `video/${ext}`
+      } else {
+        mime = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`
+      }
       imageViewerSrc.value = `data:${mime};base64,${resp.data.data.base64}`
       if (resp.data.data.size) imageViewerSize.value = resp.data.data.size
     } else {
-      throw new Error(resp.data.message || '读取图片失败')
+      throw new Error(resp.data.message || '读取文件失败')
     }
   } catch (error: any) {
-    console.error('打开图片预览失败:', error)
-    imageViewerError.value = `无法读取图片: ${error.message}`
+    console.error('打开预览失败:', error)
+    imageViewerError.value = `无法读取文件: ${error.message}`
   } finally {
     imageViewerLoading.value = false
+  }
+}
+
+// 上一个/下一个导航（循环）
+const handleImageViewerNav = (index: number) => {
+  const file = imageViewerList.value[index]
+  if (file) {
+    imageViewerIndex.value = index
+    loadViewerFile(file)
   }
 }
 
@@ -2675,6 +2754,40 @@ const deleteFile = async (path: string, isDirectory: boolean) => {
       showMessage('删除失败: ' + (error.message || '网络异常'))
     }
   }, '确认删除')
+}
+
+// 重命名/移动文件或文件夹
+const renameFile = (file: { path: string; name: string }) => {
+  if (!selectedDevice.value) return
+
+  showPrompt(
+    `输入新名称或完整新路径（当前：${file.path}）`,
+    async (newPath: string) => {
+      const trimmed = (newPath || '').trim()
+      if (!trimmed) {
+        showMessage('新路径不能为空')
+        return
+      }
+      try {
+        const response = await axios.post(`${API_BASE.value}/api/device/files/rename`, {
+          deviceId: selectedDevice.value,
+          path: file.path,
+          newPath: trimmed
+        })
+        if (response.data.code === 200) {
+          showMessage('重命名成功')
+          fetchFiles(selectedDevice.value, currentPath.value)
+        } else {
+          showMessage('重命名失败: ' + (response.data.message || '未知错误'))
+        }
+      } catch (error: any) {
+        console.error('重命名失败:', error)
+        showMessage('重命名失败: ' + (error.message || '网络异常'))
+      }
+    },
+    file.name,
+    '重命名/移动'
+  )
 }
 
 const simulateKey = async (key: string) => {
@@ -4742,6 +4855,39 @@ watch(serialScheme, async (scheme) => {
   margin: 0 8px;
   font-family: 'Consolas', 'Monaco', monospace;
   min-width: 52px;
+  text-align: right;
+}
+
+/* 文件列表排序表头与修改时间列 */
+.file-list-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 11px;
+  color: #999;
+  user-select: none;
+}
+
+.file-sortable {
+  cursor: pointer;
+}
+
+.file-sortable:hover {
+  color: #1565c0;
+}
+
+.file-sortable.sort-active {
+  color: #1565c0;
+  font-weight: 500;
+}
+
+.file-item-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #999;
+  font-family: 'Consolas', 'Monaco', monospace;
+  min-width: 110px;
   text-align: right;
 }
 
@@ -7173,7 +7319,6 @@ button.batch-remote-tile-tag:disabled.active {
                     style="padding: 0;"
                   >
                     <div v-if="appLoading" class="loading-text" style="padding: 24px; text-align: center;">加载应用列表中...</div>
-                    <div v-if="appLoading" class="loading-text" style="padding: 24px; text-align: center;">加载应用列表中...</div>
                     <div v-else-if="apps.length === 0" class="loading-text" style="padding: 24px; text-align: center;">无应用</div>
                     <div v-else class="app-list">
                       <div v-for="app in apps" :key="app.packageName" class="app-item">
@@ -7248,19 +7393,32 @@ button.batch-remote-tile-tag:disabled.active {
                     <div v-if="fileLoading" class="loading-text" style="padding: 24px; text-align: center; border-top: 1px solid #f0f0f0;">加载文件列表中...</div>
                     <div v-else-if="files.length === 0" class="loading-text" style="padding: 24px; text-align: center; border-top: 1px solid #f0f0f0;">无文件</div>
                     <div v-else class="file-list">
-                      <div v-for="file in files" :key="file.path" class="file-item" @click="file.isDirectory && navigateTo(file.path)">
+                      <div class="file-list-header" @click.prevent>
+                        <div class="file-item-icon"></div>
+                        <div class="file-item-name file-sortable" :class="{ 'sort-active': fileSortKey === 'name' }" @click.stop="toggleFileSort('name')" title="按名称排序">名称 {{ fileSortKey === 'name' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
+                        <div class="file-item-size file-sortable" :class="{ 'sort-active': fileSortKey === 'size' }" @click.stop="toggleFileSort('size')" title="按大小排序">大小 {{ fileSortKey === 'size' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
+                        <div class="file-item-actions file-sortable" :class="{ 'sort-active': fileSortKey === 'time' }" @click.stop="toggleFileSort('time')" title="按修改时间排序">时间 {{ fileSortKey === 'time' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
+                      </div>
+                      <div v-for="file in sortedFiles" :key="file.path" class="file-item" @click="file.isDirectory && navigateTo(file.path)">
                         <div class="file-item-icon">{{ file.isDirectory ? '📁' : '📄' }}</div>
                         <div class="file-item-name" :class="{ 'is-dir': file.isDirectory }">{{ file.name }}</div>
                         <div class="file-item-size">
                           <template v-if="!file.isDirectory">{{ formatBytes(Number(file.size)) }}</template>
                           <template v-else-if="file.size">共 {{ file.size }} 项</template>
                         </div>
+                        <div class="file-item-time">{{ file.mtime || '' }}</div>
                         <div class="file-item-actions">
-                          <button v-if="isViewableImageFile(file)" class="file-act-btn export" @click.stop="openImageViewer(file)" title="查看图片">
+                          <button v-if="previewKindOf(file) === 'image'" class="file-act-btn export" @click.stop="openImageViewer(file)" title="查看图片">
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                               <rect x="3" y="3" width="18" height="18" rx="2"/>
                               <circle cx="8.5" cy="8.5" r="1.5"/>
                               <polyline points="21 15 16 10 5 21"/>
+                            </svg>
+                          </button>
+                          <button v-else-if="previewKindOf(file) === 'video'" class="file-act-btn export" @click.stop="openImageViewer(file)" title="播放视频">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                              <rect x="2" y="4" width="20" height="16" rx="2"/>
+                              <polygon points="10 9 15 12 10 15 10 9" fill="currentColor" stroke="none"/>
                             </svg>
                           </button>
                           <button v-else-if="!file.isDirectory" class="file-act-btn export" disabled :title="viewDisabledReason(file)" style="opacity:0.35;">
@@ -7278,6 +7436,12 @@ button.batch-remote-tile-tag:disabled.active {
                           <button v-else-if="!file.isDirectory" class="file-act-btn export" disabled :title="editDisabledReason(file)" style="opacity:0.35;">
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                               <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                            </svg>
+                          </button>
+                          <button class="file-act-btn export" @click.stop="renameFile(file)" title="重命名/移动">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                             </svg>
                           </button>
                           <button class="file-act-btn export" @click.stop="exportFile(file)" title="导出">
@@ -8242,7 +8406,7 @@ button.batch-remote-tile-tag:disabled.active {
       @close="handleEditorClose"
     />
 
-    <!-- 图片查看器 -->
+    <!-- 图片/视频查看器 -->
     <FileImageViewer
       :visible="imageViewerVisible"
       :file-name="imageViewerName"
@@ -8250,6 +8414,10 @@ button.batch-remote-tile-tag:disabled.active {
       :loading="imageViewerLoading"
       :load-error="imageViewerError"
       :file-size="imageViewerSize"
+      :kind="imageViewerKind"
+      v-model:index="imageViewerIndex"
+      v-model:total="imageViewerTotal"
+      @nav="handleImageViewerNav"
       @close="handleImageViewerClose"
     />
 

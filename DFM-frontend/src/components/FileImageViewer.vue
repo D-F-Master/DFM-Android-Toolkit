@@ -6,19 +6,29 @@
         <span class="imgv-title" :title="fileName">{{ fileName }}</span>
         <span v-if="sizeText" class="imgv-size">{{ sizeText }}</span>
         <div class="imgv-actions">
-          <button class="imgv-btn zoom-out" @click="zoomOut" :disabled="loading || !!loadError" title="缩小">−</button>
-          <button class="imgv-btn zoom-reset" @click="resetZoom" :disabled="loading || !!loadError">重置</button>
-          <button class="imgv-btn zoom-in" @click="zoomIn" :disabled="loading || !!loadError" title="放大">＋</button>
+          <button v-if="totalCount > 1" class="imgv-btn nav" @click="navPrev" :disabled="loading || !!loadError" title="上一张">‹ 上一张</button>
+          <span v-if="totalCount > 1" class="imgv-count">{{ currentIndex + 1 }} / {{ totalCount }}</span>
+          <button v-if="totalCount > 1" class="imgv-btn nav" @click="navNext" :disabled="loading || !!loadError" title="下一张">下一张 ›</button>
+          <template v-if="kind === 'image'">
+            <button class="imgv-btn zoom-out" @click="zoomOut" :disabled="loading || !!loadError" title="缩小">−</button>
+            <span class="imgv-zoom-label" :class="{ dim: loading || !!loadError }">{{ zoomPercent }}</span>
+            <button class="imgv-btn zoom-reset" @click="resetZoom" :disabled="loading || !!loadError">重置</button>
+            <button class="imgv-btn zoom-in" @click="zoomIn" :disabled="loading || !!loadError" title="放大">＋</button>
+          </template>
           <button class="imgv-close" @click="handleClose">&times;</button>
         </div>
       </div>
 
-      <!-- 图片区 -->
+      <!-- 图片/视频区 -->
       <div class="imgv-body">
         <div v-if="loadError" class="imgv-error">{{ loadError }}</div>
-        <div v-else-if="loading" class="imgv-loading">正在读取图片，请稍候...</div>
+        <div v-else-if="loading" class="imgv-loading">正在读取{{ kind === 'video' ? '视频' : '图片' }}，请稍候...</div>
+        <div v-else-if="kind === 'video'" class="imgv-video-wrap">
+          <video :src="src" controls autoplay class="imgv-video"></video>
+        </div>
         <div
           v-else
+          ref="viewportEl"
           class="imgv-viewport"
           @wheel.prevent="onWheel"
           @mousedown="onMouseDown"
@@ -38,7 +48,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, watch, onUnmounted, computed } from 'vue'
+import { ref, watch, onUnmounted, computed, defineModel } from 'vue'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -48,16 +58,24 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   loadError: { type: String, default: '' },
   // 字节数，用于展示；0/undefined 不显示
-  fileSize: { type: Number, default: 0 }
+  fileSize: { type: Number, default: 0 },
+  // 预览内容类型：image（默认，缩放/拖拽）| video（浏览器原生播放器）
+  kind: { type: String, default: 'image' }
 })
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'nav'])
 
 const zoom = ref(1)
 const pan = ref({ x: 0, y: 0 })
 
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 10
+
+// 多图导航：父组件传入当前图在图组里的位置；totalCount<=1 时隐藏导航
+const currentIndex = defineModel<number>('index', { default: 0 })
+const totalCount = defineModel<number>('total', { default: 0 })
+
+const zoomPercent = computed(() => `${Math.round(zoom.value * 100)}%`)
 
 // 字节数格式化为人类可读
 const sizeText = computed(() => {
@@ -88,6 +106,7 @@ const setZoom = (next: number, cx = 0, cy = 0) => {
     y: cy - (cy - pan.value.y) * ratio
   }
   zoom.value = clamped
+  clampPan()
 }
 
 const zoomIn = () => setZoom(zoom.value * 1.25)
@@ -95,6 +114,14 @@ const zoomOut = () => setZoom(zoom.value / 1.25)
 const resetZoom = () => {
   zoom.value = 1
   pan.value = { x: 0, y: 0 }
+}
+
+// 多图导航
+const navPrev = () => {
+  if (totalCount.value > 1) emit('nav', (currentIndex.value - 1 + totalCount.value) % totalCount.value)
+}
+const navNext = () => {
+  if (totalCount.value > 1) emit('nav', (currentIndex.value + 1) % totalCount.value)
 }
 
 const onWheel = (e: WheelEvent) => {
@@ -126,11 +153,30 @@ const onMouseDown = (e: MouseEvent) => {
   }
   const onUp = () => {
     dragging = false
+    clampPan()
     window.removeEventListener('mousemove', onMove)
     window.removeEventListener('mouseup', onUp)
   }
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
+}
+
+// 拖拽/缩放结束后把图拉回边界内：不能拖出视口，保证随时能看到图片
+const viewportEl = ref<HTMLElement | null>(null)
+
+const clampPan = () => {
+  const vp = viewportEl.value
+  if (!vp) return
+  const img = vp.querySelector('img') as HTMLImageElement | null
+  if (!img) return
+  const dispW = img.clientWidth * zoom.value
+  const dispH = img.clientHeight * zoom.value
+  const maxX = Math.max(0, (dispW - vp.clientWidth) / 2 + 24) // +24：图比视口小也允许少量拖动余量
+  const maxY = Math.max(0, (dispH - vp.clientHeight) / 2 + 24)
+  pan.value = {
+    x: Math.min(maxX, Math.max(-maxX, pan.value.x)),
+    y: Math.min(maxY, Math.max(-maxY, pan.value.y))
+  }
 }
 
 const handleClose = () => {
@@ -229,6 +275,27 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   cursor: not-allowed;
 }
 
+.imgv-zoom-label {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  user-select: none;
+}
+
+.imgv-zoom-label.dim {
+  opacity: 0.4;
+}
+
+.imgv-count {
+  font-size: 12px;
+  color: #666;
+  font-weight: 500;
+  padding: 0 2px;
+  user-select: none;
+}
+
 .imgv-close {
   background: none;
   border: none;
@@ -272,6 +339,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   max-height: 90%;
   user-select: none;
   will-change: transform;
+}
+
+.imgv-video-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+.imgv-video {
+  max-width: 95%;
+  max-height: 95%;
 }
 
 .imgv-error {
@@ -320,6 +400,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
   .imgv-btn:hover:not(:disabled) {
     background: #44474f;
+  }
+
+  .imgv-zoom-label {
+    color: #aaa;
+  }
+
+  .imgv-count {
+    color: #999;
   }
 
   .imgv-close {
