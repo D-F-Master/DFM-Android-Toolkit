@@ -213,7 +213,7 @@ public class ProbeService extends Service {
     /**
      * 用系统 TTS 朗读 text，读完/失败后把结果写进 res（由调用方回给 PC）。
      *
-     * TTS 引擎懒初始化：首次调用才创建并同步等待引擎就绪（最多 10 秒），
+     * TTS 引擎懒初始化：首次调用才创建并同步等待引擎就绪（最多 30 秒，讯飞冷启动实测 ~13 秒），
      * 失败回 {"type":"tts","status":"error"}，连接保持不断。
      */
     private void speak(String text, JSONObject res) throws Exception {
@@ -271,7 +271,8 @@ public class ProbeService extends Service {
         }
     }
 
-    /** 懒初始化 TTS 并等待就绪；失败返回 null（下次请求会重试）。 */
+    /** 懒初始化 TTS 并等待就绪；失败返回 null（下次请求会重试）。
+     *  讯飞引擎冷启动可能要 10 秒以上（实测 ~13s），等待窗口必须放宽。 */
     private synchronized TextToSpeech ensureTts() {
         if (tts != null) {
             return tts;
@@ -307,7 +308,7 @@ public class ProbeService extends Service {
 
     private static boolean await(CountDownLatch latch) {
         try {
-            return latch.await(10, TimeUnit.SECONDS);
+            return latch.await(30, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
