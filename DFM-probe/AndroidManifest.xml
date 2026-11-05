@@ -22,11 +22,11 @@
         android:allowBackup="false">
 
         <receiver
-            android:name=".ConnectReceiver"
+            android:name=".StartReceiver"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.dfm.probe.CONNECT" />
+                <action android:name="com.dfm.probe.START" />
             </intent-filter>
         </receiver>
 

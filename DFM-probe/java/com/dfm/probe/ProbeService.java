@@ -14,41 +14,43 @@ import android.util.Log;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.net.InetSocketAddress;
-import java.net.Socket;
-import java.nio.charset.Charset;
-
 /**
- * 常驻前台服务：按 host/port 主动连回 PC，按行收发 JSON。
+ * 常驻前台服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
  *
- * 协议（UTF-8，换行分隔）：
- *   连上后设备先发 {"type":"hello","device":...,"sdk":...,"abi":...,"package":...}
- *   PC -> {"type":"ping","payload":"..."}  设备 -> {"type":"pong","payload":"..."}
- *   PC -> {"type":"echo","payload":"..."}  设备 -> {"type":"echo","payload":"..."}
- *   PC -> {"type":"tts","text":"..."}      设备 -> {"type":"tts","status":"done"|"error","message":...}
- *   PC -> {"type":"quit"}                  设备 -> {"type":"bye"} 后断开
- *   其它 type -> {"type":"error","message":...}
+ * 二进制帧协议详见 probe与service通讯协议.md：
+ *   AA 55 | 帧序(1B) | 长度(1B) | 命令字(1B) | 数据区 | CRC16(低字节在前)
+ *   数据区为 UTF-8 JSON，最长 255 字节。
+ *   业务帧（0x01~0x05）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
+ *   CRC 错、数据区不是合法 JSON 对象的帧直接丢弃，不回 ACK，由发送端超时重传。
  */
 public class ProbeService extends Service {
     private static final String TAG = "DFMProbe";
     private static final String CHANNEL_ID = "dfm_probe";
     private static final int NOTIFY_ID = 1;
-    private static final int CONNECT_TIMEOUT_MS = 5000;
-    private static final long RETRY_INTERVAL_MS = 3000;
+    private static final int DEVICE_PORT = 21104;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
-    private volatile String host;
-    private volatile int port;
+    private static final int CMD_PING = 0x01;
+    private static final int CMD_ECHO = 0x02;
+    private static final int CMD_TTS = 0x03;
+    private static final int CMD_INFO = 0x04;
+    private static final int CMD_QUIT = 0x05;
+    private static final int CMD_ACK = 0x06;
+    private static final int CMD_ERROR = 0xFF;
+
     private volatile boolean running = false;
-    private volatile Socket currentSocket;
+    private volatile ServerSocket serverSocket;
     private volatile TextToSpeech tts;
 
     @Override
@@ -60,25 +62,10 @@ public class ProbeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null) {
-            String h = intent.getStringExtra("host");
-            int p = intent.getIntExtra("port", 0);
-            if (h != null && p > 0) {
-                boolean changed = !h.equals(host) || p != port;
-                host = h;
-                port = p;
-                // 地址变了要打断旧连接，让连接线程用新地址重连
-                if (changed && currentSocket != null) {
-                    try {
-                        currentSocket.close();
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        }
-        if (!running && host != null) {
+        // 启动广播每次请求都会重发，只有尚未监听时才起线程，避免重复 bind 端口
+        if (!running) {
             running = true;
-            new Thread(new ConnectTask(), "dfm-probe-connector").start();
+            new Thread(new ListenTask(), "dfm-probe-listener").start();
         }
         return START_NOT_STICKY;
     }
@@ -86,7 +73,7 @@ public class ProbeService extends Service {
     @Override
     public void onDestroy() {
         running = false;
-        Socket s = currentSocket;
+        ServerSocket s = serverSocket;
         if (s != null) {
             try {
                 s.close();
@@ -121,112 +108,268 @@ public class ProbeService extends Service {
         return builder
                 .setSmallIcon(R.drawable.ic_probe)
                 .setContentTitle("DFM Probe")
-                .setContentText("等待连接")
+                .setContentText("监听 21104 端口")
                 .setOngoing(true)
                 .build();
     }
 
-    private final class ConnectTask implements Runnable {
+    private final class ListenTask implements Runnable {
         @Override
         public void run() {
-            while (running) {
-                Socket socket = null;
-                try {
-                    String h = host;
-                    int p = port;
-                    Log.i(TAG, "connecting to " + h + ":" + p);
-                    socket = new Socket();
-                    socket.connect(new InetSocketAddress(h, p), CONNECT_TIMEOUT_MS);
-                    currentSocket = socket;
-                    Log.i(TAG, "connected");
-                    serve(socket);
-                } catch (Exception e) {
-                    Log.w(TAG, "connect/serve failed: " + e);
-                } finally {
-                    currentSocket = null;
-                    if (socket != null) {
-                        try {
-                            socket.close();
-                        } catch (Exception ignored) {
-                        }
+            ServerSocket server = null;
+            try {
+                server = new ServerSocket();
+                server.setReuseAddress(true);
+                server.bind(new InetSocketAddress("0.0.0.0", DEVICE_PORT));
+                serverSocket = server;
+                Log.i(TAG, "listening on 0.0.0.0:" + DEVICE_PORT);
+                while (running) {
+                    Socket client = server.accept();
+                    Log.i(TAG, "client connected: " + client.getRemoteSocketAddress());
+                    // 每个连接一个线程：TTS 朗读最长约 90s，不能卡住 accept 循环
+                    new Thread(new ConnectionTask(client), "dfm-probe-conn").start();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "listen failed on port " + DEVICE_PORT + ": " + e);
+                running = false;
+            } finally {
+                serverSocket = null;
+                if (server != null) {
+                    try {
+                        server.close();
+                    } catch (Exception ignored) {
                     }
                 }
-                if (!running) {
-                    break;
-                }
+                Log.i(TAG, "listener stopped");
+            }
+        }
+    }
+
+    private final class ConnectionTask implements Runnable {
+        private final Socket socket;
+        /** 本连接最近一次已成功处理业务的帧序，用于重传幂等；-1 表示还没有处理过。 */
+        private int lastSeq = -1;
+
+        ConnectionTask(Socket socket) {
+            this.socket = socket;
+        }
+
+        @Override
+        public void run() {
+            try {
+                serve(socket);
+            } catch (Exception e) {
+                Log.w(TAG, "connection failed: " + e);
+            } finally {
                 try {
-                    Thread.sleep(RETRY_INTERVAL_MS);
-                } catch (InterruptedException e) {
+                    socket.close();
+                } catch (Exception ignored) {
+                }
+                Log.i(TAG, "client disconnected");
+            }
+        }
+
+        private void serve(Socket socket) throws Exception {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+            ByteArrayOutputStream acc = new ByteArrayOutputStream();
+            byte[] chunk = new byte[256];
+            while (running) {
+                int n = in.read(chunk);
+                if (n < 0) {
+                    break;
+                }
+                acc.write(chunk, 0, n);
+                byte[] bytes = acc.toByteArray();
+                int consumed = 0;
+                boolean quit = false;
+                while (true) {
+                    int idx = findHeader(bytes, consumed);
+                    if (idx < 0) {
+                        // 只保留末尾可能是半个帧头的 0xAA，其余全部丢弃
+                        int keep = (bytes.length > consumed
+                                && (bytes[bytes.length - 1] & 0xFF) == 0xAA) ? 1 : 0;
+                        consumed = bytes.length - keep;
+                        break;
+                    }
+                    if (idx + 5 > bytes.length) {
+                        // 帧头、帧序、长度、命令字还没收齐
+                        consumed = idx;
+                        break;
+                    }
+                    int seq = bytes[idx + 2] & 0xFF;
+                    int len = bytes[idx + 3] & 0xFF;
+                    int cmd = bytes[idx + 4] & 0xFF;
+                    int frameLen = 7 + len;
+                    if (idx + frameLen > bytes.length) {
+                        // 半包：从帧头开始保留，等后续字节
+                        consumed = idx;
+                        break;
+                    }
+                    int crcLo = bytes[idx + 5 + len] & 0xFF;
+                    int crcHi = bytes[idx + 6 + len] & 0xFF;
+                    int expect = crc16(bytes, idx + 2, 3 + len);
+                    if ((expect & 0xFF) != crcLo || ((expect >> 8) & 0xFF) != crcHi) {
+                        // CRC 错：丢弃并从下一字节重新找帧头，不回 ACK
+                        Log.w(TAG, "bad crc, drop frame seq=" + seq);
+                        consumed = idx + 1;
+                        continue;
+                    }
+                    byte[] data = new byte[len];
+                    System.arraycopy(bytes, idx + 5, data, 0, len);
+                    quit = handleFrame(out, seq, cmd, data);
+                    consumed = idx + frameLen;
+                    if (quit) {
+                        break;
+                    }
+                }
+                byte[] rest = new byte[bytes.length - consumed];
+                System.arraycopy(bytes, consumed, rest, 0, rest.length);
+                acc.reset();
+                acc.write(rest, 0, rest.length);
+                if (quit) {
                     break;
                 }
             }
-            Log.i(TAG, "connector stopped");
         }
-    }
 
-    private void serve(Socket socket) throws Exception {
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(socket.getInputStream(), UTF8));
-        BufferedWriter writer = new BufferedWriter(
-                new OutputStreamWriter(socket.getOutputStream(), UTF8));
-
-        JSONObject hello = new JSONObject();
-        hello.put("type", "hello");
-        hello.put("device", Build.MODEL);
-        hello.put("sdk", Build.VERSION.SDK_INT);
-        hello.put("abi", Build.SUPPORTED_ABIS[0]);
-        hello.put("package", getPackageName());
-        send(writer, hello);
-
-        String line;
-        while (running && (line = reader.readLine()) != null) {
-            Log.i(TAG, "recv: " + line);
-            JSONObject req = new JSONObject(line);
-            String type = req.optString("type");
-            JSONObject res = new JSONObject();
-            if ("ping".equals(type)) {
-                res.put("type", "pong");
-                res.put("payload", req.optString("payload"));
-            } else if ("echo".equals(type)) {
-                res.put("type", "echo");
-                res.put("payload", req.optString("payload"));
-            } else if ("tts".equals(type)) {
-                speak(req.optString("text"), res);
-            } else if ("quit".equals(type)) {
-                res.put("type", "bye");
-                send(writer, res);
-                break;
-            } else {
-                res.put("type", "error");
-                res.put("message", "unknown type: " + type);
+        /**
+         * 处理一条完整业务帧，返回 true 表示对端要求关闭连接。
+         * CRC 正确且结构完整即回 ACK；数据区不是合法 JSON 对象则丢弃、不回 ACK。
+         */
+        private boolean handleFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
+            JSONObject req;
+            try {
+                req = new JSONObject(new String(data, UTF8));
+            } catch (Exception e) {
+                Log.w(TAG, "invalid payload json, drop frame without ACK");
+                return false;
             }
-            send(writer, res);
+            if (seq == lastSeq) {
+                // 重传帧：只回 ACK，不重复执行业务（尤其 TTS 不能念两遍）
+                Log.i(TAG, "duplicate seq=" + seq + ", ACK only");
+                sendFrame(out, seq, CMD_ACK, new byte[0]);
+                return false;
+            }
+            lastSeq = seq;
+            // 先回 ACK 确认帧已完整收到，避免发送端 200ms 超时重传（业务可能耗时数十秒）
+            sendFrame(out, seq, CMD_ACK, new byte[0]);
+            boolean unknown = cmd != CMD_PING && cmd != CMD_ECHO && cmd != CMD_TTS
+                    && cmd != CMD_INFO && cmd != CMD_QUIT;
+            JSONObject res = execute(cmd, req, unknown);
+            int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
+            byte[] respData = res.toString().getBytes(UTF8);
+            if (respData.length > 255) {
+                res = new JSONObject();
+                res.put("ok", false);
+                res.put("message", "response too large: " + respData.length);
+                respData = res.toString().getBytes(UTF8);
+            }
+            sendFrame(out, seq, respCmd, respData);
+            Log.i(TAG, "cmd=0x" + Integer.toHexString(cmd) + " seq=" + seq + " -> " + res);
+            return cmd == CMD_QUIT;
         }
     }
 
-    private static void send(BufferedWriter writer, JSONObject obj) throws Exception {
-        writer.write(obj.toString());
-        writer.write("\n");
-        writer.flush();
+    private JSONObject execute(int cmd, JSONObject req, boolean unknown) {
+        JSONObject res = new JSONObject();
+        try {
+            if (unknown) {
+                res.put("ok", false);
+                res.put("message", "unknown cmd: 0x" + Integer.toHexString(cmd));
+            } else if (cmd == CMD_PING) {
+                res.put("ok", true);
+                res.put("payload", req.optString("payload"));
+            } else if (cmd == CMD_ECHO) {
+                res.put("ok", true);
+                res.put("payload", req.optString("payload"));
+            } else if (cmd == CMD_TTS) {
+                speak(req.optString("text"), res);
+            } else if (cmd == CMD_INFO) {
+                res.put("ok", true);
+                res.put("device", Build.MODEL);
+                res.put("sdk", Build.VERSION.SDK_INT);
+                res.put("abi", Build.SUPPORTED_ABIS[0]);
+                res.put("package", getPackageName());
+            } else if (cmd == CMD_QUIT) {
+                res.put("ok", true);
+                res.put("message", "bye");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "execute failed: " + e);
+            res = new JSONObject();
+            try {
+                res.put("ok", false);
+                res.put("message", "execute failed: " + e);
+            } catch (Exception ignored) {
+            }
+        }
+        return res;
+    }
+
+    private static void sendFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
+        if (data.length > 255) {
+            throw new IllegalArgumentException("frame data too large: " + data.length);
+        }
+        out.write(buildFrame(seq, cmd, data));
+        out.flush();
+    }
+
+    private static byte[] buildFrame(int seq, int cmd, byte[] data) {
+        byte[] frame = new byte[7 + data.length];
+        frame[0] = (byte) 0xAA;
+        frame[1] = (byte) 0x55;
+        frame[2] = (byte) seq;
+        frame[3] = (byte) data.length;
+        frame[4] = (byte) cmd;
+        System.arraycopy(data, 0, frame, 5, data.length);
+        int crc = crc16(frame, 2, 3 + data.length);
+        frame[5 + data.length] = (byte) (crc & 0xFF);
+        frame[6 + data.length] = (byte) ((crc >> 8) & 0xFF);
+        return frame;
+    }
+
+    /** CRC16-Modbus，覆盖 seq + len + cmd + data；结果以低字节在前写入帧尾。 */
+    private static int crc16(byte[] b, int off, int len) {
+        int crc = 0xFFFF;
+        for (int i = off; i < off + len; i++) {
+            crc ^= (b[i] & 0xFF);
+            for (int j = 0; j < 8; j++) {
+                if ((crc & 1) != 0) {
+                    crc = (crc >> 1) ^ 0xA001;
+                } else {
+                    crc >>= 1;
+                }
+            }
+        }
+        return crc & 0xFFFF;
+    }
+
+    private static int findHeader(byte[] b, int from) {
+        for (int i = from; i + 1 < b.length; i++) {
+            if ((b[i] & 0xFF) == 0xAA && (b[i + 1] & 0xFF) == 0x55) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /**
      * 用系统 TTS 朗读 text，读完/失败后把结果写进 res（由调用方回给 PC）。
      *
      * TTS 引擎懒初始化：首次调用才创建并同步等待引擎就绪（最多 30 秒，讯飞冷启动实测 ~13 秒），
-     * 失败回 {"type":"tts","status":"error"}，连接保持不断。
+     * 失败回 {"ok":false,...}，连接保持不断。
      */
     private void speak(String text, JSONObject res) throws Exception {
-        res.put("type", "tts");
         String t = text == null ? "" : text.trim();
         if (t.length() == 0) {
-            res.put("status", "error");
+            res.put("ok", false);
             res.put("message", "empty text");
             return;
         }
         final TextToSpeech engine = ensureTts();
         if (engine == null) {
-            res.put("status", "error");
+            res.put("ok", false);
             res.put("message", "tts engine unavailable");
             return;
         }
@@ -253,20 +396,21 @@ public class ProbeService extends Service {
         params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "dfm-probe");
         int queued = engine.speak(t, TextToSpeech.QUEUE_FLUSH, params);
         if (queued != TextToSpeech.SUCCESS) {
-            res.put("status", "error");
+            res.put("ok", false);
             res.put("message", "tts speak rejected: " + queued);
             return;
         }
         // 朗读最长等 60 秒，超时按失败处理但不中断连接
         if (!done.await(60, TimeUnit.SECONDS)) {
-            res.put("status", "error");
+            res.put("ok", false);
             res.put("message", "tts timeout");
             return;
         }
         if (outcome[0] == TextToSpeech.SUCCESS) {
+            res.put("ok", true);
             res.put("status", "done");
         } else {
-            res.put("status", "error");
+            res.put("ok", false);
             res.put("message", "tts engine reported error");
         }
     }
