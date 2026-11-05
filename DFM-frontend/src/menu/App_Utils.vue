@@ -1687,43 +1687,6 @@ const importScriptFromZip = () => {
   input.click()
 }
 
-// 从本地 JSON 文件导入：选择文件 -> 读内容 -> 调后端校验并保存 -> 载入面板
-const importScriptFromFile = () => {
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = '.json,application/json'
-  input.onchange = async () => {
-    const file = input.files?.[0]
-    if (!file) return
-    try {
-      const content = await file.text()
-      scriptSaving.value = true
-      const response = await axios.post(`${API_BASE.value}/api/device/script/import`, {
-        content,
-        name: file.name.replace(/\.json$/i, ''),
-      })
-      if (response.data.code !== 200) {
-        showNotification('导入失败: ' + (response.data.message || '未知错误'), 'error')
-        return
-      }
-      // 导入后从后端读回标准化的脚本，再载入面板
-      const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, {
-        name: response.data.data.name,
-      })
-      if (loaded.data.code !== 200) {
-        showNotification('导入后读取失败: ' + (loaded.data.message || '未知错误'), 'error')
-        return
-      }
-      applyImportedSteps(loaded.data.data.steps, loaded.data.data.repeat, loaded.data.data.name)
-    } catch (error: any) {
-      showNotification('导入失败: ' + (error?.response?.data?.message || error.message), 'error')
-    } finally {
-      scriptSaving.value = false
-    }
-  }
-  input.click()
-}
-
 // 从已保存脚本列表中载入
 const importScriptFromList = async () => {
   try {
@@ -1767,19 +1730,16 @@ const importScriptFromList = async () => {
   }
 }
 
-// 导入按钮：弹出选择（导出 zip 包 / 本地 JSON 文件 / 已保存列表）
+// 导入按钮：弹出选择（导出 zip 包 / 已保存列表）
 const openImportMenu = () => {
   showList(
     [
       { value: 'zip', label: '从导出包（zip）导入', desc: '脚本 + 引用的 APK/模板图一次导入' },
-      { value: 'file', label: '从本地 JSON 文件导入', desc: '选择一个 .json 脚本文件' },
       { value: 'saved', label: '从已保存脚本载入', desc: '载入 data/scripts 下已有的脚本' },
     ],
     (choice?: string) => {
       if (choice === 'zip') {
         importScriptFromZip()
-      } else if (choice === 'file') {
-        importScriptFromFile()
       } else if (choice === 'saved') {
         importScriptFromList()
       }
@@ -8002,10 +7962,10 @@ button.batch-remote-tile-tag:disabled.active {
                       </div>
                       <div class="script-actions">
                         <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
-                        <button class="script-action-btn" @click="exportScriptZip" :disabled="scriptExporting || scriptSaving" title="导出为 zip 包（脚本 + 引用的 APK/模板图），拷到其他电脑导入即可用">导出</button>
                         <button class="script-action-btn" @click="runCurrentSteps" :disabled="scriptRunning || scriptSaving">执行</button>
                         <button v-if="scriptRunning" class="script-action-btn script-stop-btn" @click="stopScriptRun">停止</button>
                         <button v-if="!scriptRunning" class="script-action-btn" @click="repeatRun" :disabled="scriptSaving">重复</button>
+                        <button class="script-action-btn" @click="exportScriptZip" :disabled="scriptExporting || scriptSaving" title="导出为 zip 包（脚本 + 引用的 APK/模板图），拷到其他电脑导入即可用">导出</button>
                       </div>
                     </div>
                   </div>
