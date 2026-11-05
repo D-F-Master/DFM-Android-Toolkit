@@ -4312,6 +4312,60 @@ watch(serialScheme, async (scheme) => {
   if (keyList.value.length === 0) await loadKeyList()
   if (selectedDevice.value) await loadPtyStatus()
 })
+
+// ===== 探针状态指示 =====
+const probeConnected = ref(false);
+const probeLoading = ref(false);
+const probeMessage = ref('');
+// 设备切换后旧请求的响应要丢弃，避免把上一台设备的结果盖到当前设备上
+let probeSeq = 0;
+
+const probeStatusText = computed(() => {
+  if (!selectedDevice.value) return '未选择设备';
+  if (probeLoading.value) return '安装通讯中...';
+  if (probeConnected.value) return '通讯正常';
+  if (probeMessage.value) return '通讯失败';
+  return '未检测';
+});
+
+const runProbe = async (install: boolean) => {
+  const deviceId = selectedDevice.value;
+  const seq = ++probeSeq;
+  if (!deviceId) {
+    probeConnected.value = false;
+    probeMessage.value = '请先选择设备';
+    return;
+  }
+  probeLoading.value = true;
+  try {
+    const url = install ? '/api/probe/connect' : '/api/probe/check';
+    const res = await axios.post(`${API_BASE.value}${url}`, { deviceId }, { timeout: 60000 });
+    if (seq !== probeSeq) return;
+    const d = res.data;
+    probeConnected.value = d?.code === 200 && d?.data?.connected === true;
+    probeMessage.value = d?.message || '';
+  } catch (e: any) {
+    if (seq !== probeSeq) return;
+    probeConnected.value = false;
+    probeMessage.value = e?.message || '请求失败';
+  } finally {
+    if (seq === probeSeq) probeLoading.value = false;
+  }
+};
+
+const retryProbe = () => {
+  if (!selectedDevice.value || probeLoading.value) return;
+  runProbe(true);
+};
+
+// 进入页面（选中第一台设备）或切换设备时，自动探测一次并重置状态
+watch(selectedDevice, (deviceId) => {
+  probeSeq++;
+  probeConnected.value = false;
+  probeMessage.value = '';
+  probeLoading.value = false;
+  if (deviceId) runProbe(false);
+});
 </script>
 <style scoped>
 .sidebar {
@@ -4325,6 +4379,78 @@ watch(serialScheme, async (scheme) => {
   flex: 1;
   overflow-y: auto;
   margin-bottom: 8px;
+}
+
+.probe-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background-color: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s;
+}
+
+.probe-bar:hover {
+  background-color: #f5f5f5;
+}
+
+.probe-bar.busy {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.probe-bar.idle {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.probe-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #f44336;
+  flex-shrink: 0;
+}
+
+.probe-bar.ok .probe-dot {
+  background-color: #4caf50;
+}
+
+.probe-bar.busy .probe-dot {
+  background-color: #ff9800;
+}
+
+.probe-bar.idle .probe-dot {
+  background-color: #999;
+}
+
+.probe-label {
+  font-weight: bold;
+  font-size: 13px;
+  color: #333;
+}
+
+.probe-text {
+  font-size: 12px;
+  color: #f44336;
+  margin-left: auto;
+}
+
+.probe-bar.ok .probe-text {
+  color: #4caf50;
+}
+
+.probe-bar.busy .probe-text {
+  color: #ff9800;
+}
+
+.probe-bar.idle .probe-text {
+  color: #999;
 }
 
 .file-list {
@@ -7329,6 +7455,16 @@ button.batch-remote-tile-tag:disabled.active {
           <div class="device-header">
             <h2>设备管理</h2>
             <button class="refresh-button" @click="fetchDevices">刷新</button>
+          </div>
+          <div
+            class="probe-bar"
+            :class="{ ok: probeConnected, busy: probeLoading, idle: !selectedDevice }"
+            :title="probeMessage || '点击安装并尝试通讯'"
+            @click="retryProbe"
+          >
+            <span class="probe-dot"></span>
+            <span class="probe-label">探针</span>
+            <span class="probe-text">{{ probeStatusText }}</span>
           </div>
           <div class="device-list-container">
             <div v-if="loading">加载设备中...</div>
