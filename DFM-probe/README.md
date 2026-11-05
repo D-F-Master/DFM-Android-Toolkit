@@ -115,21 +115,25 @@ CRC 错帧丢弃、CMD_QUIT 后重新连入仍可 ping（证明服务继续监�
 | 帧协议全链路 | `python pc/probe_test.py --device 202600298120` | `[6/6] PASS`、`TEST_EXIT_CODE=0`（日志 `.reasonix/logs/frame_probe_test.log`） |
 | 系统 TTS | CMD_TTS → `{"ok":true,"status":"done"}` | logcat 有 `onOutPutCallBack-----LEN=...` / `tts run end` / `onSynthesizeText---4--`，确认真实合成输出 |
 | 边界 | 未知命令 / 空文本 / CRC 错帧 / quit 后重连 | logcat `bad crc, drop frame seq=6`、`client disconnected` 后 `client connected` 再 ping 正常 |
+| 帧日志三段 | `POST /api/probe/message` 实机 | `data.frames` 含 `tx` / `ack` / `rx`：`tx` 与 `data.frame` 一致、ACK 为 `AA 55 <seq> 00 06 ...`、响应帧命令字为 `cmd\|0x80` |
 
-后端纯函数单测 + HTTP 接口回归 40/40 PASS（`.reasonix/logs/frame_backend_verify.log`）：
+后端纯函数单测 + HTTP 接口回归 46/46 PASS（`.reasonix/logs/frame_backend_verify.log`）：
 CRC 与文档 C 实现对拍、组帧/解帧正常+粘包+半包+CRC 错+长度非法+255/256 边界、
 ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 400/422、
-全命令字实机应答、quit 后服务仍监听、离线设备明确失败。
+全命令字实机应答、quit 后服务仍监听、离线设备明确失败；
+另含 `data.frames` 三段真实帧校验（`tx` 与 `data.frame` 一致、ACK 为 `00 06`、
+响应帧命令字为 `cmd|0x80`）。
 
-前端 `npm run build` `BUILD_EXIT=0`（`.reasonix/logs/frame_frontend_build.log`），
-产物字符串检查 14/14 PASS（`.reasonix/logs/frame_bundle_check.log`）。
+前端 `npm run build` `BUILD_EXIT=0`（`.reasonix/logs/frame_log_frontend_build.log`），
+产物字符串检查 18/18 PASS（`.reasonix/logs/frame_log_bundle_check.log`）。
 
 日志：`.reasonix/logs/build.log`、`probe_test.log`、`boundary_test.log`、
 `tts_build.log`、`tts_e2e.log`、`tts_boundary.log`、`probe_verify.log`、
 `probe_http_verify.log`、`probe_message_verify.log`、`probe_page_flow.log`、
 `probe_frontend_build2.log`、`probe_bundle_check.log`、`frame_protocol_round.log`、
 `frame_build.log`、`frame_probe_test.log`、`frame_backend_verify.log`、
-`frame_frontend_build.log`、`frame_bundle_check.log`
+`frame_frontend_build.log`、`frame_bundle_check.log`、
+`frame_log_frontend_build.log`、`frame_log_bundle_check.log`
 （该目录被 `.gitignore` 忽略，不入库）。
 
 ## 页面探针（DFM-frontend）
@@ -141,7 +145,7 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 | --- | --- | --- |
 | `POST /api/probe/check` | `{"deviceId":"..."}` | 只发一帧 CMD_PING 探测，不装 APK |
 | `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 CMD_PING |
-| `POST /api/probe/message` | `{"deviceId":"...","cmd":1,"data":{...}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，帧 hex 在 `data.frame` |
+| `POST /api/probe/message` | `{"deviceId":"...","cmd":1,"data":{...}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
 - `cmd` 限 0~255；`data` 必须是 JSON 对象；数据区超过 255 字节明确返回失败。
 - 服务路由每次都发幂等的 START 广播启动 APK；USB 设备用系统分配的随机本地端口做
@@ -153,6 +157,9 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
   右侧四个测试区（安装并通讯 / 快捷命令 ping·echo·未知命令 / TTS 朗读 / 自定义命令帧），
   下方展示请求、完整应答与帧 hex。自定义命令帧在本地校验命令字 0~255 与数据区 JSON 对象，
   解析失败不会发到后端。
+- 独立页底部「帧日志」按测试累积记录（最新在上、可滚动、可清空）：时间 / 标题 / 设备 /
+  发送帧 / ACK / 响应帧三段真实字节 hex。失败请求也记录并带错误说明，缺失的帧显示 `—`。
+  只记录右侧手动测试（四个测试区 + 安装并通讯 / 仅检测）；圆点点击与进入页面自动安装不写日志。
 - `App_Probe.vue` 与 `App_Utils.vue` 的设备项里，圆点都放在「断开连接」按钮左边：
   绿=通讯正常、红=失败、橙=处理中、灰=未检测；点击圆点=安装并重新通讯。两个页面都用
   `Set` 记住已处理过的 deviceId，只在设备列表刷新时对**新出现**的设备自动调
@@ -179,3 +186,5 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
   `adb connect` 报 10060，网络直连尚未实机验证。
 - 页面未在 uTools GUI 中实际渲染验证；`DFM-frontend/package.json` 无 `vue-tsc` / typecheck
   脚本，vite 只做转译不做类型检查。
+- 未组帧的失败（设备不在线、安装失败、数据区超 255 字节）没有 `frames`，页面帧日志三段
+  显示 `—`；本地 JSON / 命令字校验失败不写帧日志，只显示在结果区。
