@@ -44,7 +44,9 @@ const resultTitle = ref('尚未执行测试');
 const requestText = ref('');
 const responseText = ref('');
 const ttsText = ref('设备语音测试');
-const customJson = ref('{\n  "type": "ping",\n  "payload": "hello from probe"\n}');
+const customCmd = ref('1');
+const customData = ref('{\n  "payload": "hello from probe"\n}');
+const frameText = ref('');
 
 const busy = computed(() => !!probeLoading.value[selectedDevice.value]);
 
@@ -138,15 +140,18 @@ const callProbe = async (url: string, body: Record<string, unknown>, title: stri
   resultTitle.value = title;
   requestText.value = JSON.stringify(body, null, 2);
   responseText.value = '请求中...';
+  frameText.value = '';
   try {
     // 后端安装超时 180s + TTS 朗读最长 90s，前端不能在后端返回前就判失败
     const res = await axios.post(`${API_BASE.value}${url}`, body, { timeout: 200000 });
     const d = res.data;
     const ok = d?.code === 200 && d?.data?.connected === true;
     responseText.value = JSON.stringify(d, null, 2);
+    frameText.value = d?.data?.frame || '';
     setProbeState(deviceId, { status: ok ? 'ok' : 'fail', message: d?.message || '通讯失败' });
   } catch (e: any) {
     responseText.value = `请求失败: ${e?.message || e}`;
+    frameText.value = '';
     setProbeState(deviceId, { status: 'fail', message: e?.message || '请求失败' });
   } finally {
     setProbeBusy(deviceId, false);
@@ -161,49 +166,61 @@ const checkConnect = () => {
   callProbe('/api/probe/check', { deviceId: selectedDevice.value }, '通讯检测');
 };
 
-const sendMessage = (message: Record<string, unknown>, title: string) => {
-  callProbe('/api/probe/message', { deviceId: selectedDevice.value, message }, title);
+const sendMessage = (cmd: number, data: Record<string, unknown>, title: string) => {
+  callProbe('/api/probe/message', { deviceId: selectedDevice.value, cmd, data }, title);
 };
 
 const sendPing = () => {
-  sendMessage({ type: 'ping', payload: `ping-${Date.now()}` }, 'ping');
+  sendMessage(0x01, { payload: `ping-${Date.now()}` }, 'ping');
 };
 
 const sendEcho = () => {
-  sendMessage({ type: 'echo', payload: '你好 DFM-Probe' }, 'echo');
+  sendMessage(0x02, { payload: '你好 DFM-Probe' }, 'echo');
 };
 
 const sendBogus = () => {
-  sendMessage({ type: 'bogus' }, '未知类型');
+  sendMessage(0x7E, {}, '未知命令字');
 };
 
 const sendTts = () => {
-  sendMessage({ type: 'tts', text: ttsText.value }, 'TTS 语音朗读');
+  sendMessage(0x03, { text: ttsText.value }, 'TTS 语音朗读');
+};
+
+const showLocalError = (text: string) => {
+  resultTitle.value = '自定义命令帧';
+  requestText.value = `cmd: ${customCmd.value}\ndata: ${customData.value}`;
+  responseText.value = text;
+  frameText.value = '';
 };
 
 const sendCustomMessage = () => {
   let parsed: any;
   try {
-    parsed = JSON.parse(customJson.value);
+    parsed = JSON.parse(customData.value);
   } catch (e: any) {
-    resultTitle.value = '自定义 JSON 消息';
-    requestText.value = customJson.value;
-    responseText.value = `JSON 解析失败: ${e?.message || e}`;
+    showLocalError(`JSON 解析失败: ${e?.message || e}`);
     return;
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    resultTitle.value = '自定义 JSON 消息';
-    requestText.value = customJson.value;
-    responseText.value = '消息必须是一个 JSON 对象（不能是数组 / null / 基本类型）';
+    showLocalError('数据区必须是一个 JSON 对象（不能是数组 / null / 基本类型）');
     return;
   }
-  sendMessage(parsed, '自定义 JSON 消息');
+  const raw = customCmd.value.trim();
+  const cmd = /^0x[0-9a-f]+$/i.test(raw)
+    ? parseInt(raw, 16)
+    : (/^\d+$/.test(raw) ? parseInt(raw, 10) : NaN);
+  if (!Number.isInteger(cmd) || cmd < 0 || cmd > 255) {
+    showLocalError('命令字必须是 0~255 的整数（可用 0x 前缀）');
+    return;
+  }
+  sendMessage(cmd, parsed, '自定义命令帧');
 };
 
 watch(selectedDevice, (deviceId) => {
   resultTitle.value = deviceId ? '尚未执行测试' : '请先选择设备';
   requestText.value = '';
   responseText.value = '';
+  frameText.value = '';
 });
 
 const goHome = () => {
@@ -274,7 +291,7 @@ onMounted(async () => {
           <div v-else class="cards">
             <div class="card">
               <h3>安装与连接</h3>
-              <p class="card-desc">安装 / 覆盖安装探针 APK，并验证回连通讯。</p>
+              <p class="card-desc">安装 / 覆盖安装探针 APK，并验证帧协议通讯。</p>
               <div class="button-row">
                 <button @click="installAndConnect" :disabled="busy">安装并通讯</button>
                 <button class="secondary" @click="checkConnect" :disabled="busy">仅检测</button>
@@ -282,12 +299,12 @@ onMounted(async () => {
             </div>
 
             <div class="card">
-              <h3>快捷消息</h3>
-              <p class="card-desc">发送内置消息类型，查看设备应答。</p>
+              <h3>快捷命令</h3>
+              <p class="card-desc">发送内置命令字，查看设备应答。</p>
               <div class="button-row">
-                <button @click="sendPing" :disabled="busy">ping</button>
-                <button @click="sendEcho" :disabled="busy">echo</button>
-                <button class="secondary" @click="sendBogus" :disabled="busy">未知类型</button>
+                <button @click="sendPing" :disabled="busy">ping (0x01)</button>
+                <button @click="sendEcho" :disabled="busy">echo (0x02)</button>
+                <button class="secondary" @click="sendBogus" :disabled="busy">未知命令 (0x7E)</button>
               </div>
             </div>
 
@@ -301,9 +318,12 @@ onMounted(async () => {
             </div>
 
             <div class="card">
-              <h3>自定义 JSON 消息</h3>
-              <p class="card-desc">任意 JSON 对象原样发给设备，用于调试协议。</p>
-              <textarea v-model="customJson" class="json-input" spellcheck="false"></textarea>
+              <h3>自定义命令帧</h3>
+              <p class="card-desc">命令字 + UTF-8 JSON 数据区，单帧最多 255 字节。</p>
+              <div class="input-row">
+                <input v-model="customCmd" class="cmd-input" placeholder="命令字 0-255，如 1 或 0x7E">
+              </div>
+              <textarea v-model="customData" class="json-input" spellcheck="false"></textarea>
               <div class="button-row">
                 <button @click="sendCustomMessage" :disabled="busy">发送</button>
               </div>
@@ -311,6 +331,10 @@ onMounted(async () => {
 
             <div class="card result-card">
               <h3>{{ resultTitle }}</h3>
+              <div class="frame-row" v-if="frameText">
+                <span class="result-label">帧</span>
+                <pre>{{ frameText }}</pre>
+              </div>
               <div class="result-grid">
                 <div class="result-col">
                   <div class="result-label">请求</div>
@@ -619,6 +643,35 @@ main {
   font-size: 12px;
   resize: vertical;
   box-sizing: border-box;
+}
+
+.cmd-input {
+  flex: 1;
+  height: 32px;
+  padding: 0 8px;
+  margin-bottom: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+}
+
+.frame-row {
+  margin-bottom: 10px;
+}
+
+.frame-row pre {
+  margin: 0;
+  padding: 8px;
+  max-height: 120px;
+  overflow: auto;
+  background-color: #f7f7f7;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .result-grid {
