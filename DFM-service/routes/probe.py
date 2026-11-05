@@ -19,6 +19,8 @@ PACKAGE = "com.dfm.probe"
 RECEIVER = PACKAGE + "/.ConnectReceiver"
 ACTION = "com.dfm.probe.CONNECT"
 CONNECT_TIMEOUT = 15.0
+# 自定义消息可能触发 TTS 朗读（引擎初始化最长 30s + 等待 onDone 最长 60s），单独放宽读超时
+MESSAGE_TIMEOUT = 120.0
 INSTALL_TIMEOUT = 180
 # routes/probe.py -> routes/ -> DFM-service/ -> DFM-Android-Toolkit/
 APK_PATH = Path(__file__).resolve().parents[2] / "DFM-probe" / "DFMProbe.apk"
@@ -26,6 +28,11 @@ APK_PATH = Path(__file__).resolve().parents[2] / "DFM-probe" / "DFMProbe.apk"
 
 class ProbeRequest(BaseModel):
     deviceId: str
+
+
+class ProbeMessageRequest(BaseModel):
+    deviceId: str
+    message: dict
 
 
 def _adb(device_id: str, *args: str, timeout: int = 15) -> tuple:
@@ -66,10 +73,13 @@ def _stop_agent(device_id: str) -> None:
         logger.warning(f"force-stop {PACKAGE} failed: {e}")
 
 
-def run_probe(device_id: str, install: bool) -> dict:
+def run_probe(device_id: str, install: bool, message: dict = None) -> dict:
     """
     对指定设备完成一次探针通讯：
-    可选安装 APK -> 广播 PC 地址 -> 等设备反向连回 -> hello + ping/pong 校验。
+    可选安装 APK -> 广播 PC 地址 -> 等设备反向连回 -> hello + 校验。
+
+    message 为 None 时走默认 ping/pong 探测；否则把该 dict 原样发给设备，
+    并把设备应答放进 data.response，供页面调试任意消息（含 tts）。
 
     使用 adb reverse 把设备上的 127.0.0.1:port 转发到 PC，
     这样 USB 设备与网络设备都能连通，也不依赖 PC 的入站防火墙规则。
@@ -120,11 +130,20 @@ def run_probe(device_id: str, install: bool) -> dict:
         if hello.get("type") != "hello":
             return {"connected": False, "reason": f"首包不是 hello: {hello}"}
 
-        payload = f"probe-{int(time.time())}"
-        _send(conn, {"type": "ping", "payload": payload})
-        pong = _read_line(conn, CONNECT_TIMEOUT)
-        if pong.get("type") != "pong" or pong.get("payload") != payload:
-            return {"connected": False, "reason": f"ping/pong 校验失败: {pong}"}
+        if message is None:
+            request = {"type": "ping", "payload": f"probe-{int(time.time())}"}
+            read_timeout = CONNECT_TIMEOUT
+        else:
+            request = message
+            # tts 朗读可能要等引擎初始化(30s)与 onDone(60s)，单独放宽
+            read_timeout = MESSAGE_TIMEOUT
+
+        _send(conn, request)
+        response = _read_line(conn, read_timeout)
+        if message is None and (
+            response.get("type") != "pong" or response.get("payload") != request["payload"]
+        ):
+            return {"connected": False, "reason": f"ping/pong 校验失败: {response}"}
 
         try:
             _send(conn, {"type": "quit"})
@@ -138,6 +157,8 @@ def run_probe(device_id: str, install: bool) -> dict:
             "port": port,
             "peer": str(addr),
             "hello": hello,
+            "request": request,
+            "response": response,
         }
     except Exception as e:
         return {"connected": False, "reason": f"{type(e).__name__}: {e}"}
@@ -160,11 +181,11 @@ def run_probe(device_id: str, install: bool) -> dict:
         _stop_agent(device_id)
 
 
-def _result(device_id: str, install: bool) -> dict:
+def _result(device_id: str, install: bool, message: dict = None) -> dict:
     device_id = (device_id or "").strip()
     if not device_id:
         return {"code": 400, "message": "deviceId 不能为空", "data": {"connected": False}}
-    data = run_probe(device_id, install)
+    data = run_probe(device_id, install, message)
     connected = bool(data.get("connected"))
     logger.info(f"probe device={device_id} install={install} connected={connected} {data.get('reason', '')}")
     return {
@@ -184,3 +205,9 @@ def probe_check(req: ProbeRequest):
 def probe_connect(req: ProbeRequest):
     """安装/覆盖安装 APK 后再做一次探测，供页面点击「安装通讯」使用。"""
     return _result(req.deviceId, True)
+
+
+@router.post("/probe/message")
+def probe_message(req: ProbeMessageRequest):
+    """把一条自定义 JSON 消息发给设备探针，原样返回设备应答，供页面调试。"""
+    return _result(req.deviceId, False, req.message)
