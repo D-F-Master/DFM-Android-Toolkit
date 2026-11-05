@@ -84,11 +84,15 @@ $alignedApk = Join-Path $work 'aligned.apk'
 if ($LASTEXITCODE -ne 0) { throw 'zipalign failed' }
 
 Write-Host '==> generate debug keystore'
-$keystore = Join-Path $work 'debug.keystore'
-& $keytool -genkeypair -alias dfmprobe -keystore $keystore -storetype JKS `
-    -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 `
-    -dname 'CN=DFM Probe,OU=Dev,O=DFM,C=CN'
-if ($LASTEXITCODE -ne 0) { throw 'keytool failed' }
+# keystore 固定在工程根目录（dist 外），存在则复用：
+# 每次重新生成会导致签名变化，设备上已装的旧版本将无法覆盖安装
+$keystore = Join-Path $PSScriptRoot 'debug.keystore'
+if (-not (Test-Path $keystore)) {
+    & $keytool -genkeypair -alias dfmprobe -keystore $keystore -storetype JKS `
+        -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 `
+        -dname 'CN=DFM Probe,OU=Dev,O=DFM,C=CN'
+    if ($LASTEXITCODE -ne 0) { throw 'keytool failed' }
+}
 
 Write-Host '==> apksigner'
 & $apksigner sign --ks $keystore --ks-pass pass:android --key-pass pass:android `
