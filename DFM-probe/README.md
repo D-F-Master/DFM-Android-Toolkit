@@ -107,24 +107,38 @@ tts 后连接仍可 `ping`→`pong`；连续第二次朗读复用已初始化引
 `boundary_test.log`、`tts_build.log`、`tts_e2e.log`、`tts_boundary.log`
 （该目录被 `.gitignore` 忽略，不入库）。
 
-## 页面探针（DFM-frontend ADB 工具页）
+## 页面探针（DFM-frontend）
 
-- `DFM-service/routes/probe.py` 提供 `POST /api/probe/check`（只探测）与
-  `POST /api/probe/connect`（先 `install -r` 再探测），请求体 `{"deviceId":"..."}`，
-  返回 `{"code":200,"message":...,"data":{"connected":true|false,...}}`。
+后端 `DFM-service/routes/probe.py` 三个端点，统一返回
+`{"code":200,"message":...,"data":{"connected":true|false,...}}`：
+
+| 端点 | 请求体 | 行为 |
+| --- | --- | --- |
+| `POST /api/probe/check` | `{"deviceId":"..."}` | 只探测，不装 APK |
+| `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再探测 |
+| `POST /api/probe/message` | `{"deviceId":"...","message":{...}}` | 把 `message` 原样发给设备，应答放在 `data.response` |
+
 - 与 `pc/probe_test.py` 默认走 LAN 直连不同，服务路由统一走 `adb reverse`：
   PC 监听 `127.0.0.1:<port>`，设备连本机回环由 adbd 转发，USB 设备与网络设备都能连通，
-  也不依赖 PC 的入站防火墙规则。探测结束后自动 `adb reverse --remove` 并 `force-stop`
+  也不依赖 PC 的入站防火墙规则。每次探测结束自动 `adb reverse --remove` 并 `force-stop`
   常驻服务，避免 APK 对已关闭的端口空转重连。
-- 前端 `DFM-frontend/src/menu/App_Utils.vue` 左侧「设备管理」下方有「探针」条：
-  绿=最近一次探测通讯正常，红=失败，点击=安装并重新通讯；进入页面/切换设备自动探测一次，
-  用序号丢弃旧响应，避免切换设备后结果串台。
+- `message` 端点读超时单独设为 120 秒（`MESSAGE_TIMEOUT`），因为 TTS 朗读可能要等
+  引擎初始化（30 秒）与 `onDone`（60 秒）；`check` / `connect` 仍是 15 秒。
+- 首页菜单「探针测试」进入独立页 `DFM-frontend/src/menu/App_Probe.vue`：左侧选设备，
+  右侧四个测试区（安装并通讯 / 快捷消息 ping·echo·未知类型 / TTS 朗读 / 自定义 JSON
+  消息），下方展示请求与完整应答。自定义消息只在本地校验是否为 JSON 对象，解析失败
+  不会发到后端。
+- `App_Probe.vue` 与 `App_Utils.vue` 的设备项里，圆点都放在「断开连接」按钮左边：
+  绿=通讯正常、红=失败、橙=处理中、灰=未检测；点击圆点=安装并重新通讯。两个页面都用
+  `Set` 记住已处理过的 deviceId，只在设备列表刷新时对**新出现**的设备自动调
+  `/api/probe/connect`，不重复安装。
 - 服务路由从 `DFM-probe/DFMProbe.apk` 读取 APK。**源码运行（`.venv`）下路径可解析；
   PyInstaller 打包成 exe 后该路径失效**（`main.spec` / `main-onefile.spec` 的 `datas`
   只收集 `data`、`lib`），届时 `/api/probe/connect` 会返回「找不到 APK」；
-  `/api/probe/check` 只探测、不装 APK，不受影响。此项尚未在打包产物上验证。
+  `/api/probe/check`、`/api/probe/message` 不装 APK，不受影响。此项尚未在打包产物上验证。
 - 验证日志：`.reasonix/logs/probe_verify.log`、`probe_http_verify.log`、
-  `probe_frontend_build.log`。
+  `probe_frontend_build.log`、`probe_message_verify.log`、`probe_page_flow.log`、
+  `probe_frontend_build2.log`、`probe_bundle_check.log`。
 
 ## 已知边界
 
