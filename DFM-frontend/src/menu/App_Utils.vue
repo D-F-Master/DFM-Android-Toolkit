@@ -2058,6 +2058,7 @@ const fetchDevices = async () => {
         selectDevice(devices.value[0].deviceId)
       }
       loadBatchDeviceInfos()
+      autoInstallNewDevices()
     }
   } catch (error) {
     console.error('获取设备列表失败:', error)
@@ -4313,60 +4314,64 @@ watch(serialScheme, async (scheme) => {
   if (selectedDevice.value) await loadPtyStatus()
 })
 
-// ===== 探针状态指示 =====
-const probeConnected = ref(false);
-const probeLoading = ref(false);
-const probeMessage = ref('');
-// 设备切换后旧请求的响应要丢弃，避免把上一台设备的结果盖到当前设备上
-let probeSeq = 0;
+// ===== 探针状态指示（每台设备一个圆点，放在断开按钮左边） =====
+interface ProbeState {
+  status: 'idle' | 'busy' | 'ok' | 'fail';
+  message: string;
+}
 
-const probeStatusText = computed(() => {
-  if (!selectedDevice.value) return '未选择设备';
-  if (probeLoading.value) return '安装通讯中...';
-  if (probeConnected.value) return '通讯正常';
-  if (probeMessage.value) return '通讯失败';
-  return '未检测';
-});
+const probeStates = ref<Record<string, ProbeState>>({});
+const probeLoadingMap = ref<Record<string, boolean>>({});
+// 只对刷新时新出现的设备自动安装，已处理过的不重复装
+const probeKnownDevices = new Set<string>();
 
-const runProbe = async (install: boolean) => {
-  const deviceId = selectedDevice.value;
-  const seq = ++probeSeq;
-  if (!deviceId) {
-    probeConnected.value = false;
-    probeMessage.value = '请先选择设备';
-    return;
-  }
-  probeLoading.value = true;
+const probeStateOf = (id: string): ProbeState =>
+  probeStates.value[id] || { status: 'idle', message: '未检测' };
+
+const setProbeState = (id: string, state: ProbeState) => {
+  probeStates.value = { ...probeStates.value, [id]: state };
+};
+
+const setProbeBusy = (id: string, value: boolean) => {
+  const next = { ...probeLoadingMap.value };
+  if (value) next[id] = true;
+  else delete next[id];
+  probeLoadingMap.value = next;
+};
+
+const runProbe = async (deviceId: string, install: boolean) => {
+  if (!deviceId || probeLoadingMap.value[deviceId]) return;
+  setProbeBusy(deviceId, true);
+  setProbeState(deviceId, { status: 'busy', message: install ? '安装通讯中...' : '检测中...' });
   try {
     const url = install ? '/api/probe/connect' : '/api/probe/check';
     // 后端安装超时 180s + 连接等待 15s，前端不能在后端还没返回前就判失败
     const res = await axios.post(`${API_BASE.value}${url}`, { deviceId }, { timeout: 200000 });
-    if (seq !== probeSeq) return;
     const d = res.data;
-    probeConnected.value = d?.code === 200 && d?.data?.connected === true;
-    probeMessage.value = d?.message || '';
+    const ok = d?.code === 200 && d?.data?.connected === true;
+    setProbeState(deviceId, { status: ok ? 'ok' : 'fail', message: d?.message || '通讯失败' });
   } catch (e: any) {
-    if (seq !== probeSeq) return;
-    probeConnected.value = false;
-    probeMessage.value = e?.message || '请求失败';
+    setProbeState(deviceId, { status: 'fail', message: e?.message || '请求失败' });
   } finally {
-    if (seq === probeSeq) probeLoading.value = false;
+    setProbeBusy(deviceId, false);
   }
 };
 
-const retryProbe = () => {
-  if (!selectedDevice.value || probeLoading.value) return;
-  runProbe(true);
+const retryProbe = (deviceId: string) => {
+  runProbe(deviceId, true);
 };
 
-// 进入页面（选中第一台设备）或切换设备时，自动探测一次并重置状态
-watch(selectedDevice, (deviceId) => {
-  probeSeq++;
-  probeConnected.value = false;
-  probeMessage.value = '';
-  probeLoading.value = false;
-  if (deviceId) runProbe(false);
-});
+const autoInstallNewDevices = () => {
+  const current = new Set(devices.value.map(d => d.deviceId));
+  for (const id of Array.from(probeKnownDevices)) {
+    if (!current.has(id)) probeKnownDevices.delete(id);
+  }
+  for (const d of devices.value) {
+    if (!d.deviceId || probeKnownDevices.has(d.deviceId)) continue;
+    probeKnownDevices.add(d.deviceId);
+    runProbe(d.deviceId, true);
+  }
+};
 </script>
 <style scoped>
 .sidebar {
@@ -4382,76 +4387,30 @@ watch(selectedDevice, (deviceId) => {
   margin-bottom: 8px;
 }
 
-.probe-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-  background-color: #fff;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  cursor: pointer;
-  user-select: none;
-  transition: background-color 0.2s;
-}
-
-.probe-bar:hover {
-  background-color: #f5f5f5;
-}
-
-.probe-bar.busy {
-  cursor: progress;
-  opacity: 0.7;
-}
-
-.probe-bar.idle {
-  cursor: default;
-  opacity: 0.7;
-}
-
 .probe-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background-color: #f44336;
   flex-shrink: 0;
+  background-color: #999;
+  cursor: pointer;
+  transition: background-color 0.2s;
 }
 
-.probe-bar.ok .probe-dot {
+.probe-dot.ok {
   background-color: #4caf50;
 }
 
-.probe-bar.busy .probe-dot {
+.probe-dot.fail {
+  background-color: #f44336;
+}
+
+.probe-dot.busy {
   background-color: #ff9800;
 }
 
-.probe-bar.idle .probe-dot {
-  background-color: #999;
-}
-
-.probe-label {
-  font-weight: bold;
-  font-size: 13px;
-  color: #333;
-}
-
-.probe-text {
-  font-size: 12px;
-  color: #f44336;
-  margin-left: auto;
-}
-
-.probe-bar.ok .probe-text {
-  color: #4caf50;
-}
-
-.probe-bar.busy .probe-text {
-  color: #ff9800;
-}
-
-.probe-bar.idle .probe-text {
-  color: #999;
+.probe-dot:hover {
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
 }
 
 .file-list {
@@ -7457,16 +7416,6 @@ button.batch-remote-tile-tag:disabled.active {
             <h2>设备管理</h2>
             <button class="refresh-button" @click="fetchDevices">刷新</button>
           </div>
-          <div
-            class="probe-bar"
-            :class="{ ok: probeConnected, busy: probeLoading, idle: !selectedDevice }"
-            :title="probeMessage || '点击安装并尝试通讯'"
-            @click="retryProbe"
-          >
-            <span class="probe-dot"></span>
-            <span class="probe-label">探针</span>
-            <span class="probe-text">{{ probeStatusText }}</span>
-          </div>
           <div class="device-list-container">
             <div v-if="loading">加载设备中...</div>
             <div v-else-if="devices.length === 0">无设备连接</div>
@@ -7484,6 +7433,12 @@ button.batch-remote-tile-tag:disabled.active {
                     {{ device.status === 'device' ? '已连接' : device.status === 'offline' ? '离线' : device.status }}
                   </div>
                 </div>
+                <span
+                  class="probe-dot"
+                  :class="probeStateOf(device.deviceId).status"
+                  :title="`探针: ${probeStateOf(device.deviceId).message}（点击安装通讯）`"
+                  @click.stop="retryProbe(device.deviceId)"
+                ></span>
                 <button class="disconnect-btn" @click.stop="confirmDisconnect(device.deviceId)" title="断开连接">
                   <svg viewBox="0 0 1024 1024" width="12" height="12" fill="currentColor">
                     <path d="M816.952281 614.064456l-45.118858-45.118857L895.99028 447.98866a223.99433 223.99433 0 0 0-316.791981-316.791981l-124.156857 120.956938-45.118858-45.438849 122.556898-122.236906a287.99271 287.99271 0 0 1 407.029697 407.029697zM288.00567 1023.974081a287.99271 287.99271 0 0 1-203.514849-491.507559l122.556898-122.556898 45.118858 45.118858-122.556898 122.556898A223.99433 223.99433 0 0 0 448.00162 895.977321l122.556898-122.556898 45.118858 45.118858-122.556898 122.556898A285.752767 285.752767 0 0 1 288.00567 1023.974081zM137.257486 182.555379L182.50434 137.276525l255.897523 255.897523-45.246855 45.246854zM585.214147 630.544039l45.246854-45.246854 255.897523 255.897522-45.246855 45.246855z"/>
