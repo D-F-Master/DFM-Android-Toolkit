@@ -1,40 +1,57 @@
 <script lang="ts" setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import App_Utils from './menu/App_Utils.vue';
 import App_PortTool from './menu/App_PortTool.vue';
 import App_Settings from './menu/App_Settings.vue';
 import App_Production from './menu/App_Production.vue';
+import App_Probe from './menu/App_Probe.vue';
+import { useAppConfig } from './composables/useAppConfig';
 
 const currentPage = ref('home');
-const appVersion = ref('V2.0.0');
 
-// 加载配置获取版本号
-onMounted(async () => {
-  try {
-    const response = await fetch('/config.json');
-    if (response.ok) {
-      const config = await response.json();
-      if (config.version) {
-        appVersion.value = config.version;
-      }
-    }
-  } catch (error) {
-    console.error('加载配置失败:', error);
+// ===== 菜单注册表 =====
+// 新增功能页：在此添加一项（key 需与 config.json 的 features 键、currentPage 的值一致），
+// 再在模板底部挂上对应组件即可。
+const MENU_ITEMS = [
+  {
+    key: 'utils',
+    label: 'ADB工具',
+    icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm4 9a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm-2 3a1 1 0 100 2h10a1 1 0 100-2H5z" clip-rule="evenodd"/></svg>'
+  },
+  {
+    key: 'portTool',
+    label: '端口工具',
+    icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z"/></svg>'
+  },
+  {
+    key: 'production',
+    label: '生产工具',
+    icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" transform="translate(-1 -1) scale(0.92)"/></svg>'
+  },
+  {
+    key: 'probe',
+    label: '探针测试',
+    icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path fill-rule="evenodd" d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 2a6 6 0 100 12 6 6 0 000-12zm0 2a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 100 4 2 2 0 000-4z" clip-rule="evenodd"/><circle cx="10" cy="10" r="1"/></svg>'
   }
-});
+];
 
-const enterUtils = () => {
-  currentPage.value = 'utils';
-};
+const ARROW_ICON = '<svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>';
 
-const enterPortTool = () => {
-  currentPage.value = 'portTool';
-};
+// ===== 全局配置（版本号 / 版别 / 功能开关） =====
+const { config: appConfig, version: appVersion, edition: appEdition, isFeatureOn } = useAppConfig();
 
-const enterProduction = () => {
-  currentPage.value = 'production';
-};
+// 简易版可通过 defaultPage 跳过首页直接进入某功能页（如 "utils"），默认 "home"
+// 仅在配置加载时且仍停留在首页时生效，且目标页必须未被 features 关闭
+watch(() => appConfig.value.defaultPage, (page) => {
+  if (page && page !== 'home' && currentPage.value === 'home' && isFeatureOn(page)) {
+    currentPage.value = page;
+  }
+}, { immediate: true });
 
+// 按配置过滤后的菜单项（features 未定义的功能默认显示）
+const visibleMenus = computed(() =>
+  MENU_ITEMS.filter(item => isFeatureOn(item.key))
+);
 
 const goBack = () => {
   currentPage.value = 'home';
@@ -53,7 +70,7 @@ const goBack = () => {
     </div>
 
     <!-- 右上角设置按钮 -->
-    <button class="settings-button" @click="currentPage = 'settings'">
+    <button v-if="isFeatureOn('settings')" class="settings-button" @click="currentPage = 'settings'">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20">
         <circle cx="12" cy="12" r="3"/>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -89,59 +106,30 @@ const goBack = () => {
         <span class="divider-dot"></span>
       </div>
 
-      <button class="menu-button" @click="enterUtils">
-        <span class="btn-icon">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
-            <path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm4 9a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm-2 3a1 1 0 100 2h10a1 1 0 100-2H5z" clip-rule="evenodd"/>
-          </svg>
-        </span>
-        <span class="btn-text">ADB工具</span>
-        <span class="btn-arrow">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
-            <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-        </span>
-      </button>
-
-      <button class="menu-button" @click="enterPortTool">
-        <span class="btn-icon">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
-            <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z"/>
-          </svg>
-        </span>
-        <span class="btn-text">端口工具</span>
-        <span class="btn-arrow">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
-            <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-        </span>
-      </button>
-
-      <button class="menu-button" @click="enterProduction">
-        <span class="btn-icon">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
-            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" transform="translate(-1 -1) scale(0.92)"/>
-          </svg>
-        </span>
-        <span class="btn-text">生产工具</span>
-        <span class="btn-arrow">
-          <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
-            <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
-          </svg>
-        </span>
+      <!-- 功能菜单：按 config.json 的 features 开关渲染 -->
+      <button
+        v-for="item in visibleMenus"
+        :key="item.key"
+        class="menu-button"
+        @click="currentPage = item.key"
+      >
+        <span class="btn-icon" v-html="item.icon"></span>
+        <span class="btn-text">{{ item.label }}</span>
+        <span class="btn-arrow" v-html="ARROW_ICON"></span>
       </button>
 
       <!--
-        ⬆⬆⬆ 新按钮加在上方 ⬆⬆⬆
+        ⬆⬆⬆ 新按钮改到上方 MENU_ITEMS 注册表 + config.json 的 features ⬆⬆⬆
       -->
 
-      <p class="version">{{ appVersion }}</p>
+      <p class="version">{{ appVersion }}<template v-if="appEdition"> · {{ appEdition }}</template></p>
     </div>
   </div>
   <App_Utils v-if="currentPage === 'utils'" @back="goBack" />
   <App_PortTool v-else-if="currentPage === 'portTool'" @back="goBack" />
   <App_Settings v-else-if="currentPage === 'settings'" @back="goBack" />
   <App_Production v-else-if="currentPage === 'production'" @back="goBack" />
+  <App_Probe v-else-if="currentPage === 'probe'" @back="goBack" />
 </template>
 
 <style scoped>
