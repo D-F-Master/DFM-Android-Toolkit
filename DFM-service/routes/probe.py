@@ -159,16 +159,18 @@ class FrameReader:
                 del self.buf[:1]
                 continue
             del self.buf[:frame_len]
-            return seq, cmd, frame[5:5 + length]
+            # 第 4 项是收到的完整原始帧字节，页面帧日志直接展示真实字节、不重组
+            return seq, cmd, frame[5:5 + length], frame
 
 
 def recv_ack(reader: FrameReader, conn: socket.socket, seq: int, cmd: int, frame: bytes) -> tuple:
     """停等 ACK：T=ACK_TIMEOUT，超时用相同帧序重发，最多再发 MAX_RETRY 次。
 
-    返回 (是否收到 ACK, 期间缓存的同帧序响应帧或 None)。
+    返回 (是否收到 ACK, 期间缓存的同帧序响应帧 (cmd, data, raw) 或 None, ACK 帧原始字节)。
     """
     pending = None
     got_ack = False
+    ack_raw = b""
     for _ in range(MAX_RETRY + 1):
         conn.sendall(frame)
         deadline = time.monotonic() + ACK_TIMEOUT
@@ -177,31 +179,32 @@ def recv_ack(reader: FrameReader, conn: socket.socket, seq: int, cmd: int, frame
             if remaining <= 0:
                 break
             try:
-                r_seq, r_cmd, r_data = reader.read_frame(remaining)
+                r_seq, r_cmd, r_data, r_raw = reader.read_frame(remaining)
             except TimeoutError:
                 break
             if r_seq != seq:
                 continue
             if r_cmd == CMD_ACK:
                 got_ack = True
+                ack_raw = r_raw
                 break
             if r_cmd in (cmd | 0x80, CMD_ERROR):
-                pending = (r_cmd, r_data)
+                pending = (r_cmd, r_data, r_raw)
         if got_ack or pending is not None:
             break
-    return got_ack, pending
+    return got_ack, pending, ack_raw
 
 
-def recv_response(reader: FrameReader, seq: int, cmd: int, pending: tuple = None) -> dict:
-    """取同帧序的响应帧（命令字 cmd|0x80 或 0xFF），解析 UTF-8 JSON。"""
+def recv_response(reader: FrameReader, seq: int, cmd: int, pending: tuple = None) -> tuple:
+    """取同帧序的响应帧（命令字 cmd|0x80 或 0xFF），返回 (解析后的 JSON, 原始帧字节)。"""
     if pending is None:
         deadline = time.monotonic() + RESPONSE_TIMEOUT
         while True:
-            r_seq, r_cmd, r_data = reader.read_frame(deadline - time.monotonic())
+            r_seq, r_cmd, r_data, r_raw = reader.read_frame(deadline - time.monotonic())
             if r_seq == seq and r_cmd in (cmd | 0x80, CMD_ERROR):
-                pending = (r_cmd, r_data)
+                pending = (r_cmd, r_data, r_raw)
                 break
-    return json.loads(pending[1].decode("utf-8"))
+    return json.loads(pending[1].decode("utf-8")), pending[2]
 
 
 def _connect_with_retry(host: str, port: int, attempts: int = 10, interval: float = 0.3) -> socket.socket:
@@ -280,10 +283,18 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
         reader = FrameReader(conn)
         seq = _next_seq(device_id)
         frame = pack_frame(seq, cmd, payload)
-        got_ack, pending = recv_ack(reader, conn, seq, cmd, frame)
+        # 页面帧日志展示真实收到的字节：发送帧 / ACK 帧 / 响应帧三段 hex
+        frames = {"tx": frame.hex(" ").upper(), "ack": "", "rx": ""}
+        got_ack, pending, ack_raw = recv_ack(reader, conn, seq, cmd, frame)
+        frames["ack"] = ack_raw.hex(" ").upper()
         if not got_ack and pending is None:
-            return {"connected": False, "reason": f"ACK 等待超时（共发 {MAX_RETRY + 1} 次）"}
-        response = recv_response(reader, seq, cmd, pending)
+            return {
+                "connected": False,
+                "reason": f"ACK 等待超时（共发 {MAX_RETRY + 1} 次）",
+                "frames": frames,
+            }
+        response, rx_raw = recv_response(reader, seq, cmd, pending)
+        frames["rx"] = rx_raw.hex(" ").upper()
 
         return {
             "connected": True,
@@ -292,7 +303,8 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
             "cmd": cmd,
             "request": request,
             "response": response,
-            "frame": frame.hex(" ").upper(),
+            "frame": frames["tx"],
+            "frames": frames,
             "host": host,
             "port": port,
         }
