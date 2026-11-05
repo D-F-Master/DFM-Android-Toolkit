@@ -4339,7 +4339,8 @@ const runProbe = async (install: boolean) => {
   probeLoading.value = true;
   try {
     const url = install ? '/api/probe/connect' : '/api/probe/check';
-    const res = await axios.post(`${API_BASE.value}${url}`, { deviceId }, { timeout: 60000 });
+    // 后端安装超时 180s + 连接等待 15s，前端不能在后端还没返回前就判失败
+    const res = await axios.post(`${API_BASE.value}${url}`, { deviceId }, { timeout: 200000 });
     if (seq !== probeSeq) return;
     const d = res.data;
     probeConnected.value = d?.code === 200 && d?.data?.connected === true;
