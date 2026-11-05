@@ -16,6 +16,7 @@ DFM-probe/
 │   └── ProbeService.java        # 前台服务：连回 PC + 按行收发 JSON
 ├── res/                         # app_name / 通知栏小图标
 ├── build.ps1                    # 不用 Gradle，直接调 SDK build-tools 打包签名
+├── debug.keystore               # 固定调试签名（勿删，删了重装会签名冲突）
 ├── DFMProbe.apk                 # 构建产物（已签名，可直接 adb install）
 ├── pc/probe_test.py             # PC 端联调脚本
 └── dist/                        # 构建中间产物（被 .gitignore 忽略）
@@ -53,12 +54,17 @@ PC                                      设备 (com.dfm.probe)
   │ <── {"type":"pong","payload":"..."}  │
   │ ──> {"type":"echo","payload":"..."}  │
   │ <── {"type":"echo","payload":"..."}  │
+  │ ──> {"type":"tts","text":"..."}      │
+  │ <── {"type":"tts","status":"done"}   │
   │ ──> {"type":"quit"}                  │
   │ <── {"type":"bye"}                   │
 ```
 
 协议：UTF-8、换行分隔的 JSON。设备端连上后先发 `hello`；
-支持 `ping`/`echo`，其它 type 返回 `{"type":"error","message":...}`。
+支持 `ping`/`echo`/`tts`，其它 type 返回 `{"type":"error","message":...}`。
+`tts` 用系统 `TextToSpeech` 朗读 `text`，读完回 `{"type":"tts","status":"done"}`，
+失败回 `{"type":"tts","status":"error","message":...}`（连接不断开）。
+空文本、引擎不可用、朗读超时都会明确回 error，不会崩服务。
 断线后 APK 每 3 秒自动重连；PC 重新广播新地址会打断旧连接并改用新地址。
 
 ## 联调测试
@@ -71,25 +77,35 @@ python pc/probe_test.py --device 192.168.0.59:5555
 `--host` 可手动指定发给设备的地址（默认用 UDP connect 自动探测本机出口 IP）。
 若 Windows 防火墙拦住入站，用 `--reverse` 走 `adb reverse`（设备连
 `127.0.0.1:<port>`，由 adbd 转发回 PC）。
+`--tts-text "你好"` 可自定义朗读文本（默认 `设备语音测试`），
+`--skip-install` 跳过安装步骤。
 
 ## 实机验证结果（2026-11-05，设备 192.168.0.59:5555 / Android 11 / rk3568_r）
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
-| 构建签名 | `powershell -ExecutionPolicy Bypass -File build.ps1` | `DFMProbe.apk` 12762 bytes，apksigner v1/v2/v3 均 `true` |
-| 安装 | `adb install -r DFMProbe.apk` | `Success`，`pm list packages` 可见 `com.dfm.probe` |
+| 构建签名 | `powershell -ExecutionPolicy Bypass -File build.ps1` | `DFMProbe.apk` 16858 bytes，apksigner v1/v2/v3 均 `true` |
+| 安装 | `adb install -r DFMProbe.apk` | `Success`，`pm list packages` 可见 `com.dfm.probe`；keystore 固定在工程根目录，重复构建签名不变，可直接覆盖安装 |
 | LAN 直连 | `python pc/probe_test.py --device 192.168.0.59:5555` | `PASS`，设备 `192.168.0.59` 主动回连到 `192.168.2.93` |
 | 兜底通道 | `python pc/probe_test.py --reverse --skip-install` | `PASS`，走 `adb reverse` 从设备 `127.0.0.1` 回连 |
 | hello | 连接建立后首包 | `{"type":"hello","device":"rk3568_r","sdk":30,"abi":"arm64-v8a","package":"com.dfm.probe"}` |
 | 双向收发 | `ping`→`pong`、`echo`（含中文 `你好 DFM-Probe`）、`quit`→`bye` | 全部符合预期 |
+| 系统 TTS | `{"type":"tts","text":"设备语音测试"}` → `{"type":"tts","status":"done"}` | `PASS`；讯飞引擎 logcat 有 `onSynthesizeText` / `onOutPutCallBack LEN=...` / `tts run end`，确认真实合成输出 |
 
 边界场景（临时脚本，日志在 `.reasonix/logs/boundary_test.log`）：广播缺参数 /
 空 host / 端口 70000 均被 `ConnectReceiver` 拒绝（3 条 `invalid host/port`，未拉起服务）；
 未知 type 返回 `{"type":"error",...}`；坏 JSON 只断当前连接不崩溃；`pidof com.dfm.probe`
 仍存活，logcat 无 `FATAL EXCEPTION`。共 10 项检查全通过。
 
+TTS 边界（`.reasonix/logs/tts_boundary.log`，11/11 通过）：空文本 / 缺 `text` 字段 /
+纯空格文本 → `{"type":"tts","status":"error","message":"empty text"}`；未知 type →
+`{"type":"error","message":"unknown type: bogus"}`；中文+数字文本正常朗读 → `done`；
+tts 后连接仍可 `ping`→`pong`；连续第二次朗读复用已初始化引擎 → `done`；
+`quit`→`bye`；进程存活；logcat 无 `FATAL EXCEPTION`。
+
 日志：`.reasonix/logs/build.log`、`probe_test.log`、`probe_test_reverse.log`、
-`boundary_test.log`（该目录被 `.gitignore` 忽略，不入库）。
+`boundary_test.log`、`tts_build.log`、`tts_e2e.log`、`tts_boundary.log`
+（该目录被 `.gitignore` 忽略，不入库）。
 
 ## 页面探针（DFM-frontend ADB 工具页）
 
@@ -114,5 +130,9 @@ python pc/probe_test.py --device 192.168.0.59:5555
 
 - 服务返回 `START_NOT_STICKY`：进程被系统杀掉后不会自行恢复，需要 PC 重新广播地址。
 - 一次只服务一个连接；连接断开后进入重连循环。
-- 当前只做「通讯」验证，尚未实现 root shell、输入注入、截屏等控制能力。
+- 当前只做「通讯 + 系统 TTS 朗读」验证，尚未实现 root shell、输入注入、截屏等控制能力。
 - 通知常驻（前台服务），Android 8+ 需要通知渠道，本工程已处理。
+- TTS 依赖设备装有可用引擎（本机为 `com.iflytek.speechcloud`）；Android 11 (targetSdk 30)
+  必须在清单声明 `<queries>` 里含 `android.intent.action.TTS_SERVICE`，否则 bind 不上引擎、
+  `onInit` 立即回 `ERROR`。引擎冷启动可达 10 秒以上，初始化等待窗口设为 30 秒。
+  朗读期间会占用连接线程（同步等 `onDone`，最长 60 秒），期间不处理其它请求。
