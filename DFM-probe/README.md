@@ -4,7 +4,7 @@
 APK 据此**主动回连 PC** 建立 TCP 长连接，双向收发 JSON。用于验证「纯 ADB 不够用、
 改用设备端常驻程序」这条路线是否走得通。
 
-**本目录完全独立于 `DFM-service`，不修改后端任何代码。**
+**`DFM-probe/` 是独立工程，不依赖 `DFM-service` 运行；页面探针由后端路由调用本目录的 APK。**
 
 ## 目录
 
@@ -90,6 +90,25 @@ python pc/probe_test.py --device 192.168.0.59:5555
 
 日志：`.reasonix/logs/build.log`、`probe_test.log`、`probe_test_reverse.log`、
 `boundary_test.log`（该目录被 `.gitignore` 忽略，不入库）。
+
+## 页面探针（DFM-frontend ADB 工具页）
+
+- `DFM-service/routes/probe.py` 提供 `POST /api/probe/check`（只探测）与
+  `POST /api/probe/connect`（先 `install -r` 再探测），请求体 `{"deviceId":"..."}`，
+  返回 `{"code":200,"message":...,"data":{"connected":true|false,...}}`。
+- 与 `pc/probe_test.py` 默认走 LAN 直连不同，服务路由统一走 `adb reverse`：
+  PC 监听 `127.0.0.1:<port>`，设备连本机回环由 adbd 转发，USB 设备与网络设备都能连通，
+  也不依赖 PC 的入站防火墙规则。探测结束后自动 `adb reverse --remove` 并 `force-stop`
+  常驻服务，避免 APK 对已关闭的端口空转重连。
+- 前端 `DFM-frontend/src/menu/App_Utils.vue` 左侧「设备管理」下方有「探针」条：
+  绿=最近一次探测通讯正常，红=失败，点击=安装并重新通讯；进入页面/切换设备自动探测一次，
+  用序号丢弃旧响应，避免切换设备后结果串台。
+- 服务路由从 `DFM-probe/DFMProbe.apk` 读取 APK。**源码运行（`.venv`）下路径可解析；
+  PyInstaller 打包成 exe 后该路径失效**（`main.spec` / `main-onefile.spec` 的 `datas`
+  只收集 `data`、`lib`），届时 `/api/probe/connect` 会返回「找不到 APK」；
+  `/api/probe/check` 只探测、不装 APK，不受影响。此项尚未在打包产物上验证。
+- 验证日志：`.reasonix/logs/probe_verify.log`、`probe_http_verify.log`、
+  `probe_frontend_build.log`。
 
 ## 已知边界
 
