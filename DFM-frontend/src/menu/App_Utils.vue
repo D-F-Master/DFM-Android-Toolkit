@@ -1544,6 +1544,61 @@ const toggleStepEdit = (idx: number) => {
   scriptEditingStep.value = scriptEditingStep.value === idx ? null : idx
 }
 
+// 拖拽排序步骤：原生 draggable，拖到某一步上方即插入到该位置
+const scriptStepDragFrom = ref<number | null>(null)
+const scriptStepDragOver = ref<number | null>(null)
+
+const onScriptStepDragStart = (idx: number, ev: DragEvent) => {
+  scriptStepDragFrom.value = idx
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要 setData 才会真正进入拖拽状态
+    ev.dataTransfer.setData('text/plain', String(idx))
+  }
+}
+
+const onScriptStepDragOver = (idx: number, ev: DragEvent) => {
+  ev.preventDefault()
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+  scriptStepDragOver.value = idx
+}
+
+const onScriptStepDragLeave = (idx: number) => {
+  if (scriptStepDragOver.value === idx) {
+    scriptStepDragOver.value = null
+  }
+}
+
+const onScriptStepDrop = (idx: number, ev: DragEvent) => {
+  ev.preventDefault()
+  const from = scriptStepDragFrom.value
+  scriptStepDragOver.value = null
+  if (from === null || from === idx) {
+    scriptStepDragFrom.value = null
+    return
+  }
+  const arr = scriptSteps.value
+  const moved = arr.splice(from, 1)[0]
+  arr.splice(idx, 0, moved)
+  // 同步修正展开的编辑索引，使其继续跟随被移动的那一步
+  if (scriptEditingStep.value !== null) {
+    if (scriptEditingStep.value === from) {
+      scriptEditingStep.value = idx
+    } else if (from < scriptEditingStep.value && idx >= scriptEditingStep.value) {
+      scriptEditingStep.value -= 1
+    } else if (from > scriptEditingStep.value && idx <= scriptEditingStep.value) {
+      scriptEditingStep.value += 1
+    }
+  }
+  showNotification(`已将步骤移动到第 ${idx + 1} 位`, 'info')
+  scriptStepDragFrom.value = null
+}
+
+const onScriptStepDragEnd = () => {
+  scriptStepDragFrom.value = null
+  scriptStepDragOver.value = null
+}
+
 const toggleRecording = () => {
   if (!scriptStreaming.value) {
     showMessage('屏幕流未连接，无法录制', '提示')
@@ -6263,10 +6318,20 @@ button.batch-remote-tile-tag:disabled.active {
   border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
 .script-step-item:hover {
   background: #f5f7fa;
+}
+
+.script-step-item.dragging {
+  opacity: 0.45;
+}
+
+.script-step-item.drag-over {
+  background: #e3f2fd;
+  box-shadow: inset 0 2px 0 0 #1976d2;
 }
 
 .script-step-item.selected {
@@ -7853,8 +7918,18 @@ button.batch-remote-tile-tag:disabled.active {
                           v-for="(step, idx) in scriptSteps"
                           :key="idx"
                           class="script-step-item"
-                          :class="{ selected: scriptEditingStep === idx }"
+                          :class="{
+                            selected: scriptEditingStep === idx,
+                            'drag-over': scriptStepDragOver === idx && scriptStepDragFrom !== idx,
+                            dragging: scriptStepDragFrom === idx,
+                          }"
+                          draggable="true"
                           @click="toggleStepEdit(idx)"
+                          @dragstart="onScriptStepDragStart(idx, $event)"
+                          @dragover="onScriptStepDragOver(idx, $event)"
+                          @dragleave="onScriptStepDragLeave(idx)"
+                          @drop="onScriptStepDrop(idx, $event)"
+                          @dragend="onScriptStepDragEnd"
                         >
                           <span class="script-step-idx">{{ idx + 1 }}</span>
                           <span class="script-step-desc">{{ scriptStepLabel(step) }}</span>
