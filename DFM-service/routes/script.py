@@ -475,6 +475,22 @@ def import_script(request: ScriptImportRequest):
 # 导出包内各资源的子目录名（zip 内的固定布局）
 EXPORT_APK_DIR = "apk"
 EXPORT_TEMPLATE_DIR = "templates"
+# 导出包签名文件名与校验密钥：导入时验证包由本工具导出且未被篡改
+EXPORT_SIGNATURE_MEMBER = "signature.txt"
+EXPORT_SECRET = b"DFM-Android-Toolkit::script-bundle::v1"
+
+import hmac
+import hashlib
+
+
+def _bundle_signature(manifest: str) -> str:
+    """HMAC-SHA256(manifest 文本) 的十六进制签名，manifest 为逐行 '成员名 字节数 sha256' 清单"""
+    return hmac.new(EXPORT_SECRET, manifest.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _manifest_line(filename: str, file_bytes: bytes) -> str:
+    """生成清单一行：成员名 字节数 sha256（sha256 基于解压后的真实字节）"""
+    return f"{filename} {len(file_bytes)} {hashlib.sha256(file_bytes).hexdigest()}"
 
 
 def _script_referenced_files(script: dict) -> tuple[List[str], List[str]]:
@@ -508,6 +524,7 @@ def export_script_zip(request: ScriptExportRequest):
       script.json          脚本原文（与 data/scripts/{name}.json 完全一致）
       apk/{apkName}        脚本引用的 APK（installApk 步骤）
       templates/{tpl}.png  脚本引用的模板图（waitFor 步骤）
+      signature.txt        HMAC 签名（对以上全部成员的清单），导入时强制校验
 
     zip 写到 D:\\log\\script_exports\\{name}.zip，前端提示保存位置。
     """
@@ -546,11 +563,24 @@ def export_script_zip(request: ScriptExportRequest):
         os.makedirs(export_root, exist_ok=True)
         zip_path = os.path.join(export_root, f"{name}.zip")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(path, "script.json")
+            # 用 writestr 写入（而非 zf.write），便于对每个成员的真实字节做 sha256 签名
+            members: List[tuple] = []  # (arcname, bytes)
+            script_bytes = path.read_bytes()
+            zf.writestr("script.json", script_bytes)
+            members.append(("script.json", script_bytes))
             for p in apk_paths:
-                zf.write(p, f"{EXPORT_APK_DIR}/{p.name}")
+                arc = f"{EXPORT_APK_DIR}/{p.name}"
+                b = p.read_bytes()
+                zf.writestr(arc, b)
+                members.append((arc, b))
             for p in tpl_paths:
-                zf.write(p, f"{EXPORT_TEMPLATE_DIR}/{p.name}")
+                arc = f"{EXPORT_TEMPLATE_DIR}/{p.name}"
+                b = p.read_bytes()
+                zf.writestr(arc, b)
+                members.append((arc, b))
+            # 对全部成员做内容签名（成员名+字节数+sha256），任何篡改都会导致签名不匹配
+            manifest = "\n".join(_manifest_line(arc, b) for arc, b in members)
+            zf.writestr(EXPORT_SIGNATURE_MEMBER, _bundle_signature(manifest))
 
         size = os.path.getsize(zip_path)
         logger.info(f"Script exported: {zip_path} (apk={len(apk_paths)}, templates={len(tpl_paths)}, {size} bytes)")
@@ -584,8 +614,24 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
             return {"code": 400, "message": "不是有效的 zip 文件", "data": None}
 
         with zf:
-            # 定位脚本 JSON（固定名 script.json，兼容只有单个 .json 的旧包）
             names = zf.namelist()
+
+            # 1) 签名校验：只接受由本工具导出且未被篡改的包（成员名+字节数+sha256）
+            if EXPORT_SIGNATURE_MEMBER not in names:
+                return {"code": 400, "message": "该 zip 不是本工具导出的脚本包（缺少签名），拒绝导入", "data": None}
+            try:
+                sig_in_zip = zf.read(EXPORT_SIGNATURE_MEMBER).decode("utf-8").strip()
+            except Exception:
+                return {"code": 400, "message": "签名文件损坏，无法校验", "data": None}
+            manifest = "\n".join(
+                _manifest_line(info.filename, zf.read(info.filename))
+                for info in zf.infolist()
+                if info.filename != EXPORT_SIGNATURE_MEMBER
+            )
+            if not hmac.compare_digest(sig_in_zip, _bundle_signature(manifest)):
+                return {"code": 400, "message": "签名校验失败：包内容已被篡改或不是本工具导出，拒绝导入", "data": None}
+
+            # 2) 定位脚本 JSON（固定名 script.json）
             script_member = "script.json" if "script.json" in names else None
             if script_member is None:
                 json_members = [n for n in names if n.lower().endswith(".json") and "/" not in n]
