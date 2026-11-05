@@ -106,6 +106,36 @@ const toggleFileSort = (key: FileSortKey) => {
   }
 }
 
+// 文件多选：勾选的条目路径集合（用于批量删除/移动）
+const selectedFiles = ref<Set<string>>(new Set())
+const selectedFileCount = computed(() => selectedFiles.value.size)
+const fileAllSelected = computed(() => files.value.length > 0 && files.value.every(f => selectedFiles.value.has(f.path)))
+const fileSomeSelected = computed(() => selectedFiles.value.size > 0 && !fileAllSelected.value)
+
+const toggleFileSelection = (path: string) => {
+  const next = new Set(selectedFiles.value)
+  if (next.has(path)) {
+    next.delete(path)
+  } else {
+    next.add(path)
+  }
+  selectedFiles.value = next
+}
+
+const toggleSelectAllFiles = () => {
+  if (fileAllSelected.value) {
+    selectedFiles.value = new Set()
+  } else {
+    const next = new Set(selectedFiles.value)
+    files.value.forEach(f => next.add(f.path))
+    selectedFiles.value = next
+  }
+}
+
+const clearFileSelection = () => {
+  selectedFiles.value = new Set()
+}
+
 interface DeviceInfo {
   deviceId: string;
   status: string;
@@ -2115,6 +2145,8 @@ const fetchApps = async (deviceId: string) => {
 
 const fetchFiles = async (deviceId: string, path: string = '/sdcard') => {
   fileLoading.value = true
+  // 目录切换/刷新/换设备后，上一目录的勾选作废
+  selectedFiles.value = new Set()
   try {
     const response = await axios.post(`${API_BASE.value}/api/device/files/browse`, {
       deviceId: deviceId,
@@ -2877,6 +2909,83 @@ const renameFile = (file: { path: string; name: string }) => {
     },
     file.name,
     '重命名/移动'
+  )
+}
+
+// 批量删除选中的文件/文件夹
+const batchDeleteSelected = () => {
+  if (!selectedDevice.value || selectedFileCount.value === 0) return
+
+  const paths = [...selectedFiles.value]
+  showConfirm(`确定要删除选中的 ${paths.length} 项吗？（删除后不可恢复）`, async () => {
+    let okCount = 0
+    const failed: string[] = []
+    for (const p of paths) {
+      try {
+        const response = await axios.post(`${API_BASE.value}/api/device/files/delete`, {
+          deviceId: selectedDevice.value,
+          path: p
+        })
+        if (response.data.code === 200) {
+          okCount++
+        } else {
+          failed.push(`${p}: ${response.data.message || '未知错误'}`)
+        }
+      } catch (error: any) {
+        failed.push(`${p}: ${error.message || '网络异常'}`)
+      }
+    }
+    if (failed.length === 0) {
+      showMessage(`已删除 ${okCount} 项`)
+    } else {
+      showMessage(`删除完成 ${okCount}/${paths.length}，失败：\n${failed.join('\n')}`, '删除结果')
+    }
+    fetchFiles(selectedDevice.value, currentPath.value)
+  }, '确认删除')
+}
+
+// 批量移动选中的文件/文件夹到指定目录
+const batchMoveSelected = () => {
+  if (!selectedDevice.value || selectedFileCount.value === 0) return
+
+  const paths = [...selectedFiles.value]
+  showPrompt(
+    `输入目标目录路径（如 /sdcard/DCIM），选中的 ${paths.length} 项将移动到该目录下`,
+    async (destDir: string) => {
+      const dir = (destDir || '').trim()
+      if (!dir) {
+        showMessage('目标目录不能为空')
+        return
+      }
+      const base = dir.replace(/\/+$/, '')
+      let okCount = 0
+      const failed: string[] = []
+      for (const p of paths) {
+        const name = p.substring(p.lastIndexOf('/') + 1)
+        try {
+          const response = await axios.post(`${API_BASE.value}/api/device/files/rename`, {
+            deviceId: selectedDevice.value,
+            path: p,
+            newPath: `${base}/${name}`
+          })
+          if (response.data.code === 200) {
+            okCount++
+          } else {
+            failed.push(`${name}: ${response.data.message || '未知错误'}`)
+          }
+        } catch (error: any) {
+          failed.push(`${name}: ${error.message || '网络异常'}`)
+        }
+      }
+      if (failed.length === 0) {
+        showMessage(`已移动 ${okCount} 项到 ${base}`)
+      } else {
+        showMessage(`移动完成 ${okCount}/${paths.length}，失败：\n${failed.join('\n')}`, '移动结果')
+      }
+      fetchFiles(selectedDevice.value, currentPath.value)
+    },
+    currentPath.value,
+    '移动到目录'
   )
 }
 
@@ -4921,6 +5030,42 @@ watch(serialScheme, async (scheme) => {
   flex-shrink: 0;
   margin-right: 8px;
   font-size: 16px;
+}
+
+/* 文件多选：勾选列与批量操作条 */
+.file-item-check {
+  flex-shrink: 0;
+  width: 24px;
+  margin-right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-item-check input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: #2e7d32;
+}
+
+.file-batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #e8f5e9;
+  background: #f0f7f0;
+}
+
+.file-batch-info {
+  font-size: 12px;
+  font-weight: 500;
+  color: #2e7d32;
+}
+
+.toolbar-btn.danger:hover {
+  background: #ffebee;
+  border-color: #ef9a9a;
+  color: #c62828;
 }
 
 .file-item-name {
@@ -7490,16 +7635,43 @@ button.batch-remote-tile-tag:disabled.active {
                         导入
                       </button>
                     </div>
+                    <div v-if="selectedFileCount > 0" class="file-batch-bar">
+                      <span class="file-batch-info">已选 {{ selectedFileCount }} 项</span>
+                      <button class="toolbar-btn danger" @click="batchDeleteSelected" title="删除选中的文件/文件夹">
+                        <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
+                          <path d="M202.666667 256h-42.666667a32 32 0 0 1 0-64h704a32 32 0 0 1 0 64H266.666667v565.333333a53.333333 53.333333 0 0 0 53.333333 53.333334h384a53.333333 53.333333 0 0 0 53.333333-53.333334V352a32 32 0 0 1 64 0v469.333333c0 64.8-52.533333 117.333333-117.333333 117.333334H320c-64.8 0-117.333333-52.533333-117.333333-117.333334V256z m224-106.666667a32 32 0 0 1 0-64h170.666666a32 32 0 0 1 0 64H426.666667z m-32 288a32 32 0 0 1 64 0v256a32 32 0 0 1-64 0V437.333333z m170.666666 0a32 32 0 0 1 64 0v256a32 32 0 0 1-64 0V437.333333z"/>
+                        </svg>
+                        删除选中
+                      </button>
+                      <button class="toolbar-btn" @click="batchMoveSelected" title="把选中的文件/文件夹移动到指定目录">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                          <polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>
+                        </svg>
+                        移动到…
+                      </button>
+                      <button class="toolbar-btn" @click="clearFileSelection" title="取消选择">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                        取消选择
+                      </button>
+                    </div>
                     <div v-if="fileLoading" class="loading-text" style="padding: 24px; text-align: center; border-top: 1px solid #f0f0f0;">加载文件列表中...</div>
                     <div v-else-if="files.length === 0" class="loading-text" style="padding: 24px; text-align: center; border-top: 1px solid #f0f0f0;">无文件</div>
                     <div v-else class="file-list">
                       <div class="file-list-header" @click.prevent>
+                        <div class="file-item-check">
+                          <input type="checkbox" :checked="fileAllSelected" :indeterminate="fileSomeSelected" @click.stop @change="toggleSelectAllFiles" title="全选/取消全选" />
+                        </div>
                         <div class="file-item-icon"></div>
                         <div class="file-item-name file-sortable" :class="{ 'sort-active': fileSortKey === 'name' }" @click.stop="toggleFileSort('name')" title="按名称排序">名称 {{ fileSortKey === 'name' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
                         <div class="file-item-size file-sortable" :class="{ 'sort-active': fileSortKey === 'size' }" @click.stop="toggleFileSort('size')" title="按大小排序">大小 {{ fileSortKey === 'size' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
                         <div class="file-item-actions file-sortable" :class="{ 'sort-active': fileSortKey === 'time' }" @click.stop="toggleFileSort('time')" title="按修改时间排序">时间 {{ fileSortKey === 'time' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
                       </div>
                       <div v-for="file in sortedFiles" :key="file.path" class="file-item" @click="file.isDirectory && navigateTo(file.path)">
+                        <div class="file-item-check" @click.stop>
+                          <input type="checkbox" :checked="selectedFiles.has(file.path)" @change="toggleFileSelection(file.path)" title="选择该项" />
+                        </div>
                         <div class="file-item-icon">{{ file.isDirectory ? '📁' : '📄' }}</div>
                         <div class="file-item-name" :class="{ 'is-dir': file.isDirectory }">{{ file.name }}</div>
                         <div class="file-item-size">
