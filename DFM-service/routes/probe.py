@@ -1,11 +1,12 @@
 import json
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import logger
 from utils.tool_manager import get_adb_path
@@ -16,14 +17,30 @@ router = APIRouter(
 )
 
 PACKAGE = "com.dfm.probe"
-RECEIVER = PACKAGE + "/.ConnectReceiver"
-ACTION = "com.dfm.probe.CONNECT"
-CONNECT_TIMEOUT = 15.0
-# 自定义消息可能触发 TTS 朗读（引擎初始化最长 30s + 等待 onDone 最长 60s），单独放宽读超时
-MESSAGE_TIMEOUT = 120.0
+RECEIVER = PACKAGE + "/.StartReceiver"
+ACTION = "com.dfm.probe.START"
+DEVICE_PORT = 21104
+FRAME_HEADER = b"\xaa\x55"
+
+CMD_PING = 0x01
+CMD_ECHO = 0x02
+CMD_TTS = 0x03
+CMD_INFO = 0x04
+CMD_QUIT = 0x05
+CMD_ACK = 0x06
+CMD_ERROR = 0xFF
+
+ACK_TIMEOUT = 0.2
+MAX_RETRY = 3
+RESPONSE_TIMEOUT = 120.0
+CONNECT_TIMEOUT = 5.0
 INSTALL_TIMEOUT = 180
 # routes/probe.py -> routes/ -> DFM-service/ -> DFM-Android-Toolkit/
 APK_PATH = Path(__file__).resolve().parents[2] / "DFM-probe" / "DFMProbe.apk"
+
+_locks_lock = threading.Lock()
+_device_locks = {}
+_seq_by_device = {}
 
 
 class ProbeRequest(BaseModel):
@@ -32,7 +49,24 @@ class ProbeRequest(BaseModel):
 
 class ProbeMessageRequest(BaseModel):
     deviceId: str
-    message: dict
+    cmd: int = Field(..., ge=0, le=255)
+    data: dict = {}
+
+
+def _device_lock(device_id: str) -> threading.Lock:
+    with _locks_lock:
+        lock = _device_locks.get(device_id)
+        if lock is None:
+            lock = threading.Lock()
+            _device_locks[device_id] = lock
+        return lock
+
+
+def _next_seq(device_id: str) -> int:
+    """帧序 0~255 循环递增，按设备分别计数。需在设备锁内调用。"""
+    seq = (_seq_by_device.get(device_id, -1) + 1) & 0xFF
+    _seq_by_device[device_id] = seq
+    return seq
 
 
 def _adb(device_id: str, *args: str, timeout: int = 15) -> tuple:
@@ -49,48 +83,161 @@ def _adb(device_id: str, *args: str, timeout: int = 15) -> tuple:
     return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
 
 
-def _read_line(conn: socket.socket, timeout: float) -> dict:
-    """按行读取一条 JSON 消息，对端关闭或超时都抛异常。"""
-    conn.settimeout(timeout)
-    buf = b""
-    while not buf.endswith(b"\n"):
-        chunk = conn.recv(4096)
-        if not chunk:
-            raise RuntimeError("设备端连接已关闭")
-        buf += chunk
-    return json.loads(buf.decode("utf-8").strip())
+def crc16_modbus(data: bytes) -> int:
+    """CRC16-Modbus，与协议文档中的 C 实现一致。"""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc & 0xFFFF
 
 
-def _send(conn: socket.socket, obj: dict) -> None:
-    conn.sendall((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
+def pack_frame(seq: int, cmd: int, payload: bytes) -> bytes:
+    """组一帧；数据区最长 255 字节，CRC 低字节在前。"""
+    if len(payload) > 255:
+        raise ValueError(f"数据区超过 255 字节: {len(payload)}")
+    body = bytes([seq & 0xFF, len(payload), cmd & 0xFF]) + payload
+    crc = crc16_modbus(body)
+    return FRAME_HEADER + body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
 
-def _stop_agent(device_id: str) -> None:
-    """探测结束后停掉常驻服务，避免它对已关闭的端口空转重连。"""
-    try:
-        _adb(device_id, "shell", "am", "force-stop", PACKAGE)
-    except Exception as e:
-        logger.warning(f"force-stop {PACKAGE} failed: {e}")
+class FrameReader:
+    """增量解帧：处理粘包/半包，CRC 错帧丢弃后重新找帧头。"""
+
+    def __init__(self, conn: socket.socket):
+        self.conn = conn
+        self.buf = bytearray()
+
+    def read_frame(self, timeout: float) -> tuple:
+        deadline = time.monotonic() + timeout
+        while True:
+            frame = self._try_parse()
+            if frame is not None:
+                return frame
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("等待帧超时")
+            self.conn.settimeout(remaining)
+            try:
+                chunk = self.conn.recv(4096)
+            except socket.timeout:
+                raise TimeoutError("等待帧超时")
+            if not chunk:
+                raise RuntimeError("设备端连接已关闭")
+            self.buf.extend(chunk)
+
+    def _try_parse(self) -> tuple:
+        while True:
+            idx = self.buf.find(FRAME_HEADER)
+            if idx < 0:
+                # 只保留末尾可能是半个帧头的 0xAA
+                if self.buf and self.buf[-1] == 0xAA:
+                    self.buf = self.buf[-1:]
+                else:
+                    self.buf.clear()
+                return None
+            if idx > 0:
+                del self.buf[:idx]
+            if len(self.buf) < 5:
+                return None
+            seq = self.buf[2]
+            length = self.buf[3]
+            cmd = self.buf[4]
+            frame_len = 7 + length
+            if len(self.buf) < frame_len:
+                return None
+            frame = bytes(self.buf[:frame_len])
+            crc_lo = frame[5 + length]
+            crc_hi = frame[6 + length]
+            expect = crc16_modbus(frame[2:5 + length])
+            if crc_lo != (expect & 0xFF) or crc_hi != ((expect >> 8) & 0xFF):
+                # CRC 错：丢掉第一个字节，从后续字节重新找帧头，不回 ACK
+                del self.buf[:1]
+                continue
+            del self.buf[:frame_len]
+            return seq, cmd, frame[5:5 + length]
 
 
-def run_probe(device_id: str, install: bool, message: dict = None) -> dict:
+def recv_ack(reader: FrameReader, conn: socket.socket, seq: int, cmd: int, frame: bytes) -> tuple:
+    """停等 ACK：T=ACK_TIMEOUT，超时用相同帧序重发，最多再发 MAX_RETRY 次。
+
+    返回 (是否收到 ACK, 期间缓存的同帧序响应帧或 None)。
     """
-    对指定设备完成一次探针通讯：
-    可选安装 APK -> 广播 PC 地址 -> 等设备反向连回 -> hello + 校验。
+    pending = None
+    got_ack = False
+    for _ in range(MAX_RETRY + 1):
+        conn.sendall(frame)
+        deadline = time.monotonic() + ACK_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                r_seq, r_cmd, r_data = reader.read_frame(remaining)
+            except TimeoutError:
+                break
+            if r_seq != seq:
+                continue
+            if r_cmd == CMD_ACK:
+                got_ack = True
+                break
+            if r_cmd in (cmd | 0x80, CMD_ERROR):
+                pending = (r_cmd, r_data)
+        if got_ack or pending is not None:
+            break
+    return got_ack, pending
 
-    message 为 None 时走默认 ping/pong 探测；否则把该 dict 原样发给设备，
-    并把设备应答放进 data.response，供页面调试任意消息（含 tts）。
 
-    使用 adb reverse 把设备上的 127.0.0.1:port 转发到 PC，
-    这样 USB 设备与网络设备都能连通，也不依赖 PC 的入站防火墙规则。
+def recv_response(reader: FrameReader, seq: int, cmd: int, pending: tuple = None) -> dict:
+    """取同帧序的响应帧（命令字 cmd|0x80 或 0xFF），解析 UTF-8 JSON。"""
+    if pending is None:
+        deadline = time.monotonic() + RESPONSE_TIMEOUT
+        while True:
+            r_seq, r_cmd, r_data = reader.read_frame(deadline - time.monotonic())
+            if r_seq == seq and r_cmd in (cmd | 0x80, CMD_ERROR):
+                pending = (r_cmd, r_data)
+                break
+    return json.loads(pending[1].decode("utf-8"))
+
+
+def _connect_with_retry(host: str, port: int, attempts: int = 10, interval: float = 0.3) -> socket.socket:
+    """START 广播是异步的，服务可能还没 bind 好，需要短暂重试。"""
+    last = None
+    for _ in range(attempts):
+        try:
+            return socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
+        except OSError as e:
+            last = e
+            time.sleep(interval)
+    raise RuntimeError(f"连接 {host}:{port} 失败: {last}")
+
+
+def run_probe(device_id: str, install: bool, cmd: int = CMD_PING, data: dict = None) -> dict:
+    """对指定设备发一帧业务帧并取回响应。
+
+    adb 只负责安装、启动广播与 USB 端口映射；业务数据全部走设备 21104 上的帧协议。
+    同一设备的请求串行化，避免帧序与 forward 端口互相干扰。
     """
-    listener = None
+    with _device_lock(device_id):
+        return _run_probe(device_id, install, cmd, data)
+
+
+def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
     conn = None
-    reverse_port = None
+    forward_port = None
     try:
         rc, out, err = _adb(device_id, "get-state")
         if rc != 0 or out != "device":
             return {"connected": False, "reason": f"设备不在线: {err or out}"}
+
+        request = data if data is not None else {"payload": f"probe-{int(time.time())}"}
+        payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        if len(payload) > 255:
+            return {"connected": False, "reason": f"数据区超过 255 字节: {len(payload)}"}
 
         if install:
             if not APK_PATH.is_file():
@@ -101,64 +248,53 @@ def run_probe(device_id: str, install: bool, message: dict = None) -> dict:
             if rc != 0 or "Success" not in out:
                 return {"connected": False, "reason": f"安装失败: {err or out}"}
 
-        _adb(device_id, "shell", "am", "force-stop", PACKAGE)
-
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(1)
-        port = listener.getsockname()[1]
-
-        rc, out, err = _adb(
-            device_id, "reverse", f"tcp:{port}", f"tcp:{port}"
-        )
-        if rc != 0:
-            return {"connected": False, "reason": f"adb reverse 失败: {err or out}"}
-        reverse_port = port
-
+        # 每次都发幂等启动广播；服务已在监听时 onStartCommand 不会重复 bind
         rc, out, err = _adb(
             device_id, "shell", "am", "broadcast",
             "--include-stopped-packages", "-n", RECEIVER, "-a", ACTION,
-            "--es", "host", "127.0.0.1", "--ei", "port", str(port),
         )
         if rc != 0:
-            return {"connected": False, "reason": f"广播失败: {err or out}"}
+            return {"connected": False, "reason": f"启动广播失败: {err or out}"}
 
-        listener.settimeout(CONNECT_TIMEOUT)
-        conn, addr = listener.accept()
-        hello = _read_line(conn, CONNECT_TIMEOUT)
-        if hello.get("type") != "hello":
-            return {"connected": False, "reason": f"首包不是 hello: {hello}"}
-
-        if message is None:
-            request = {"type": "ping", "payload": f"probe-{int(time.time())}"}
-            read_timeout = CONNECT_TIMEOUT
+        if ":" in device_id:
+            # 网络设备：APK 启动后直接连它的 21104
+            host = device_id.split(":")[0]
+            port = DEVICE_PORT
         else:
-            request = message
-            # tts 朗读可能要等引擎初始化(30s)与 onDone(60s)，单独放宽
-            read_timeout = MESSAGE_TIMEOUT
+            # USB 设备：用系统分配的随机本地端口做 forward，避免多设备抢端口
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+            finally:
+                probe.close()
+            rc, out, err = _adb(
+                device_id, "forward", f"tcp:{port}", f"tcp:{DEVICE_PORT}"
+            )
+            if rc != 0:
+                return {"connected": False, "reason": f"adb forward 失败: {err or out}"}
+            forward_port = port
+            host = "127.0.0.1"
 
-        _send(conn, request)
-        response = _read_line(conn, read_timeout)
-        if message is None and (
-            response.get("type") != "pong" or response.get("payload") != request["payload"]
-        ):
-            return {"connected": False, "reason": f"ping/pong 校验失败: {response}"}
-
-        try:
-            _send(conn, {"type": "quit"})
-        except Exception:
-            pass
+        conn = _connect_with_retry(host, port)
+        reader = FrameReader(conn)
+        seq = _next_seq(device_id)
+        frame = pack_frame(seq, cmd, payload)
+        got_ack, pending = recv_ack(reader, conn, seq, cmd, frame)
+        if not got_ack and pending is None:
+            return {"connected": False, "reason": f"ACK 等待超时（共发 {MAX_RETRY + 1} 次）"}
+        response = recv_response(reader, seq, cmd, pending)
 
         return {
             "connected": True,
             "deviceId": device_id,
-            "host": "127.0.0.1",
-            "port": port,
-            "peer": str(addr),
-            "hello": hello,
+            "seq": seq,
+            "cmd": cmd,
             "request": request,
             "response": response,
+            "frame": frame.hex(" ").upper(),
+            "host": host,
+            "port": port,
         }
     except Exception as e:
         return {"connected": False, "reason": f"{type(e).__name__}: {e}"}
@@ -168,30 +304,28 @@ def run_probe(device_id: str, install: bool, message: dict = None) -> dict:
                 conn.close()
             except Exception:
                 pass
-        if listener is not None:
+        if forward_port is not None:
             try:
-                listener.close()
-            except Exception:
-                pass
-        if reverse_port is not None:
-            try:
-                _adb(device_id, "reverse", "--remove", f"tcp:{reverse_port}")
+                _adb(device_id, "forward", "--remove", f"tcp:{forward_port}")
             except Exception as e:
-                logger.warning(f"adb reverse --remove failed: {e}")
-        _stop_agent(device_id)
+                logger.warning(f"adb forward --remove failed: {e}")
+        # 服务常驻监听 21104，不再 force-stop
 
 
-def _result(device_id: str, install: bool, message: dict = None) -> dict:
+def _result(device_id: str, install: bool, cmd: int = CMD_PING, data: dict = None) -> dict:
     device_id = (device_id or "").strip()
     if not device_id:
         return {"code": 400, "message": "deviceId 不能为空", "data": {"connected": False}}
-    data = run_probe(device_id, install, message)
-    connected = bool(data.get("connected"))
-    logger.info(f"probe device={device_id} install={install} connected={connected} {data.get('reason', '')}")
+    d = run_probe(device_id, install, cmd, data)
+    connected = bool(d.get("connected"))
+    logger.info(
+        f"probe device={device_id} install={install} cmd=0x{cmd:02x} "
+        f"connected={connected} {d.get('reason', '')}"
+    )
     return {
         "code": 200,
-        "message": "通讯正常" if connected else data.get("reason", "通讯失败"),
-        "data": data,
+        "message": "通讯正常" if connected else d.get("reason", "通讯失败"),
+        "data": d,
     }
 
 
@@ -209,5 +343,5 @@ def probe_connect(req: ProbeRequest):
 
 @router.post("/probe/message")
 def probe_message(req: ProbeMessageRequest):
-    """把一条自定义 JSON 消息发给设备探针，原样返回设备应答，供页面调试。"""
-    return _result(req.deviceId, False, req.message)
+    """按命令字向设备探针发一帧，返回设备应答，供页面调试。"""
+    return _result(req.deviceId, False, req.cmd, req.data)
