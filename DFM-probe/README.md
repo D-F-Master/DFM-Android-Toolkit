@@ -72,6 +72,25 @@ python pc/probe_test.py --device 192.168.0.59:5555
 若 Windows 防火墙拦住入站，用 `--reverse` 走 `adb reverse`（设备连
 `127.0.0.1:<port>`，由 adbd 转发回 PC）。
 
+## 实机验证结果（2026-11-05，设备 192.168.0.59:5555 / Android 11 / rk3568_r）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 构建签名 | `powershell -ExecutionPolicy Bypass -File build.ps1` | `DFMProbe.apk` 12762 bytes，apksigner v1/v2/v3 均 `true` |
+| 安装 | `adb install -r DFMProbe.apk` | `Success`，`pm list packages` 可见 `com.dfm.probe` |
+| LAN 直连 | `python pc/probe_test.py --device 192.168.0.59:5555` | `PASS`，设备 `192.168.0.59` 主动回连到 `192.168.2.93` |
+| 兜底通道 | `python pc/probe_test.py --reverse --skip-install` | `PASS`，走 `adb reverse` 从设备 `127.0.0.1` 回连 |
+| hello | 连接建立后首包 | `{"type":"hello","device":"rk3568_r","sdk":30,"abi":"arm64-v8a","package":"com.dfm.probe"}` |
+| 双向收发 | `ping`→`pong`、`echo`（含中文 `你好 DFM-Probe`）、`quit`→`bye` | 全部符合预期 |
+
+边界场景（临时脚本，日志在 `.reasonix/logs/boundary_test.log`）：广播缺参数 /
+空 host / 端口 70000 均被 `ConnectReceiver` 拒绝（3 条 `invalid host/port`，未拉起服务）；
+未知 type 返回 `{"type":"error",...}`；坏 JSON 只断当前连接不崩溃；`pidof com.dfm.probe`
+仍存活，logcat 无 `FATAL EXCEPTION`。共 10 项检查全通过。
+
+日志：`.reasonix/logs/build.log`、`probe_test.log`、`probe_test_reverse.log`、
+`boundary_test.log`（该目录被 `.gitignore` 忽略，不入库）。
+
 ## 已知边界
 
 - 服务返回 `START_NOT_STICKY`：进程被系统杀掉后不会自行恢复，需要 PC 重新广播地址。
