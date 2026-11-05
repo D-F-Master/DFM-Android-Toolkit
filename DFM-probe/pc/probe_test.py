@@ -5,12 +5,13 @@
   2. adb install -r DFMProbe.apk
   3. 本机开 TCP 监听
   4. 通过 adb broadcast 把「本机地址」发给设备上的 APK
-  5. 等 APK 主动回连，校验 hello / ping-pong / echo / bye
+  5. 等 APK 主动回连，校验 hello / ping-pong / echo / tts / bye
 
 用法：
   python pc/probe_test.py
   python pc/probe_test.py --device 192.168.0.59:5555 --host 192.168.2.93 --port 19876
   python pc/probe_test.py --reverse          # 走 adb reverse，绕开 Windows 防火墙
+  python pc/probe_test.py --tts-text 你好世界  # 自定义朗读文本
 """
 import argparse
 import json
@@ -77,6 +78,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=20.0, help="等待回连超时（秒）")
     parser.add_argument("--skip-install", action="store_true")
     parser.add_argument("--reverse", action="store_true", help="用 adb reverse 代替 LAN 直连")
+    parser.add_argument("--tts-text", default="设备语音测试", help="TTS 朗读文本")
     args = parser.parse_args()
 
     listener = None
@@ -157,12 +159,20 @@ def main():
         expect(echo, "payload", echo_payload)
         print("      echo OK (payload={})".format(echo_payload))
 
+        tts_payload = args.tts_text
+        send_json(conn, {"type": "tts", "text": tts_payload})
+        tts = read_line(conn, args.timeout + 60)   # TTS 引擎首次初始化可能较慢
+        expect(tts, "type", "tts")
+        if tts.get("status") != "done":
+            raise RuntimeError("tts 失败: {}".format(tts))
+        print("      tts OK ({} -> {})".format(tts_payload, tts.get("status")))
+
         send_json(conn, {"type": "quit"})
         bye = read_line(conn, args.timeout)
         expect(bye, "type", "bye")
         print("      quit -> bye OK")
 
-        print("[6/6] PASS：通讯链路建立且双向收发正常")
+        print("[6/6] PASS：通讯链路建立且双向收发正常（ping/echo/tts）")
         ok = True
     except Exception as e:
         print("FAIL: {}".format(e))

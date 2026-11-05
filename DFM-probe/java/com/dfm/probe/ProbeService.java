@@ -8,9 +8,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.IBinder;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 
 import org.json.JSONObject;
+
+import java.util.HashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -27,6 +33,7 @@ import java.nio.charset.Charset;
  *   连上后设备先发 {"type":"hello","device":...,"sdk":...,"abi":...,"package":...}
  *   PC -> {"type":"ping","payload":"..."}  设备 -> {"type":"pong","payload":"..."}
  *   PC -> {"type":"echo","payload":"..."}  设备 -> {"type":"echo","payload":"..."}
+ *   PC -> {"type":"tts","text":"..."}      设备 -> {"type":"tts","status":"done"|"error","message":...}
  *   PC -> {"type":"quit"}                  设备 -> {"type":"bye"} 后断开
  *   其它 type -> {"type":"error","message":...}
  */
@@ -42,6 +49,7 @@ public class ProbeService extends Service {
     private volatile int port;
     private volatile boolean running = false;
     private volatile Socket currentSocket;
+    private volatile TextToSpeech tts;
 
     @Override
     public void onCreate() {
@@ -85,6 +93,7 @@ public class ProbeService extends Service {
             } catch (Exception ignored) {
             }
         }
+        shutdownTts();
         super.onDestroy();
     }
 
@@ -181,6 +190,8 @@ public class ProbeService extends Service {
             } else if ("echo".equals(type)) {
                 res.put("type", "echo");
                 res.put("payload", req.optString("payload"));
+            } else if ("tts".equals(type)) {
+                speak(req.optString("text"), res);
             } else if ("quit".equals(type)) {
                 res.put("type", "bye");
                 send(writer, res);
@@ -197,5 +208,121 @@ public class ProbeService extends Service {
         writer.write(obj.toString());
         writer.write("\n");
         writer.flush();
+    }
+
+    /**
+     * 用系统 TTS 朗读 text，读完/失败后把结果写进 res（由调用方回给 PC）。
+     *
+     * TTS 引擎懒初始化：首次调用才创建并同步等待引擎就绪（最多 10 秒），
+     * 失败回 {"type":"tts","status":"error"}，连接保持不断。
+     */
+    private void speak(String text, JSONObject res) throws Exception {
+        res.put("type", "tts");
+        String t = text == null ? "" : text.trim();
+        if (t.length() == 0) {
+            res.put("status", "error");
+            res.put("message", "empty text");
+            return;
+        }
+        final TextToSpeech engine = ensureTts();
+        if (engine == null) {
+            res.put("status", "error");
+            res.put("message", "tts engine unavailable");
+            return;
+        }
+        final CountDownLatch done = new CountDownLatch(1);
+        final int[] outcome = {TextToSpeech.ERROR};
+        engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {
+            }
+
+            @Override
+            public void onDone(String utteranceId) {
+                outcome[0] = TextToSpeech.SUCCESS;
+                done.countDown();
+            }
+
+            @Override
+            public void onError(String utteranceId) {
+                outcome[0] = TextToSpeech.ERROR;
+                done.countDown();
+            }
+        });
+        HashMap<String, String> params = new HashMap<>();
+        params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "dfm-probe");
+        int queued = engine.speak(t, TextToSpeech.QUEUE_FLUSH, params);
+        if (queued != TextToSpeech.SUCCESS) {
+            res.put("status", "error");
+            res.put("message", "tts speak rejected: " + queued);
+            return;
+        }
+        // 朗读最长等 60 秒，超时按失败处理但不中断连接
+        if (!done.await(60, TimeUnit.SECONDS)) {
+            res.put("status", "error");
+            res.put("message", "tts timeout");
+            return;
+        }
+        if (outcome[0] == TextToSpeech.SUCCESS) {
+            res.put("status", "done");
+        } else {
+            res.put("status", "error");
+            res.put("message", "tts engine reported error");
+        }
+    }
+
+    /** 懒初始化 TTS 并等待就绪；失败返回 null（下次请求会重试）。 */
+    private synchronized TextToSpeech ensureTts() {
+        if (tts != null) {
+            return tts;
+        }
+        final CountDownLatch ready = new CountDownLatch(1);
+        final boolean[] ok = {false};
+        final TextToSpeech engine;
+        try {
+            engine = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+                @Override
+                public void onInit(int status) {
+                    Log.i(TAG, "tts init status: " + status);
+                    ok[0] = status == TextToSpeech.SUCCESS;
+                    ready.countDown();
+                }
+            });
+        } catch (Exception e) {
+            Log.w(TAG, "tts init failed: " + e);
+            return null;
+        }
+        // 回调可能先于构造返回执行，成功与否只认 ok[]，不碰字段，
+        // 避免初始化失败被构造赋值覆盖
+        if (!await(ready) || !ok[0]) {
+            try {
+                engine.shutdown();
+            } catch (Exception ignored) {
+            }
+            return null;
+        }
+        tts = engine;
+        return engine;
+    }
+
+    private static boolean await(CountDownLatch latch) {
+        try {
+            return latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private void shutdownTts() {
+        TextToSpeech engine = tts;
+        tts = null;
+        if (engine != null) {
+            try {
+                engine.stop();
+                engine.shutdown();
+            } catch (Exception ignored) {
+            }
+        }
     }
 }
