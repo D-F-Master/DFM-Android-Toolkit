@@ -31,6 +31,17 @@ interface ProbeState {
   message: string;
 }
 
+interface FrameLog {
+  id: number;
+  time: string;
+  title: string;
+  device: string;
+  tx: string;
+  ack: string;
+  rx: string;
+  error: string;
+}
+
 const devices = ref<Device[]>([]);
 const loading = ref(false);
 const selectedDevice = ref('');
@@ -47,6 +58,8 @@ const ttsText = ref('设备语音测试');
 const customCmd = ref('1');
 const customData = ref('{\n  "payload": "hello from probe"\n}');
 const frameText = ref('');
+const frameLogs = ref<FrameLog[]>([]);
+let frameLogId = 0;
 
 const busy = computed(() => !!probeLoading.value[selectedDevice.value]);
 
@@ -131,6 +144,25 @@ const disconnectDevice = async (deviceId: string) => {
   }
 };
 
+// 帧日志只记录右侧手动测试；圆点点击 / 自动安装不写日志
+const addFrameLog = (title: string, device: string, d: any, error = '') => {
+  const frames = d?.data?.frames || {};
+  frameLogs.value.unshift({
+    id: ++frameLogId,
+    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    title,
+    device: device || '—',
+    tx: frames.tx || '—',
+    ack: frames.ack || '—',
+    rx: frames.rx || '—',
+    error,
+  });
+};
+
+const clearFrameLogs = () => {
+  frameLogs.value = [];
+};
+
 // 功能区测试：把请求与完整应答写进展示区，并同步圆点状态
 const callProbe = async (url: string, body: Record<string, unknown>, title: string) => {
   const deviceId = selectedDevice.value;
@@ -148,10 +180,13 @@ const callProbe = async (url: string, body: Record<string, unknown>, title: stri
     const ok = d?.code === 200 && d?.data?.connected === true;
     responseText.value = JSON.stringify(d, null, 2);
     frameText.value = d?.data?.frame || '';
+    addFrameLog(title, deviceId, d, ok ? '' : (d?.message || '通讯失败'));
     setProbeState(deviceId, { status: ok ? 'ok' : 'fail', message: d?.message || '通讯失败' });
   } catch (e: any) {
-    responseText.value = `请求失败: ${e?.message || e}`;
+    const message = `请求失败: ${e?.message || e}`;
+    responseText.value = message;
     frameText.value = '';
+    addFrameLog(title, deviceId, null, message);
     setProbeState(deviceId, { status: 'fail', message: e?.message || '请求失败' });
   } finally {
     setProbeBusy(deviceId, false);
@@ -345,6 +380,28 @@ onMounted(async () => {
                   <pre>{{ responseText || '—' }}</pre>
                 </div>
               </div>
+            </div>
+
+            <div class="card log-card">
+              <div class="log-header">
+                <h3>帧日志</h3>
+                <button class="secondary" @click="clearFrameLogs" :disabled="!frameLogs.length">清空</button>
+              </div>
+              <p class="card-desc">发送帧 / ACK / 响应帧（真实字节），最新在上。</p>
+              <div class="log-list" v-if="frameLogs.length">
+                <div class="log-item" v-for="log in frameLogs" :key="log.id">
+                  <div class="log-title">
+                    <span class="log-time">{{ log.time }}</span>
+                    <span class="log-name">{{ log.title }}</span>
+                    <span class="log-device">{{ log.device }}</span>
+                    <span class="log-error" v-if="log.error">{{ log.error }}</span>
+                  </div>
+                  <div class="log-frame"><span class="result-label">发送帧</span><pre>{{ log.tx }}</pre></div>
+                  <div class="log-frame"><span class="result-label">ACK</span><pre>{{ log.ack }}</pre></div>
+                  <div class="log-frame"><span class="result-label">响应帧</span><pre>{{ log.rx }}</pre></div>
+                </div>
+              </div>
+              <div class="log-empty" v-else>暂无帧日志，点击上方测试按钮后显示。</div>
             </div>
           </div>
         </div>
@@ -607,12 +664,14 @@ main {
 }
 
 .button-row button,
-.input-row button {
+.input-row button,
+.log-header button {
   padding: 6px 16px;
   font-size: 13px;
 }
 
-.button-row button.secondary {
+.button-row button.secondary,
+.log-header button.secondary {
   background-color: #fff;
   color: #1976d2;
   border: 1px solid #1976d2;
@@ -703,5 +762,78 @@ main {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.log-header h3 {
+  margin-bottom: 6px;
+}
+
+.log-header button.secondary {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.log-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.log-item {
+  padding: 10px 0;
+  border-top: 1px solid #eee;
+}
+
+.log-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.log-time {
+  color: #888;
+  font-family: Consolas, Monaco, monospace;
+}
+
+.log-name {
+  font-weight: 600;
+}
+
+.log-device {
+  color: #666;
+}
+
+.log-error {
+  color: #f44336;
+}
+
+.log-frame {
+  margin-bottom: 6px;
+}
+
+.log-frame pre {
+  margin: 0;
+  padding: 6px 8px;
+  background-color: #f7f7f7;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-empty {
+  padding: 12px 0;
+  font-size: 12px;
+  color: #888;
 }
 </style>
