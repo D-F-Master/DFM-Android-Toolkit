@@ -5,7 +5,7 @@
   2. adb install -r DFMProbe.apk（--skip-install 可跳过）
   3. am broadcast 启动 APK 服务（adb 不再传地址）
   4. USB 设备：adb forward 随机本地端口 -> 设备 21104；网络设备：直连 <IP>:21104
-  5. PC 主动 connect，按二进制帧协议测试 info / ping / echo / tts / 未知命令 / 空文本 / CRC 错帧 / quit
+  5. PC 主动 connect，按二进制帧协议测试 info / device info / ping / echo / tts / 未知命令 / 空文本 / CRC 错帧 / quit
 
 帧格式：AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
 详见 probe与service通讯协议.md
@@ -35,6 +35,7 @@ CMD_TTS = 0x03
 CMD_INFO = 0x04
 CMD_QUIT = 0x05
 CMD_ACK = 0x06
+CMD_DEVICE_INFO = 0x07
 CMD_ERROR = 0xFF
 
 ACK_TIMEOUT = 0.2
@@ -272,6 +273,18 @@ def main():
             if key not in info:
                 raise RuntimeError("info 缺少字段 {}".format(key))
         print("      info: {}".format(json.dumps(info, ensure_ascii=False)))
+
+        print("      设备信息 CMD_DEVICE_INFO (0x07) ...")
+        device_info, _ = call(reader, conn, seq, CMD_DEVICE_INFO, {}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(device_info, "code", 200)
+        expect(device_info, "message", "success")
+        for key in ("status", "model", "version", "manufacturer", "deviceName",
+                    "displayVersion", "androidVersion", "kernelVersion", "buildDate",
+                    "codename", "unlockStatus", "sn", "wifiMac", "ethMac"):
+            if key not in device_info.get("data", {}):
+                raise RuntimeError("device info 缺少字段 {}".format(key))
+        print("      device info: {}".format(json.dumps(device_info, ensure_ascii=False)))
 
         print("[5/6] ping / echo / tts / 未知命令 / 空文本 / CRC 错帧 ...")
         ping_payload = "ping-{}".format(int(time.time()))

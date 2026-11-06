@@ -14,8 +14,11 @@ import android.util.Log;
 
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -24,6 +27,8 @@ import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 常驻前台服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
@@ -41,6 +46,9 @@ public class ProbeService extends Service {
     private static final int DEVICE_PORT = 21104;
     private static final int MAX_DATA = 65535;
     private static final Charset UTF8 = Charset.forName("UTF-8");
+    private static final Pattern GETPROP_LINE = Pattern.compile("^\\[(.*?)\\]: \\[(.*?)\\]");
+    private static final Pattern KERNEL_VERSION = Pattern.compile(
+            "Linux version (\\S+).*?(#\\d+\\s+SMP\\s+PREEMPT\\s+\\w+\\s+\\w+\\s+\\d+\\s+[\\d:]+\\s+\\w+\\s+\\d+)");
 
     private static final int CMD_PING = 0x01;
     private static final int CMD_ECHO = 0x02;
@@ -294,11 +302,23 @@ public class ProbeService extends Service {
                 res.put("abi", Build.SUPPORTED_ABIS[0]);
                 res.put("package", getPackageName());
             } else if (cmd == CMD_DEVICE_INFO) {
+                HashMap<String, String> props = readGetprop();
                 JSONObject data = new JSONObject();
-                data.put("device", Build.MODEL);
-                data.put("sdk", Build.VERSION.SDK_INT);
-                data.put("abi", Build.SUPPORTED_ABIS[0]);
-                data.put("package", getPackageName());
+                // status 取自 PC 侧 `adb devices`，设备端无法判定；能应答 0x87 即说明探针服务在线。
+                data.put("status", "在线");
+                data.put("model", prop(props, "ro.product.model", Build.MODEL));
+                data.put("version", prop(props, "ro.build.version.release", Build.VERSION.RELEASE));
+                data.put("manufacturer", prop(props, "ro.product.manufacturer", Build.MANUFACTURER));
+                data.put("deviceName", prop(props, "ro.product.name", Build.PRODUCT));
+                data.put("displayVersion", prop(props, "ro.build.display.id", Build.DISPLAY));
+                data.put("androidVersion", prop(props, "ro.build.version.release", Build.VERSION.RELEASE));
+                data.put("kernelVersion", kernelVersion());
+                data.put("buildDate", prop(props, "ro.build.date", "Unknown"));
+                data.put("codename", prop(props, "ro.product.device", Build.DEVICE));
+                data.put("unlockStatus", unlockStatus(prop(props, "ro.boot.verifiedbootstate", "Unknown")));
+                data.put("sn", prop(props, "ro.serialno", "Unknown"));
+                data.put("wifiMac", mac("ro.boot.wifimacaddr", "wlan0", props));
+                data.put("ethMac", mac("ro.boot.ethmacaddr", "eth0", props));
                 res.put("code", 200);
                 res.put("message", "success");
                 res.put("data", data);
@@ -322,6 +342,114 @@ public class ProbeService extends Service {
             }
         }
         return res;
+    }
+
+    /** CMD_DEVICE_INFO 采集：对齐 service /api/device/info 的 14 项字段。 */
+    private static HashMap<String, String> readGetprop() {
+        HashMap<String, String> props = new HashMap<String, String>();
+        Process proc = null;
+        BufferedReader reader = null;
+        try {
+            proc = Runtime.getRuntime().exec("getprop");
+            reader = new BufferedReader(new InputStreamReader(proc.getInputStream(), UTF8));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                Matcher m = GETPROP_LINE.matcher(line);
+                if (m.find()) {
+                    props.put(m.group(1), m.group(2));
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "getprop failed: " + e);
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (proc != null) {
+                proc.destroy();
+            }
+        }
+        return props;
+    }
+
+    private static String prop(HashMap<String, String> props, String key, String fallback) {
+        String value = props.get(key);
+        return value == null ? fallback : value;
+    }
+
+    private static String readFirstLine(String path) {
+        FileInputStream in = null;
+        BufferedReader reader = null;
+        try {
+            in = new FileInputStream(path);
+            reader = new BufferedReader(new InputStreamReader(in, UTF8));
+            String line = reader.readLine();
+            return line == null ? "" : line.trim();
+        } catch (Exception e) {
+            return "";
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignored) {
+                }
+            } else if (in != null) {
+                try {
+                    in.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private static String kernelVersion() {
+        String line = readFirstLine("/proc/version");
+        if (line.isEmpty()) {
+            return "Unknown";
+        }
+        Matcher m = KERNEL_VERSION.matcher(line);
+        if (m.find()) {
+            return m.group(1) + " " + m.group(2);
+        }
+        return line.length() > 100 ? line.substring(0, 100) : line;
+    }
+
+    private static boolean isValidMac(String mac) {
+        if (mac == null || mac.isEmpty()) {
+            return false;
+        }
+        return !"02:00:00:00:00:00".equals(mac) && !"00:00:00:00:00:00".equals(mac);
+    }
+
+    private static String mac(String key, String iface, HashMap<String, String> props) {
+        String value = props.get(key);
+        if (isValidMac(value)) {
+            return value;
+        }
+        value = readFirstLine("/sys/class/net/" + iface + "/address");
+        return isValidMac(value) ? value : "Unknown";
+    }
+
+    private static String unlockStatus(String raw) {
+        if ("green".equals(raw)) {
+            return "已解锁";
+        }
+        if ("orange".equals(raw)) {
+            return "已解锁（警告）";
+        }
+        if ("yellow".equals(raw)) {
+            return "未锁定";
+        }
+        if ("red".equals(raw)) {
+            return "已锁定";
+        }
+        if ("unknown".equals(raw)) {
+            return "未知";
+        }
+        return raw;
     }
 
     private static void sendFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
