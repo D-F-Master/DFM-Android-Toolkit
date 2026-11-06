@@ -14,11 +14,8 @@ import android.util.Log;
 
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -27,8 +24,6 @@ import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 常驻前台服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
@@ -36,7 +31,7 @@ import java.util.regex.Pattern;
  * 二进制帧协议详见 probe与service通讯协议.md：
  *   AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
  *   数据区为 UTF-8 JSON，最长 65535 字节。
- *   业务帧（0x01~0x05、0x07）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
+ *   业务帧（0x00、0x01）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
  *   CRC 错、数据区不是合法 JSON 对象的帧直接丢弃，不回 ACK，由发送端超时重传。
  */
 public class ProbeService extends Service {
@@ -46,17 +41,10 @@ public class ProbeService extends Service {
     private static final int DEVICE_PORT = 21104;
     private static final int MAX_DATA = 65535;
     private static final Charset UTF8 = Charset.forName("UTF-8");
-    private static final Pattern GETPROP_LINE = Pattern.compile("^\\[(.*?)\\]: \\[(.*?)\\]");
-    private static final Pattern KERNEL_VERSION = Pattern.compile(
-            "Linux version (\\S+).*?(#\\d+\\s+SMP\\s+PREEMPT\\s+\\w+\\s+\\w+\\s+\\d+\\s+[\\d:]+\\s+\\w+\\s+\\d+)");
 
-    private static final int CMD_PING = 0x01;
-    private static final int CMD_ECHO = 0x02;
-    private static final int CMD_TTS = 0x03;
-    private static final int CMD_INFO = 0x04;
-    private static final int CMD_QUIT = 0x05;
+    private static final int CMD_HEARTBEAT = 0x00;
+    private static final int CMD_TTS = 0x01;
     private static final int CMD_ACK = 0x06;
-    private static final int CMD_DEVICE_INFO = 0x07;
     private static final int CMD_ERROR = 0xFF;
 
     private volatile boolean running = false;
@@ -244,7 +232,7 @@ public class ProbeService extends Service {
         }
 
         /**
-         * 处理一条完整业务帧，返回 true 表示对端要求关闭连接。
+         * 处理一条完整业务帧。当前没有命令字要求关闭连接，返回值恒为 false。
          * CRC 正确且结构完整即回 ACK；数据区不是合法 JSON 对象则丢弃、不回 ACK。
          */
         private boolean handleFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
@@ -264,192 +252,72 @@ public class ProbeService extends Service {
             lastSeq = seq;
             // 先回 ACK 确认帧已完整收到，避免发送端 200ms 超时重传（业务可能耗时数十秒）
             sendFrame(out, seq, CMD_ACK, new byte[0]);
-            boolean unknown = cmd != CMD_PING && cmd != CMD_ECHO && cmd != CMD_TTS
-                    && cmd != CMD_INFO && cmd != CMD_QUIT && cmd != CMD_DEVICE_INFO;
+            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
             if (respData.length > MAX_DATA) {
-                res = new JSONObject();
-                res.put("ok", false);
-                res.put("message", "response too large: " + respData.length);
+                res = fail(500, "response too large: " + respData.length);
                 respData = res.toString().getBytes(UTF8);
             }
             sendFrame(out, seq, respCmd, respData);
             Log.i(TAG, "cmd=0x" + Integer.toHexString(cmd) + " seq=" + seq + " -> " + res);
-            return cmd == CMD_QUIT;
+            return false;
         }
     }
 
-    private JSONObject execute(int cmd, JSONObject req, boolean unknown) {
-        JSONObject res = new JSONObject();
-        try {
-            if (unknown) {
-                res.put("ok", false);
-                res.put("message", "unknown cmd: 0x" + Integer.toHexString(cmd));
-            } else if (cmd == CMD_PING) {
-                res.put("ok", true);
-                res.put("payload", req.optString("payload"));
-            } else if (cmd == CMD_ECHO) {
-                res.put("ok", true);
-                res.put("payload", req.optString("payload"));
-            } else if (cmd == CMD_TTS) {
-                speak(req.optString("text"), res);
-            } else if (cmd == CMD_INFO) {
-                res.put("ok", true);
-                res.put("device", Build.MODEL);
-                res.put("sdk", Build.VERSION.SDK_INT);
-                res.put("abi", Build.SUPPORTED_ABIS[0]);
-                res.put("package", getPackageName());
-            } else if (cmd == CMD_DEVICE_INFO) {
-                HashMap<String, String> props = readGetprop();
-                JSONObject data = new JSONObject();
-                // status 取自 PC 侧 `adb devices`，设备端无法判定；能应答 0x87 即说明探针服务在线。
-                data.put("status", "在线");
-                data.put("model", prop(props, "ro.product.model", Build.MODEL));
-                data.put("version", prop(props, "ro.build.version.release", Build.VERSION.RELEASE));
-                data.put("manufacturer", prop(props, "ro.product.manufacturer", Build.MANUFACTURER));
-                data.put("deviceName", prop(props, "ro.product.name", Build.PRODUCT));
-                data.put("displayVersion", prop(props, "ro.build.display.id", Build.DISPLAY));
-                data.put("androidVersion", prop(props, "ro.build.version.release", Build.VERSION.RELEASE));
-                data.put("kernelVersion", kernelVersion());
-                data.put("buildDate", prop(props, "ro.build.date", "Unknown"));
-                data.put("codename", prop(props, "ro.product.device", Build.DEVICE));
-                data.put("unlockStatus", unlockStatus(prop(props, "ro.boot.verifiedbootstate", "Unknown")));
-                data.put("sn", prop(props, "ro.serialno", "Unknown"));
-                data.put("wifiMac", mac("ro.boot.wifimacaddr", "wlan0", props));
-                data.put("ethMac", mac("ro.boot.ethmacaddr", "eth0", props));
-                res.put("code", 200);
-                res.put("message", "success");
-                res.put("data", data);
-            } else if (cmd == CMD_QUIT) {
-                res.put("ok", true);
-                res.put("message", "bye");
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "execute failed: " + e);
-            res = new JSONObject();
+    private JSONObject execute(int cmd, JSONObject req, boolean unknown) throws Exception {
+        if (unknown) {
+            return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
+        }
+        if (cmd == CMD_HEARTBEAT) {
             try {
-                if (cmd == CMD_DEVICE_INFO) {
-                    res.put("code", 500);
-                    res.put("message", "execute failed: " + e);
-                    res.put("data", JSONObject.NULL);
-                } else {
-                    res.put("ok", false);
-                    res.put("message", "execute failed: " + e);
+                String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+                if (version == null || version.isEmpty()) {
+                    return fail(500, "version unavailable");
                 }
-            } catch (Exception ignored) {
+                JSONObject data = new JSONObject();
+                data.put("version", version);
+                return ok(data);
+            } catch (Exception e) {
+                Log.w(TAG, "version unavailable: " + e);
+                return fail(500, "version unavailable: " + e);
             }
         }
+        if (cmd == CMD_TTS) {
+            Object text = req.opt("text");
+            if (!(text instanceof String)) {
+                return fail(400, "text must be a string");
+            }
+            if (((String) text).trim().isEmpty()) {
+                return fail(400, "empty text");
+            }
+            try {
+                return speak((String) text);
+            } catch (Exception e) {
+                Log.w(TAG, "execute failed: " + e);
+                return fail(500, "execute failed: " + e);
+            }
+        }
+        return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
+    }
+
+    /** 成功信封，对齐 service 统一返回格式。 */
+    private static JSONObject ok(JSONObject data) throws Exception {
+        JSONObject res = new JSONObject();
+        res.put("code", 200);
+        res.put("message", "success");
+        res.put("data", data);
         return res;
     }
 
-    /** CMD_DEVICE_INFO 采集：对齐 service /api/device/info 的 14 项字段。 */
-    private static HashMap<String, String> readGetprop() {
-        HashMap<String, String> props = new HashMap<String, String>();
-        Process proc = null;
-        BufferedReader reader = null;
-        try {
-            proc = Runtime.getRuntime().exec("getprop");
-            reader = new BufferedReader(new InputStreamReader(proc.getInputStream(), UTF8));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                Matcher m = GETPROP_LINE.matcher(line);
-                if (m.find()) {
-                    props.put(m.group(1), m.group(2));
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "getprop failed: " + e);
-        } finally {
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (Exception ignored) {
-                }
-            }
-            if (proc != null) {
-                proc.destroy();
-            }
-        }
-        return props;
-    }
-
-    private static String prop(HashMap<String, String> props, String key, String fallback) {
-        String value = props.get(key);
-        return value == null ? fallback : value;
-    }
-
-    private static String readFirstLine(String path) {
-        FileInputStream in = null;
-        BufferedReader reader = null;
-        try {
-            in = new FileInputStream(path);
-            reader = new BufferedReader(new InputStreamReader(in, UTF8));
-            String line = reader.readLine();
-            return line == null ? "" : line.trim();
-        } catch (Exception e) {
-            return "";
-        } finally {
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (Exception ignored) {
-                }
-            } else if (in != null) {
-                try {
-                    in.close();
-                } catch (Exception ignored) {
-                }
-            }
-        }
-    }
-
-    private static String kernelVersion() {
-        String line = readFirstLine("/proc/version");
-        if (line.isEmpty()) {
-            return "Unknown";
-        }
-        Matcher m = KERNEL_VERSION.matcher(line);
-        if (m.find()) {
-            return m.group(1) + " " + m.group(2);
-        }
-        return line.length() > 100 ? line.substring(0, 100) : line;
-    }
-
-    private static boolean isValidMac(String mac) {
-        if (mac == null || mac.isEmpty()) {
-            return false;
-        }
-        return !"02:00:00:00:00:00".equals(mac) && !"00:00:00:00:00:00".equals(mac);
-    }
-
-    private static String mac(String key, String iface, HashMap<String, String> props) {
-        String value = props.get(key);
-        if (isValidMac(value)) {
-            return value;
-        }
-        value = readFirstLine("/sys/class/net/" + iface + "/address");
-        return isValidMac(value) ? value : "Unknown";
-    }
-
-    private static String unlockStatus(String raw) {
-        if ("green".equals(raw)) {
-            return "已解锁";
-        }
-        if ("orange".equals(raw)) {
-            return "已解锁（警告）";
-        }
-        if ("yellow".equals(raw)) {
-            return "未锁定";
-        }
-        if ("red".equals(raw)) {
-            return "已锁定";
-        }
-        if ("unknown".equals(raw)) {
-            return "未知";
-        }
-        return raw;
+    /** 失败信封，data 固定为 null。 */
+    private static JSONObject fail(int code, String message) throws Exception {
+        JSONObject res = new JSONObject();
+        res.put("code", code);
+        res.put("message", message);
+        res.put("data", JSONObject.NULL);
+        return res;
     }
 
     private static void sendFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
@@ -501,23 +369,16 @@ public class ProbeService extends Service {
     }
 
     /**
-     * 用系统 TTS 朗读 text，读完/失败后把结果写进 res（由调用方回给 PC）。
+     * 用系统 TTS 朗读 text，读完/失败后返回统一信封（由调用方回给 PC）。
      *
      * TTS 引擎懒初始化：首次调用才创建并同步等待引擎就绪（最多 30 秒，讯飞冷启动实测 ~13 秒），
-     * 失败回 {"ok":false,...}，连接保持不断。
+     * 失败回 code 500，连接保持不断。
      */
-    private void speak(String text, JSONObject res) throws Exception {
-        String t = text == null ? "" : text.trim();
-        if (t.length() == 0) {
-            res.put("ok", false);
-            res.put("message", "empty text");
-            return;
-        }
+    private JSONObject speak(String text) throws Exception {
+        String t = text.trim();
         final TextToSpeech engine = ensureTts();
         if (engine == null) {
-            res.put("ok", false);
-            res.put("message", "tts engine unavailable");
-            return;
+            return fail(500, "tts engine unavailable");
         }
         final CountDownLatch done = new CountDownLatch(1);
         final int[] outcome = {TextToSpeech.ERROR};
@@ -542,23 +403,18 @@ public class ProbeService extends Service {
         params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "dfm-probe");
         int queued = engine.speak(t, TextToSpeech.QUEUE_FLUSH, params);
         if (queued != TextToSpeech.SUCCESS) {
-            res.put("ok", false);
-            res.put("message", "tts speak rejected: " + queued);
-            return;
+            return fail(500, "tts speak rejected: " + queued);
         }
         // 朗读最长等 60 秒，超时按失败处理但不中断连接
         if (!done.await(60, TimeUnit.SECONDS)) {
-            res.put("ok", false);
-            res.put("message", "tts timeout");
-            return;
+            return fail(500, "tts timeout");
         }
-        if (outcome[0] == TextToSpeech.SUCCESS) {
-            res.put("ok", true);
-            res.put("status", "done");
-        } else {
-            res.put("ok", false);
-            res.put("message", "tts engine reported error");
+        if (outcome[0] != TextToSpeech.SUCCESS) {
+            return fail(500, "tts engine reported error");
         }
+        JSONObject data = new JSONObject();
+        data.put("status", "done");
+        return ok(data);
     }
 
     /** 懒初始化 TTS 并等待就绪；失败返回 null（下次请求会重试）。
