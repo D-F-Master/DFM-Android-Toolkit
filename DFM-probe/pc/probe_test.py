@@ -5,7 +5,7 @@
   2. adb install -r DFMProbe.apk（--skip-install 可跳过）
   3. am broadcast 启动 APK 服务（adb 不再传地址）
   4. USB 设备：adb forward 随机本地端口 -> 设备 21104；网络设备：直连 <IP>:21104
-  5. PC 主动 connect，按二进制帧协议测试 info / device info / ping / echo / tts / 未知命令 / 空文本 / CRC 错帧 / quit
+  5. PC 主动 connect，按二进制帧协议测试 心跳 / TTS / 参数错误 / 未知命令 / CRC 错帧
 
 帧格式：AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
 详见 probe与service通讯协议.md
@@ -29,13 +29,9 @@ ACTION = "com.dfm.probe.START"
 DEVICE_PORT = 21104
 FRAME_HEADER = b"\xaa\x55"
 
-CMD_PING = 0x01
-CMD_ECHO = 0x02
-CMD_TTS = 0x03
-CMD_INFO = 0x04
-CMD_QUIT = 0x05
+CMD_HEARTBEAT = 0x00
+CMD_TTS = 0x01
 CMD_ACK = 0x06
-CMD_DEVICE_INFO = 0x07
 CMD_ERROR = 0xFF
 
 ACK_TIMEOUT = 0.2
@@ -201,7 +197,6 @@ def main():
     args = parser.parse_args()
 
     conn = None
-    conn_after_quit = None
     forward_port = None
     ok = False
     seq = 0
@@ -258,70 +253,60 @@ def main():
 
         # 组帧边界：数据区超过 65535 字节必须被拒绝，65535 字节可正常组帧
         try:
-            pack_frame(seq, CMD_PING, b"x" * 65536)
+            pack_frame(seq, CMD_HEARTBEAT, b"x" * 65536)
             raise RuntimeError("组帧应拒绝超过 65535 字节的数据区")
         except ValueError:
             print("      超 65535 字节数据区被拒绝 OK")
-        if len(pack_frame(seq, CMD_PING, b"x" * 65535)) != 8 + 65535:
+        if len(pack_frame(seq, CMD_HEARTBEAT, b"x" * 65535)) != 8 + 65535:
             raise RuntimeError("65535 字节数据区组帧异常")
 
-        print("[4/6] 设备信息 CMD_INFO ...")
-        info, _ = call(reader, conn, seq, CMD_INFO, {}, args.timeout)
+        print("[4/6] 心跳 CMD_HEARTBEAT (0x00) ...")
+        hb, _ = call(reader, conn, seq, CMD_HEARTBEAT, {}, args.timeout)
         seq = (seq + 1) & 0xFF
-        expect(info, "ok", True)
-        for key in ("device", "sdk", "abi", "package"):
-            if key not in info:
-                raise RuntimeError("info 缺少字段 {}".format(key))
-        print("      info: {}".format(json.dumps(info, ensure_ascii=False)))
+        expect(hb, "code", 200)
+        expect(hb, "message", "success")
+        version = hb.get("data", {}).get("version")
+        if not isinstance(version, str) or not version:
+            raise RuntimeError("心跳应答缺少 version: {}".format(hb))
+        print("      heartbeat OK (version={})".format(version))
 
-        print("      设备信息 CMD_DEVICE_INFO (0x07) ...")
-        device_info, _ = call(reader, conn, seq, CMD_DEVICE_INFO, {}, args.timeout)
-        seq = (seq + 1) & 0xFF
-        expect(device_info, "code", 200)
-        expect(device_info, "message", "success")
-        for key in ("status", "model", "version", "manufacturer", "deviceName",
-                    "displayVersion", "androidVersion", "kernelVersion", "buildDate",
-                    "codename", "unlockStatus", "sn", "wifiMac", "ethMac"):
-            if key not in device_info.get("data", {}):
-                raise RuntimeError("device info 缺少字段 {}".format(key))
-        print("      device info: {}".format(json.dumps(device_info, ensure_ascii=False)))
-
-        print("[5/6] ping / echo / tts / 未知命令 / 空文本 / CRC 错帧 ...")
-        ping_payload = "ping-{}".format(int(time.time()))
-        pong, _ = call(reader, conn, seq, CMD_PING, {"payload": ping_payload}, args.timeout)
-        seq = (seq + 1) & 0xFF
-        expect(pong, "ok", True)
-        expect(pong, "payload", ping_payload)
-        print("      ping OK (payload={})".format(ping_payload))
-
-        echo_payload = "你好 DFM-Probe"
-        echo, _ = call(reader, conn, seq, CMD_ECHO, {"payload": echo_payload}, args.timeout)
-        seq = (seq + 1) & 0xFF
-        expect(echo, "ok", True)
-        expect(echo, "payload", echo_payload)
-        print("      echo OK (payload={})".format(echo_payload))
-
+        print("[5/6] TTS CMD_TTS (0x01) / 参数错误 / 未知命令 / CRC 错帧 ...")
         tts, _ = call(reader, conn, seq, CMD_TTS, {"text": args.tts_text}, args.timeout)
         seq = (seq + 1) & 0xFF
-        expect(tts, "ok", True)
-        expect(tts, "status", "done")
+        expect(tts, "code", 200)
+        expect(tts.get("data", {}), "status", "done")
         print("      tts OK ({} -> done)".format(args.tts_text))
 
-        bogus, _ = call(reader, conn, seq, 0x7E, {}, args.timeout)
+        missing, _ = call(reader, conn, seq, CMD_TTS, {}, args.timeout)
         seq = (seq + 1) & 0xFF
-        expect(bogus, "ok", False)
-        if "unknown cmd" not in bogus.get("message", ""):
-            raise RuntimeError("未知命令应答异常: {}".format(bogus))
-        print("      未知命令 OK ({})".format(bogus.get("message")))
+        expect(missing, "code", 400)
+        expect(missing, "data", None)
+        expect(missing, "message", "text must be a string")
+        print("      缺少 text -> 400 OK")
+
+        wrong_type, _ = call(reader, conn, seq, CMD_TTS, {"text": 123}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(wrong_type, "code", 400)
+        expect(wrong_type, "data", None)
+        print("      text 非字符串 -> 400 OK")
 
         empty, _ = call(reader, conn, seq, CMD_TTS, {"text": "   "}, args.timeout)
         seq = (seq + 1) & 0xFF
-        expect(empty, "ok", False)
+        expect(empty, "code", 400)
+        expect(empty, "data", None)
         expect(empty, "message", "empty text")
-        print("      空文本 OK (empty text)")
+        print("      空文本 -> 400 OK (empty text)")
+
+        bogus, _ = call(reader, conn, seq, 0x7E, {}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bogus, "code", 400)
+        expect(bogus, "data", None)
+        if "unknown cmd" not in bogus.get("message", ""):
+            raise RuntimeError("未知命令应答异常: {}".format(bogus))
+        print("      未知命令 -> 0xFF/400 OK ({})".format(bogus.get("message")))
 
         # CRC 错帧：协议要求直接丢弃、不回 ACK、不回响应
-        bad = bytearray(pack_frame(seq, CMD_PING, b'{"payload":"bad"}'))
+        bad = bytearray(pack_frame(seq, CMD_HEARTBEAT, b"{}"))
         bad[-1] ^= 0xFF
         conn.sendall(bytes(bad))
         try:
@@ -331,32 +316,13 @@ def main():
             print("      CRC 错帧被丢弃（无 ACK/响应）OK")
         seq = (seq + 1) & 0xFF
 
-        print("[6/6] quit 与 quit 后服务仍监听 ...")
-        bye, _ = call(reader, conn, seq, CMD_QUIT, {}, args.timeout)
-        seq = (seq + 1) & 0xFF
-        expect(bye, "ok", True)
-        expect(bye, "message", "bye")
-        conn.close()
-        conn = None
-
-        # 重新连入：CMD_QUIT 只关当前连接，ServerSocket 应继续 accept
-        conn_after_quit = connect_with_retry(host, port)
-        reader2 = FrameReader(conn_after_quit)
-        again, _ = call(reader2, conn_after_quit, seq, CMD_PING,
-                        {"payload": "after-quit"}, args.timeout)
-        expect(again, "ok", True)
-        expect(again, "payload", "after-quit")
-        print("      quit -> bye OK；重新连入 ping 仍正常")
-
-        print("[6/6] PASS：帧协议链路建立且全命令字收发正常")
+        print("[6/6] PASS：帧协议链路建立且心跳 / TTS 收发正常")
         ok = True
     except Exception as e:
         print("FAIL: {}".format(e))
     finally:
         if conn is not None:
             conn.close()
-        if conn_after_quit is not None:
-            conn_after_quit.close()
         if forward_port is not None:
             adb(args.device, "forward", "--remove", "tcp:{}".format(forward_port))
         # 服务常驻监听，不再 force-stop
