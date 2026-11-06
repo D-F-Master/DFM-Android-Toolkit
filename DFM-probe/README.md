@@ -51,9 +51,9 @@ PC                                      设备 (com.dfm.probe)
   │ USB: adb forward tcp:<local> tcp:21104
   │ 网络: 直连 <设备IP>:21104            │
   │ ───────── TCP 连接（PC 主动）───────> │
-  │ ──> AA 55 <seq> <len> <cmd> <data> <crc_lo> <crc_hi>
-  │ <── AA 55 <seq> 00 06 <crc_lo> <crc_hi>                    (ACK)
-  │ <── AA 55 <seq> <len> <cmd|0x80> <data> <crc_lo> <crc_hi> (响应帧)
+  │ ──> AA 55 <seq> <len_lo> <len_hi> <cmd> <data> <crc_lo> <crc_hi>
+  │ <── AA 55 <seq> 00 00 06 <crc_lo> <crc_hi>                          (ACK)
+  │ <── AA 55 <seq> <len_lo> <len_hi> <cmd|0x80> <data> <crc_lo> <crc_hi> (响应帧)
 ```
 
 adb 只做三件事：安装、发 START 广播启动服务、USB 设备做 `adb forward` 端口映射；
@@ -62,13 +62,14 @@ adb 只做三件事：安装、发 START 广播启动服务、USB 设备做 `adb
 
 ## 协议
 
-帧格式：`AA 55 | 帧序(1B) | 长度(1B) | 命令字(1B) | 数据区 | CRC16(低字节在前)`。
-长度 = 数据区字节数，**单帧数据区最多 255 字节**；CRC16-Modbus 覆盖 `帧序+长度+命令字+数据区`。
-完整定义见 `probe与service通讯协议.md`。
+帧格式：`AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)`。
+长度 = 数据区字节数（低字节在前），**单帧数据区最多 65535 字节**；
+CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。完整定义见 `probe与service通讯协议.md`。
 
 数据区为 UTF-8 JSON 对象（裸换行须转义）。设备校验通过后立即回 ACK
-（`AA 55 <同帧序> 00 06 <crc_lo> <crc_hi>`），执行完再发**同帧序响应帧**，
-命令字 = `请求命令字 | 0x80`，数据区为业务结果（统一含 `ok` 布尔字段），响应帧不要求 ACK。
+（`AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`），执行完再发**同帧序响应帧**，
+命令字 = `请求命令字 | 0x80`，数据区为业务结果（统一含 `ok` 布尔字段；
+`CMD_DEVICE_INFO (0x07)` 例外，沿用 `code/message/data` 信封），响应帧不要求 ACK。
 CRC 错或长度非法的帧直接丢弃且不回 ACK；同一帧序重复帧只回 ACK、不重复执行业务。
 PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~255 循环。
 设备校验通过就回 ACK（不等业务执行完），否则 200ms 停等无法容忍 TTS 朗读的数十秒耗时。
@@ -81,7 +82,8 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 | `0x04` | CMD_INFO | PC→设备 | `{}` | `{"ok":true,"device":...,"sdk":...,"abi":...,"package":...}` |
 | `0x05` | CMD_QUIT | PC→设备 | `{}` | `{"ok":true,"message":"bye"}`，只关当前连接，服务继续监听 |
 | `0x06` | CMD_ACK | 设备→PC | 无 | 无（通知类） |
-| `0x81`–`0x85` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
+| `0x07` | CMD_DEVICE_INFO | PC→设备 | `{}` | `{"code":200,"message":"success","data":{...14 项设备信息...}}`，见 `接口文档.md`「三」 |
+| `0x81`–`0x85`、`0x87` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
 | `0xFF` | CMD_ERROR | 设备→PC | `{"ok":false,"message":"unknown cmd: 0x.."}` | 无（通知类） |
 
 `CMD_TTS` 用系统 `TextToSpeech` 朗读 `text`，读完回 `{"ok":true,"status":"done"}`，
@@ -100,11 +102,14 @@ python pc/probe_test.py --device 202600298120 --skip-install
 `--device` 含 `:` 视为网络设备（直连该 IP 的 21104），否则视为 USB 设备（自动
 `adb forward` 随机本地端口并在结束时 `--remove`）。
 `--tts-text` 自定义朗读文本，`--skip-install` 跳过安装。
-脚本覆盖：组帧 256 字节拒绝、CMD_INFO / PING / ECHO / TTS / 未知命令 / 空文本 /
-CRC 错帧丢弃、CMD_QUIT 后重新连入仍可 ping（证明服务继续监听）。
+脚本覆盖：组帧 65536 字节拒绝、CMD_INFO / CMD_DEVICE_INFO / PING / ECHO / TTS /
+未知命令 / 空文本 / CRC 错帧丢弃、CMD_QUIT 后重新连入仍可 ping（证明服务继续监听）。
 测试结束**不 force-stop**，服务常驻监听 21104。
 
 ## 实机验证结果（2026-11-05，设备 202600298120 / USB / Android 11 / rk3568_r）
+
+> 本表及下方 46/46、前端构建记录均为**旧版 1 字节长度帧协议**构建的实机/回归结果；
+> 2 字节长度帧协议与 `CMD_DEVICE_INFO (0x07)` 目前只有编译、静态与帧仿真验证，尚未实机复测。
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
@@ -147,7 +152,7 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 | `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 CMD_PING |
 | `POST /api/probe/message` | `{"deviceId":"...","cmd":1,"data":{...}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
-- `cmd` 限 0~255；`data` 必须是 JSON 对象；数据区超过 255 字节明确返回失败。
+- `cmd` 限 0~255；`data` 必须是 JSON 对象；数据区超过 65535 字节明确返回失败。
 - 服务路由每次都发幂等的 START 广播启动 APK；USB 设备用系统分配的随机本地端口做
   `adb forward`（结束时 `--remove`，多设备不抢端口），网络设备直连 `<IP>:21104`。
   **不再用 `adb reverse`，也不再 `force-stop`**：服务常驻监听 21104。
@@ -174,7 +179,7 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 - 服务返回 `START_NOT_STICKY`：进程被系统杀掉后不会自行恢复，需要重新发 START 广播。
 - 每连接一个工作线程、连接内串行（窗口 1）；TTS 朗读期间会占用该连接线程（同步等
   `onDone`，最长 60 秒），期间不处理该连接上的其它请求，但 `accept` 循环不受影响。
-- 单帧数据区最多 255 字节（约 80 个汉字），超长必须拆帧或缩短文本；当前工程不做拆帧。
+- 单帧数据区最多 65535 字节（长度字段 2 字节、低字节在前），超长判失败不截断；当前工程不做拆帧。
 - 21104 端口若被设备上其它程序占用会 bind 失败，服务会记日志 `listen failed on port 21104`
   并把 `running` 置 false；当前未做端口自适应。
 - 当前只做「通讯 + 系统 TTS 朗读」验证，尚未实现 root shell、输入注入、截屏等控制能力。
@@ -186,5 +191,5 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
   `adb connect` 报 10060，网络直连尚未实机验证。
 - 页面未在 uTools GUI 中实际渲染验证；`DFM-frontend/package.json` 无 `vue-tsc` / typecheck
   脚本，vite 只做转译不做类型检查。
-- 未组帧的失败（设备不在线、安装失败、数据区超 255 字节）没有 `frames`，页面帧日志三段
+- 未组帧的失败（设备不在线、安装失败、数据区超 65535 字节）没有 `frames`，页面帧日志三段
   显示 `—`；本地 JSON / 命令字校验失败不写帧日志，只显示在结果区。
