@@ -22,11 +22,8 @@ ACTION = "com.dfm.probe.START"
 DEVICE_PORT = 21104
 FRAME_HEADER = b"\xaa\x55"
 
-CMD_PING = 0x01
-CMD_ECHO = 0x02
-CMD_TTS = 0x03
-CMD_INFO = 0x04
-CMD_QUIT = 0x05
+CMD_HEARTBEAT = 0x00
+CMD_TTS = 0x01
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
@@ -219,7 +216,7 @@ def _connect_with_retry(host: str, port: int, attempts: int = 10, interval: floa
     raise RuntimeError(f"连接 {host}:{port} 失败: {last}")
 
 
-def run_probe(device_id: str, install: bool, cmd: int = CMD_PING, data: dict = None) -> dict:
+def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
     """对指定设备发一帧业务帧并取回响应。
 
     adb 只负责安装、启动广播与 USB 端口映射；业务数据全部走设备 21104 上的帧协议。
@@ -237,7 +234,7 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
         if rc != 0 or out != "device":
             return {"connected": False, "reason": f"设备不在线: {err or out}"}
 
-        request = data if data is not None else {"payload": f"probe-{int(time.time())}"}
+        request = data if data is not None else {}
         payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
         if len(payload) > 65535:
             return {"connected": False, "reason": f"数据区超过 65535 字节: {len(payload)}"}
@@ -324,7 +321,7 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
         # 服务常驻监听 21104，不再 force-stop
 
 
-def _result(device_id: str, install: bool, cmd: int = CMD_PING, data: dict = None) -> dict:
+def _result(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
     device_id = (device_id or "").strip()
     if not device_id:
         return {"code": 400, "message": "deviceId 不能为空", "data": {"connected": False}}
