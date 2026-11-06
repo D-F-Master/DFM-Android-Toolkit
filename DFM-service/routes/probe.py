@@ -352,5 +352,10 @@ def probe_connect(req: ProbeRequest):
 
 @router.post("/probe/message")
 def probe_message(req: ProbeMessageRequest):
-    """按命令字向设备探针发一帧，返回设备应答，供页面调试。"""
+    """按命令字向设备探针发一帧，返回设备应答，供页面调试。
+
+    业务命令字只保留 0x00 心跳 / 0x01 TTS，其余直接回 400，不向设备发帧。
+    """
+    if req.cmd not in (CMD_HEARTBEAT, CMD_TTS):
+        return {"code": 400, "message": "cmd 只支持 0x00 / 0x01", "data": {"connected": False}}
     return _result(req.deviceId, False, req.cmd, req.data)
