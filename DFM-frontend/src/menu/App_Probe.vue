@@ -55,8 +55,8 @@ const resultTitle = ref('尚未执行测试');
 const requestText = ref('');
 const responseText = ref('');
 const ttsText = ref('设备语音测试');
-const customCmd = ref('1');
-const customData = ref('{\n  "payload": "hello from probe"\n}');
+const customCmd = ref('0');
+const customData = ref('{}');
 const frameText = ref('');
 const frameLogs = ref<FrameLog[]>([]);
 let frameLogId = 0;
@@ -205,12 +205,8 @@ const sendMessage = (cmd: number, data: Record<string, unknown>, title: string) 
   callProbe('/api/probe/message', { deviceId: selectedDevice.value, cmd, data }, title);
 };
 
-const sendPing = () => {
-  sendMessage(0x01, { payload: `ping-${Date.now()}` }, 'ping');
-};
-
-const sendEcho = () => {
-  sendMessage(0x02, { payload: '你好 DFM-Probe' }, 'echo');
+const sendHeartbeat = () => {
+  sendMessage(0x00, {}, '心跳');
 };
 
 const sendBogus = () => {
@@ -218,7 +214,7 @@ const sendBogus = () => {
 };
 
 const sendTts = () => {
-  sendMessage(0x03, { text: ttsText.value }, 'TTS 语音朗读');
+  sendMessage(0x01, { text: ttsText.value }, 'TTS 语音朗读');
 };
 
 const showLocalError = (text: string) => {
@@ -337,8 +333,7 @@ onMounted(async () => {
               <h3>快捷命令</h3>
               <p class="card-desc">发送内置命令字，查看设备应答。</p>
               <div class="button-row">
-                <button @click="sendPing" :disabled="busy">ping (0x01)</button>
-                <button @click="sendEcho" :disabled="busy">echo (0x02)</button>
+                <button @click="sendHeartbeat" :disabled="busy">心跳 (0x00)</button>
                 <button class="secondary" @click="sendBogus" :disabled="busy">未知命令 (0x7E)</button>
               </div>
             </div>
@@ -356,7 +351,7 @@ onMounted(async () => {
               <h3>自定义命令帧</h3>
               <p class="card-desc">命令字 + UTF-8 JSON 数据区，单帧最多 65535 字节。</p>
               <div class="input-row">
-                <input v-model="customCmd" class="cmd-input" placeholder="命令字 0-255，如 1 或 0x7E">
+                <input v-model="customCmd" class="cmd-input" placeholder="命令字 0-255，如 0 或 0x01">
               </div>
               <textarea v-model="customData" class="json-input" spellcheck="false"></textarea>
               <div class="button-row">
