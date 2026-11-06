@@ -354,7 +354,7 @@ onMounted(async () => {
 
             <div class="card">
               <h3>自定义命令帧</h3>
-              <p class="card-desc">命令字 + UTF-8 JSON 数据区，单帧最多 255 字节。</p>
+              <p class="card-desc">命令字 + UTF-8 JSON 数据区，单帧最多 65535 字节。</p>
               <div class="input-row">
                 <input v-model="customCmd" class="cmd-input" placeholder="命令字 0-255，如 1 或 0x7E">
               </div>
