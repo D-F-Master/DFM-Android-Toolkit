@@ -2,7 +2,7 @@
 
 采用   帧头 + 帧序 + 长度 + 命令字 + 数据区 + CRC 校验   结构
 
-完整帧示例：AA 55 00 04 00 01 11 22 33 44 XX XX（长度字段 2 字节，低字节在前）
+完整帧示例：AA 55 09 02 00 00 7B 7D 9B 93（帧序 0x09、长度 02 00、命令字 0x00 心跳、数据区 {}、CRC 9B 93；长度字段 2 字节，低字节在前）
 
 
 
@@ -32,32 +32,31 @@
 
 | 命令字 | 名称 | 方向 | 数据区 | 说明 |
 | ------ | ---- | ---- | ------ | ---- |
-| `0x01` | CMD_PING | PC → 设备 | `{"payload":"..."}` | 连通性测试，原样回显 payload |
-| `0x02` | CMD_ECHO | PC → 设备 | `{"payload":"..."}` | 原样回显 |
-| `0x03` | CMD_TTS | PC → 设备 | `{"text":"..."}` | 调用系统 TTS 朗读 |
-| `0x04` | CMD_INFO | PC → 设备 | `{}` | 返回 device / sdk / abi / package |
-| `0x05` | CMD_QUIT | PC → 设备 | `{}` | 关闭当前连接，服务继续监听 |
+| `0x00` | CMD_HEARTBEAT | PC → 设备 | `{}` | 心跳，返回当前程序版本 `{"version":"1.0"}` |
+| `0x01` | CMD_TTS | PC → 设备 | `{"text":"..."}` | 调用系统 TTS 朗读，成功返回 `{"status":"done"}` |
 | `0x06` | CMD_ACK | 设备 → PC | 无 | ACK 确认帧，见「ACK 确认」 |
-| `0x07` | CMD_DEVICE_INFO | PC → 设备 | `{}` | 返回 `code` / `message` / `data`，`data` 为 14 项设备信息 |
-| `0x81`–`0x85`、`0x87` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
-| `0xFF` | CMD_ERROR | 设备 → PC | `{"ok":false,"message":"unknown cmd: 0x.."}` | 未知命令或业务异常 |
+| `0x80`、`0x81` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
+| `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
 
-`0x01`–`0x05`、`0x07` 为业务帧，**要求 ACK**；`0x81`–`0x85`、`0x87`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
+`0x00`、`0x01` 为业务帧，**要求 ACK**；`0x80`、`0x81`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
+
+> 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
+> 设备端不再有关闭连接的命令字，连接由 PC 侧主动关闭，服务常驻监听。
 
 
 
 **数据区编码**
 
-数据区为 UTF-8 编码的 JSON 对象（不能是数组或裸值），例如 `{"payload":"ping-123"}`、`{"text":"设备语音测试"}`。
+数据区为 UTF-8 编码的 JSON 对象（不能是数组或裸值），例如 `{}`、`{"text":"设备语音测试"}`。
 
 长度字段为 2 字节，因此**单帧数据区最多 65535 字节**。发送端在组帧前必须先按 UTF-8 字节数检查，超长直接判失败、不得截断发送。JSON 内不得出现裸换行（换行须写成转义形式），因为本协议不依赖换行分帧。
 
-业务结果 JSON 统一带 `ok` 布尔字段：`true` 表示成功，`false` 时附带 `message` 说明原因。CMD_DEVICE_INFO (`0x07`) 的响应沿用 service `/api/device/info` 的 `code` / `message` / `data` 结构，不带 `ok`。示例：
+业务结果 JSON 统一采用对齐 service 的 `{code, message, data}` 信封：成功 `code:200` / `message:"success"` / `data` 为业务对象；失败 `code:400`（请求参数错误）或 `code:500`（设备内部错误）/ `message` 为原因 / `data` 固定 `null`。不再使用 `ok` 布尔字段。示例：
 
-- `{"ok":true,"payload":"ping-123"}`
-- `{"ok":true,"status":"done"}`
-- `{"ok":false,"message":"empty text"}`
-- `{"ok":true,"device":"rk3568_r","sdk":30,"abi":"arm64-v8a","package":"com.dfm.probe"}`
+- `{"code":200,"message":"success","data":{"version":"1.0"}}`
+- `{"code":200,"message":"success","data":{"status":"done"}}`
+- `{"code":400,"message":"empty text","data":null}`
+- `{"code":400,"message":"unknown cmd: 0x7e","data":null}`
 
 
 
@@ -103,9 +102,9 @@ uint16_t crc16_modbus(const uint8_t *data, size_t length)
 | 命令字 | `0x06`                     |
 | CRC    | 覆盖：帧序 + 长度(2B) + 命令字 |
 
-ACK 示例（确认帧序 `0x04` 的业务帧）：
+ACK 示例（确认帧序 `0x09` 的业务帧）：
 
-`AA 55 04 00 00 06 XX XX`
+`AA 55 09 00 00 06 83 BA`
 
 规则：
 
@@ -125,18 +124,18 @@ ACK 示例（确认帧序 `0x04` 的业务帧）：
 | 帧头   | `AA 55`                                |
 | 帧序   | 与被确认业务帧相同                     |
 | 长度   | 数据区字节数（2 字节，低字节在前）       |
-| 命令字 | 请求命令字按位或 `0x80`（`0x01` → `0x81`） |
+| 命令字 | 请求命令字按位或 `0x80`（`0x00` → `0x80`，`0x01` → `0x81`） |
 | 数据区 | UTF-8 JSON 业务结果，见「数据区编码」   |
 | CRC    | 覆盖：帧序 + 长度(2B) + 命令字 + 数据区 |
 
-数据响应帧属于通知类，**不要求 ACK**；发送端收到 ACK 后即进入等待同帧序响应帧的阶段。未知命令或业务异常时用命令字 `0xFF` 回 `{"ok":false,"message":"..."}`，同样不要求 ACK。
+数据响应帧属于通知类，**不要求 ACK**；发送端收到 ACK 后即进入等待同帧序响应帧的阶段。未知命令或业务异常时用命令字 `0xFF` 回 `{"code":400,"message":"...","data":null}`，同样不要求 ACK。
 
-一次完整交互示例（CMD_PING，帧序 `0x04`）：
+一次完整交互示例（CMD_HEARTBEAT，帧序 `0x09`）：
 
 ```
-PC  → AA 55 04 16 00 01 <22 字节：{"payload":"ping-123"}> crc_lo crc_hi
-设备 → AA 55 04 00 00 06 crc_lo crc_hi
-设备 → AA 55 04 20 00 81 <32 字节：{"ok":true,"payload":"ping-123"}> crc_lo crc_hi
+PC  → AA 55 09 02 00 00 7B 7D 9B 93
+设备 → AA 55 09 00 00 06 83 BA
+设备 → AA 55 09 39 00 80 <57 字节：{"code":200,"message":"success","data":{"version":"1.0"}}> 67 72
 ```
 
 
