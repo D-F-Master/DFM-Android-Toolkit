@@ -7,7 +7,7 @@
   4. USB 设备：adb forward 随机本地端口 -> 设备 21104；网络设备：直连 <IP>:21104
   5. PC 主动 connect，按二进制帧协议测试 info / ping / echo / tts / 未知命令 / 空文本 / CRC 错帧 / quit
 
-帧格式：AA 55 | 帧序(1B) | 长度(1B) | 命令字(1B) | 数据区 | CRC16(低字节在前)
+帧格式：AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
 详见 probe与service通讯协议.md
 
 用法：
@@ -64,10 +64,10 @@ def crc16_modbus(data):
 
 
 def pack_frame(seq, cmd, data):
-    """组一帧；data 为字节串，最长 255 字节。"""
-    if len(data) > 255:
-        raise ValueError("数据区超过 255 字节: {}".format(len(data)))
-    body = bytes([seq & 0xFF, len(data), cmd & 0xFF]) + data
+    """组一帧；data 为字节串，长度 2 字节低字节在前，数据区最长 65535 字节。"""
+    if len(data) > 65535:
+        raise ValueError("数据区超过 65535 字节: {}".format(len(data)))
+    body = bytes([seq & 0xFF, len(data) & 0xFF, (len(data) >> 8) & 0xFF, cmd & 0xFF]) + data
     crc = crc16_modbus(body)
     return FRAME_HEADER + body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
@@ -109,24 +109,24 @@ class FrameReader:
                 return None
             if idx > 0:
                 del self.buf[:idx]
-            if len(self.buf) < 5:
+            if len(self.buf) < 6:
                 return None
             seq = self.buf[2]
-            length = self.buf[3]
-            cmd = self.buf[4]
-            frame_len = 7 + length
+            length = self.buf[3] | (self.buf[4] << 8)
+            cmd = self.buf[5]
+            frame_len = 8 + length
             if len(self.buf) < frame_len:
                 return None
             frame = bytes(self.buf[:frame_len])
-            crc_lo = frame[5 + length]
-            crc_hi = frame[6 + length]
-            expect = crc16_modbus(frame[2:5 + length])
+            crc_lo = frame[6 + length]
+            crc_hi = frame[7 + length]
+            expect = crc16_modbus(frame[2:6 + length])
             if crc_lo != (expect & 0xFF) or crc_hi != ((expect >> 8) & 0xFF):
                 # CRC 错：丢掉第一个字节，从后续字节重新找帧头
                 del self.buf[:1]
                 continue
             del self.buf[:frame_len]
-            return seq, cmd, frame[5:5 + length]
+            return seq, cmd, frame[6:6 + length]
 
 
 def call(reader, conn, seq, cmd, obj, resp_timeout):
@@ -255,12 +255,14 @@ def main():
         print("      OK: 已连入 {}:{}".format(host, port))
         reader = FrameReader(conn)
 
-        # 组帧边界：数据区超过 255 字节必须被拒绝
+        # 组帧边界：数据区超过 65535 字节必须被拒绝，65535 字节可正常组帧
         try:
-            pack_frame(seq, CMD_PING, b"x" * 256)
-            raise RuntimeError("组帧应拒绝超过 255 字节的数据区")
+            pack_frame(seq, CMD_PING, b"x" * 65536)
+            raise RuntimeError("组帧应拒绝超过 65535 字节的数据区")
         except ValueError:
-            print("      超 255 字节数据区被拒绝 OK")
+            print("      超 65535 字节数据区被拒绝 OK")
+        if len(pack_frame(seq, CMD_PING, b"x" * 65535)) != 8 + 65535:
+            raise RuntimeError("65535 字节数据区组帧异常")
 
         print("[4/6] 设备信息 CMD_INFO ...")
         info, _ = call(reader, conn, seq, CMD_INFO, {}, args.timeout)

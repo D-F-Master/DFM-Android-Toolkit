@@ -29,8 +29,8 @@ import java.util.concurrent.TimeUnit;
  * 常驻前台服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
  *
  * 二进制帧协议详见 probe与service通讯协议.md：
- *   AA 55 | 帧序(1B) | 长度(1B) | 命令字(1B) | 数据区 | CRC16(低字节在前)
- *   数据区为 UTF-8 JSON，最长 255 字节。
+ *   AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
+ *   数据区为 UTF-8 JSON，最长 65535 字节。
  *   业务帧（0x01~0x05、0x07）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
  *   CRC 错、数据区不是合法 JSON 对象的帧直接丢弃，不回 ACK，由发送端超时重传。
  */
@@ -39,6 +39,7 @@ public class ProbeService extends Service {
     private static final String CHANNEL_ID = "dfm_probe";
     private static final int NOTIFY_ID = 1;
     private static final int DEVICE_PORT = 21104;
+    private static final int MAX_DATA = 65535;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
     private static final int CMD_PING = 0x01;
@@ -193,23 +194,23 @@ public class ProbeService extends Service {
                         consumed = bytes.length - keep;
                         break;
                     }
-                    if (idx + 5 > bytes.length) {
-                        // 帧头、帧序、长度、命令字还没收齐
+                    if (idx + 6 > bytes.length) {
+                        // 帧头、帧序、长度(2B)、命令字还没收齐
                         consumed = idx;
                         break;
                     }
                     int seq = bytes[idx + 2] & 0xFF;
-                    int len = bytes[idx + 3] & 0xFF;
-                    int cmd = bytes[idx + 4] & 0xFF;
-                    int frameLen = 7 + len;
+                    int len = (bytes[idx + 3] & 0xFF) | ((bytes[idx + 4] & 0xFF) << 8);
+                    int cmd = bytes[idx + 5] & 0xFF;
+                    int frameLen = 8 + len;
                     if (idx + frameLen > bytes.length) {
                         // 半包：从帧头开始保留，等后续字节
                         consumed = idx;
                         break;
                     }
-                    int crcLo = bytes[idx + 5 + len] & 0xFF;
-                    int crcHi = bytes[idx + 6 + len] & 0xFF;
-                    int expect = crc16(bytes, idx + 2, 3 + len);
+                    int crcLo = bytes[idx + 6 + len] & 0xFF;
+                    int crcHi = bytes[idx + 7 + len] & 0xFF;
+                    int expect = crc16(bytes, idx + 2, 4 + len);
                     if ((expect & 0xFF) != crcLo || ((expect >> 8) & 0xFF) != crcHi) {
                         // CRC 错：丢弃并从下一字节重新找帧头，不回 ACK
                         Log.w(TAG, "bad crc, drop frame seq=" + seq);
@@ -217,7 +218,7 @@ public class ProbeService extends Service {
                         continue;
                     }
                     byte[] data = new byte[len];
-                    System.arraycopy(bytes, idx + 5, data, 0, len);
+                    System.arraycopy(bytes, idx + 6, data, 0, len);
                     quit = handleFrame(out, seq, cmd, data);
                     consumed = idx + frameLen;
                     if (quit) {
@@ -260,7 +261,7 @@ public class ProbeService extends Service {
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
-            if (respData.length > 255) {
+            if (respData.length > MAX_DATA) {
                 res = new JSONObject();
                 res.put("ok", false);
                 res.put("message", "response too large: " + respData.length);
@@ -324,7 +325,7 @@ public class ProbeService extends Service {
     }
 
     private static void sendFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
-        if (data.length > 255) {
+        if (data.length > MAX_DATA) {
             throw new IllegalArgumentException("frame data too large: " + data.length);
         }
         out.write(buildFrame(seq, cmd, data));
@@ -332,20 +333,21 @@ public class ProbeService extends Service {
     }
 
     private static byte[] buildFrame(int seq, int cmd, byte[] data) {
-        byte[] frame = new byte[7 + data.length];
+        byte[] frame = new byte[8 + data.length];
         frame[0] = (byte) 0xAA;
         frame[1] = (byte) 0x55;
         frame[2] = (byte) seq;
-        frame[3] = (byte) data.length;
-        frame[4] = (byte) cmd;
-        System.arraycopy(data, 0, frame, 5, data.length);
-        int crc = crc16(frame, 2, 3 + data.length);
-        frame[5 + data.length] = (byte) (crc & 0xFF);
-        frame[6 + data.length] = (byte) ((crc >> 8) & 0xFF);
+        frame[3] = (byte) (data.length & 0xFF);
+        frame[4] = (byte) ((data.length >> 8) & 0xFF);
+        frame[5] = (byte) cmd;
+        System.arraycopy(data, 0, frame, 6, data.length);
+        int crc = crc16(frame, 2, 4 + data.length);
+        frame[6 + data.length] = (byte) (crc & 0xFF);
+        frame[7 + data.length] = (byte) ((crc >> 8) & 0xFF);
         return frame;
     }
 
-    /** CRC16-Modbus，覆盖 seq + len + cmd + data；结果以低字节在前写入帧尾。 */
+    /** CRC16-Modbus，覆盖 seq + len(2B) + cmd + data；结果以低字节在前写入帧尾。 */
     private static int crc16(byte[] b, int off, int len) {
         int crc = 0xFFFF;
         for (int i = off; i < off + len; i++) {

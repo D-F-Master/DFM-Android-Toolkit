@@ -97,10 +97,10 @@ def crc16_modbus(data: bytes) -> int:
 
 
 def pack_frame(seq: int, cmd: int, payload: bytes) -> bytes:
-    """组一帧；数据区最长 255 字节，CRC 低字节在前。"""
-    if len(payload) > 255:
-        raise ValueError(f"数据区超过 255 字节: {len(payload)}")
-    body = bytes([seq & 0xFF, len(payload), cmd & 0xFF]) + payload
+    """组一帧；长度 2 字节低字节在前，数据区最长 65535 字节，CRC 低字节在前。"""
+    if len(payload) > 65535:
+        raise ValueError(f"数据区超过 65535 字节: {len(payload)}")
+    body = bytes([seq & 0xFF, len(payload) & 0xFF, (len(payload) >> 8) & 0xFF, cmd & 0xFF]) + payload
     crc = crc16_modbus(body)
     return FRAME_HEADER + body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
@@ -142,25 +142,25 @@ class FrameReader:
                 return None
             if idx > 0:
                 del self.buf[:idx]
-            if len(self.buf) < 5:
+            if len(self.buf) < 6:
                 return None
             seq = self.buf[2]
-            length = self.buf[3]
-            cmd = self.buf[4]
-            frame_len = 7 + length
+            length = self.buf[3] | (self.buf[4] << 8)
+            cmd = self.buf[5]
+            frame_len = 8 + length
             if len(self.buf) < frame_len:
                 return None
             frame = bytes(self.buf[:frame_len])
-            crc_lo = frame[5 + length]
-            crc_hi = frame[6 + length]
-            expect = crc16_modbus(frame[2:5 + length])
+            crc_lo = frame[6 + length]
+            crc_hi = frame[7 + length]
+            expect = crc16_modbus(frame[2:6 + length])
             if crc_lo != (expect & 0xFF) or crc_hi != ((expect >> 8) & 0xFF):
                 # CRC 错：丢掉第一个字节，从后续字节重新找帧头，不回 ACK
                 del self.buf[:1]
                 continue
             del self.buf[:frame_len]
             # 第 4 项是收到的完整原始帧字节，页面帧日志直接展示真实字节、不重组
-            return seq, cmd, frame[5:5 + length], frame
+            return seq, cmd, frame[6:6 + length], frame
 
 
 def recv_ack(reader: FrameReader, conn: socket.socket, seq: int, cmd: int, frame: bytes) -> tuple:
@@ -239,8 +239,8 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
 
         request = data if data is not None else {"payload": f"probe-{int(time.time())}"}
         payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
-        if len(payload) > 255:
-            return {"connected": False, "reason": f"数据区超过 255 字节: {len(payload)}"}
+        if len(payload) > 65535:
+            return {"connected": False, "reason": f"数据区超过 65535 字节: {len(payload)}"}
 
         if install:
             if not APK_PATH.is_file():
