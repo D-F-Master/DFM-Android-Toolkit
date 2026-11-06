@@ -55,8 +55,6 @@ const resultTitle = ref('尚未执行测试');
 const requestText = ref('');
 const responseText = ref('');
 const ttsText = ref('设备语音测试');
-const customCmd = ref('0');
-const customData = ref('{}');
 const frameText = ref('');
 const frameLogs = ref<FrameLog[]>([]);
 let frameLogId = 0;
@@ -209,42 +207,8 @@ const sendHeartbeat = () => {
   sendMessage(0x00, {}, '心跳');
 };
 
-const sendBogus = () => {
-  sendMessage(0x7E, {}, '未知命令字');
-};
-
 const sendTts = () => {
   sendMessage(0x01, { text: ttsText.value }, 'TTS 语音朗读');
-};
-
-const showLocalError = (text: string) => {
-  resultTitle.value = '自定义命令帧';
-  requestText.value = `cmd: ${customCmd.value}\ndata: ${customData.value}`;
-  responseText.value = text;
-  frameText.value = '';
-};
-
-const sendCustomMessage = () => {
-  let parsed: any;
-  try {
-    parsed = JSON.parse(customData.value);
-  } catch (e: any) {
-    showLocalError(`JSON 解析失败: ${e?.message || e}`);
-    return;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    showLocalError('数据区必须是一个 JSON 对象（不能是数组 / null / 基本类型）');
-    return;
-  }
-  const raw = customCmd.value.trim();
-  const cmd = /^0x[0-9a-f]+$/i.test(raw)
-    ? parseInt(raw, 16)
-    : (/^\d+$/.test(raw) ? parseInt(raw, 10) : NaN);
-  if (!Number.isInteger(cmd) || cmd < 0 || cmd > 255) {
-    showLocalError('命令字必须是 0~255 的整数（可用 0x 前缀）');
-    return;
-  }
-  sendMessage(cmd, parsed, '自定义命令帧');
 };
 
 watch(selectedDevice, (deviceId) => {
@@ -334,7 +298,6 @@ onMounted(async () => {
               <p class="card-desc">发送内置命令字，查看设备应答。</p>
               <div class="button-row">
                 <button @click="sendHeartbeat" :disabled="busy">心跳 (0x00)</button>
-                <button class="secondary" @click="sendBogus" :disabled="busy">未知命令 (0x7E)</button>
               </div>
             </div>
 
@@ -344,18 +307,6 @@ onMounted(async () => {
               <div class="input-row">
                 <input v-model="ttsText" class="text-input" placeholder="输入要朗读的文本">
                 <button @click="sendTts" :disabled="busy">朗读</button>
-              </div>
-            </div>
-
-            <div class="card">
-              <h3>自定义命令帧</h3>
-              <p class="card-desc">命令字 + UTF-8 JSON 数据区，单帧最多 65535 字节。</p>
-              <div class="input-row">
-                <input v-model="customCmd" class="cmd-input" placeholder="命令字 0-255，如 0 或 0x01">
-              </div>
-              <textarea v-model="customData" class="json-input" spellcheck="false"></textarea>
-              <div class="button-row">
-                <button @click="sendCustomMessage" :disabled="busy">发送</button>
               </div>
             </div>
 
@@ -683,30 +634,6 @@ main {
   padding: 0 8px;
   border: 1px solid #ddd;
   border-radius: 4px;
-  font-size: 13px;
-}
-
-.json-input {
-  width: 100%;
-  height: 90px;
-  padding: 8px;
-  margin-bottom: 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-family: Consolas, Monaco, monospace;
-  font-size: 12px;
-  resize: vertical;
-  box-sizing: border-box;
-}
-
-.cmd-input {
-  flex: 1;
-  height: 32px;
-  padding: 0 8px;
-  margin-bottom: 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-family: Consolas, Monaco, monospace;
   font-size: 13px;
 }
 
