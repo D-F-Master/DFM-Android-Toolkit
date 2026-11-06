@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * 二进制帧协议详见 probe与service通讯协议.md：
  *   AA 55 | 帧序(1B) | 长度(1B) | 命令字(1B) | 数据区 | CRC16(低字节在前)
  *   数据区为 UTF-8 JSON，最长 255 字节。
- *   业务帧（0x01~0x05）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
+ *   业务帧（0x01~0x05、0x07）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
  *   CRC 错、数据区不是合法 JSON 对象的帧直接丢弃，不回 ACK，由发送端超时重传。
  */
 public class ProbeService extends Service {
@@ -47,6 +47,7 @@ public class ProbeService extends Service {
     private static final int CMD_INFO = 0x04;
     private static final int CMD_QUIT = 0x05;
     private static final int CMD_ACK = 0x06;
+    private static final int CMD_DEVICE_INFO = 0x07;
     private static final int CMD_ERROR = 0xFF;
 
     private volatile boolean running = false;
@@ -255,7 +256,7 @@ public class ProbeService extends Service {
             // 先回 ACK 确认帧已完整收到，避免发送端 200ms 超时重传（业务可能耗时数十秒）
             sendFrame(out, seq, CMD_ACK, new byte[0]);
             boolean unknown = cmd != CMD_PING && cmd != CMD_ECHO && cmd != CMD_TTS
-                    && cmd != CMD_INFO && cmd != CMD_QUIT;
+                    && cmd != CMD_INFO && cmd != CMD_QUIT && cmd != CMD_DEVICE_INFO;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -291,6 +292,15 @@ public class ProbeService extends Service {
                 res.put("sdk", Build.VERSION.SDK_INT);
                 res.put("abi", Build.SUPPORTED_ABIS[0]);
                 res.put("package", getPackageName());
+            } else if (cmd == CMD_DEVICE_INFO) {
+                JSONObject data = new JSONObject();
+                data.put("device", Build.MODEL);
+                data.put("sdk", Build.VERSION.SDK_INT);
+                data.put("abi", Build.SUPPORTED_ABIS[0]);
+                data.put("package", getPackageName());
+                res.put("code", 200);
+                res.put("message", "success");
+                res.put("data", data);
             } else if (cmd == CMD_QUIT) {
                 res.put("ok", true);
                 res.put("message", "bye");
@@ -299,8 +309,14 @@ public class ProbeService extends Service {
             Log.w(TAG, "execute failed: " + e);
             res = new JSONObject();
             try {
-                res.put("ok", false);
-                res.put("message", "execute failed: " + e);
+                if (cmd == CMD_DEVICE_INFO) {
+                    res.put("code", 500);
+                    res.put("message", "execute failed: " + e);
+                    res.put("data", JSONObject.NULL);
+                } else {
+                    res.put("ok", false);
+                    res.put("message", "execute failed: " + e);
+                }
             } catch (Exception ignored) {
             }
         }
