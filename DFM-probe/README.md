@@ -68,27 +68,28 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。完整定义
 
 数据区为 UTF-8 JSON 对象（裸换行须转义）。设备校验通过后立即回 ACK
 （`AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`），执行完再发**同帧序响应帧**，
-命令字 = `请求命令字 | 0x80`，数据区为业务结果（统一含 `ok` 布尔字段；
-`CMD_DEVICE_INFO (0x07)` 例外，沿用 `code/message/data` 信封），响应帧不要求 ACK。
+命令字 = `请求命令字 | 0x80`，数据区为统一 `{code,message,data}` 信封
+（成功 `code:200` / `data` 为业务对象，失败 `code:400`/`500` / `data` 固定 `null`），
+响应帧不要求 ACK。完整参数规范见 `接口文档.md`「三」。
 CRC 错或长度非法的帧直接丢弃且不回 ACK；同一帧序重复帧只回 ACK、不重复执行业务。
 PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~255 循环。
 设备校验通过就回 ACK（不等业务执行完），否则 200ms 停等无法容忍 TTS 朗读的数十秒耗时。
 
 | 命令字 | 名称 | 方向 | 数据区 | 应答 |
 | --- | --- | --- | --- | --- |
-| `0x01` | CMD_PING | PC→设备 | `{"payload":"..."}` | `{"ok":true,"payload":"..."}` |
-| `0x02` | CMD_ECHO | PC→设备 | `{"payload":"..."}` | `{"ok":true,"payload":"..."}` |
-| `0x03` | CMD_TTS | PC→设备 | `{"text":"..."}` | `{"ok":true,"status":"done"}` / `{"ok":false,"message":"..."}` |
-| `0x04` | CMD_INFO | PC→设备 | `{}` | `{"ok":true,"device":...,"sdk":...,"abi":...,"package":...}` |
-| `0x05` | CMD_QUIT | PC→设备 | `{}` | `{"ok":true,"message":"bye"}`，只关当前连接，服务继续监听 |
+| `0x00` | CMD_HEARTBEAT | PC→设备 | `{}` | `{"code":200,"message":"success","data":{"version":"1.0"}}` |
+| `0x01` | CMD_TTS | PC→设备 | `{"text":"..."}` | `{"code":200,"message":"success","data":{"status":"done"}}` / `{"code":400/500,"message":"...","data":null}` |
 | `0x06` | CMD_ACK | 设备→PC | 无 | 无（通知类） |
-| `0x07` | CMD_DEVICE_INFO | PC→设备 | `{}` | `{"code":200,"message":"success","data":{...14 项设备信息...}}`，见 `接口文档.md`「三」 |
-| `0x81`–`0x85`、`0x87` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
-| `0xFF` | CMD_ERROR | 设备→PC | `{"ok":false,"message":"unknown cmd: 0x.."}` | 无（通知类） |
+| `0x80`、`0x81` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
+| `0xFF` | CMD_ERROR | 设备→PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 无（通知类） |
 
-`CMD_TTS` 用系统 `TextToSpeech` 朗读 `text`，读完回 `{"ok":true,"status":"done"}`，
-失败回 `{"ok":false,"message":...}`（连接不断开）。空文本、引擎不可用、朗读超时都会明确回
-`ok:false`，不会崩服务。
+> 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
+> 没有关闭连接的命令字，连接由 PC 侧主动关闭。
+
+`CMD_TTS` 用系统 `TextToSpeech` 朗读 `text`，读完回
+`{"code":200,"message":"success","data":{"status":"done"}}`，
+失败回 `{"code":400/500,"message":"...","data":null}`（连接不断开）。空文本、引擎不可用、
+朗读超时都会明确回错误码，不会崩服务。
 
 ## 联调测试
 
@@ -102,14 +103,15 @@ python pc/probe_test.py --device 202600298120 --skip-install
 `--device` 含 `:` 视为网络设备（直连该 IP 的 21104），否则视为 USB 设备（自动
 `adb forward` 随机本地端口并在结束时 `--remove`）。
 `--tts-text` 自定义朗读文本，`--skip-install` 跳过安装。
-脚本覆盖：组帧 65536 字节拒绝、CMD_INFO / CMD_DEVICE_INFO / PING / ECHO / TTS /
-未知命令 / 空文本 / CRC 错帧丢弃、CMD_QUIT 后重新连入仍可 ping（证明服务继续监听）。
+脚本覆盖：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_TTS 成功应答、
+TTS 缺 text / 非字符串 text / 空文本 / 未知命令 / CRC 错帧丢弃。
 测试结束**不 force-stop**，服务常驻监听 21104。
 
 ## 实机验证结果（2026-11-05，设备 202600298120 / USB / Android 11 / rk3568_r）
 
-> 本表及下方 46/46、前端构建记录均为**旧版 1 字节长度帧协议**构建的实机/回归结果；
-> 2 字节长度帧协议与 `CMD_DEVICE_INFO (0x07)` 目前只有编译、静态与帧仿真验证，尚未实机复测。
+> 本表及下方 46/46、前端构建记录均为**旧版 1 字节长度帧协议 + 旧命令字**构建的实机/回归结果；
+> 当前 2 字节长度帧协议、统一信封与 `CMD_HEARTBEAT (0x00)` / `CMD_TTS (0x01)`
+> 目前只有编译、静态与帧仿真验证，尚未实机复测；表内 `ok` 类应答与 `CMD_QUIT` 仅属历史记录。
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
@@ -148,9 +150,9 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 
 | 端点 | 请求体 | 行为 |
 | --- | --- | --- |
-| `POST /api/probe/check` | `{"deviceId":"..."}` | 只发一帧 CMD_PING 探测，不装 APK |
-| `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 CMD_PING |
-| `POST /api/probe/message` | `{"deviceId":"...","cmd":1,"data":{...}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
+| `POST /api/probe/check` | `{"deviceId":"..."}` | 只发一帧 `CMD_HEARTBEAT (0x00)` 探测并取回程序版本，不装 APK |
+| `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 `CMD_HEARTBEAT (0x00)` |
+| `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
 - `cmd` 限 0~255；`data` 必须是 JSON 对象；数据区超过 65535 字节明确返回失败。
 - 服务路由每次都发幂等的 START 广播启动 APK；USB 设备用系统分配的随机本地端口做
@@ -159,7 +161,7 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 - `RESPONSE_TIMEOUT = 120.0` 覆盖 TTS 引擎初始化 30s + 朗读 60s；`ACK_TIMEOUT = 0.2`、
   `MAX_RETRY = 3`。同一设备的请求按 `deviceId` 加锁串行化，避免帧序与 forward 端口互相干扰。
 - 首页菜单「探针测试」进入独立页 `DFM-frontend/src/menu/App_Probe.vue`：左侧选设备，
-  右侧四个测试区（安装并通讯 / 快捷命令 ping·echo·未知命令 / TTS 朗读 / 自定义命令帧），
+  右侧四个测试区（安装并通讯 / 快捷命令 心跳·未知命令 / TTS 朗读 / 自定义命令帧），
   下方展示请求、完整应答与帧 hex。自定义命令帧在本地校验命令字 0~255 与数据区 JSON 对象，
   解析失败不会发到后端。
 - 独立页底部「帧日志」按测试累积记录（最新在上、可滚动、可清空）：时间 / 标题 / 设备 /
