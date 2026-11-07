@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | 组件声明 | `AndroidManifest.xml` | 权限、`START` 广播接收器、前台服务、TTS 包可见性声明 |
 | 启动入口 | `java/com/dfm/probe/StartReceiver.java` | 接收 `com.dfm.probe.START` 广播并拉起服务 |
-| 设备端主体 | `java/com/dfm/probe/ProbeService.java` | 前台常驻、TCP 监听、帧协议收发、2 个业务命令、系统 TTS |
+| 设备端主体 | `java/com/dfm/probe/ProbeService.java` | 前台常驻、TCP 监听、帧协议收发、3 个业务命令、系统 TTS、设备信息采集 |
 | 资源 | `res/` | 应用名 `DFM Probe`、通知栏小图标 |
 | 构建脚本 | `build.ps1` | 不用 Gradle，直接调 SDK build-tools 打包并签名 |
 | 签名 | `debug.keystore` | 固定调试签名，保证重复构建可覆盖安装 |
@@ -78,13 +78,30 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | --- | --- | --- | --- | --- |
 | `0x00` | CMD_HEARTBEAT | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"version":"1.0"}}` | 心跳，返回 `AndroidManifest.xml` 的 `versionName` |
 | `0x01` | CMD_TTS | `{"text":"..."}` | `{"code":200,"message":"success","data":{"status":"done"}}` 或 `{"code":400/500,"message":"...","data":null}` | 调用系统 TTS 朗读文本，见 §4.2 |
+| `0x02` | CMD_DEVICE_INFO | `{}`（无必填字段） | 统一信封，`data` 为设备基础信息 + 串口 / 摄像头 / 外设列表 | 设备端采集详细信息，见 §4.3 |
 | 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开 |
 
 > 旧版 `0x01`~`0x05`、`0x07`（PING / ECHO / TTS / INFO / QUIT / DEVICE_INFO）业务命令字已全部删除，
 > 本版为破坏性不兼容变更，PC 侧脚本、service 路由与前端页面须一起升级。
+> `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
 
-设备→PC 的通知类命令字：`0x06` ACK、`0x80` / `0x81` 数据响应帧、`0xFF` 错误帧。
+设备→PC 的通知类命令字：`0x06` ACK、`0x80` / `0x81` / `0x82` 数据响应帧、`0xFF` 错误帧。
 业务执行抛出未预期异常时回 `{"code":500,"message":"execute failed: ...","data":null}`，不会崩服务。
+
+### 4.3 设备详细信息采集（`0x02`）
+
+- 设备端 APK 直接采集，不依赖 PC 侧 `adb shell`：基础信息取自 `android.os.Build` 与
+  `getprop ro.serialno` / `ro.build.date`、`/proc/version`；列表取自 `/dev` 目录、
+  `CameraManager`、`InputManager` / `UsbManager`。
+- 返回 `data` 含 12 项：`androidVersion` / `sdk` / `model` / `manufacturer` / `device` /
+  `displayVersion` / `sn` / `buildDate` / `kernelVersion` / `serialPorts` / `cameras` /
+  `peripherals`。字段类型与元素结构见 `接口文档.md`「3.3」。
+- `serialPorts` 过滤 `ttyS*` / `ttyUSB*` / `ttyACM*` 并排序；`cameras` 给出 `id` / `facing` /
+  `resolution`；`peripherals` 含 `input` 与 `usb` 两类（`type` / `id` / `name`，USB 另有
+  `vendorId` / `productId`）。
+- **单项采集失败降级**：`getprop` / `/proc/version` 不可读回 `Unknown`，列表不可读回空数组，
+  摄像头特性读取失败回 `unknown`，互不影响，整帧仍为 `code:200`。
+- 仅采集整体抛异常时回 `{"code":500,"message":"device info failed: ...","data":null}`。
 
 ### 4.2 系统 TTS 朗读
 
@@ -121,16 +138,16 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `--skip-install` | 关 | 跳过 `adb install -r` |
 | `--tts-text` | `设备语音测试` | 自定义朗读文本 |
 
-六步流程：检查设备在线（`adb get-state`）→ `adb install -r` → 发 START 广播 →
+七步流程：检查设备在线（`adb get-state`）→ `adb install -r` → 发 START 广播 →
 建立 TCP 连接（USB 用 `bind(127.0.0.1, 0)` 取随机本地端口做 forward，结束时 `--remove`；
-网络直接连 `<IP>:21104`）→ 心跳 / TTS / 边界命令字测试 → 关闭连接。
+网络直接连 `<IP>:21104`）→ 心跳 / 设备详细信息 / TTS / 边界命令字测试 → 关闭连接。
 START 广播是异步的，脚本用 10 次 × 0.3 秒的连接重试等待服务 bind 完成。
 
 实现的协议能力：CRC16-Modbus 组帧/增量解帧（粘包、半包、CRC 错帧重新找帧头）、
 **停等 ACK 重传**（T=200ms、最多共发 4 次、窗口 1）、帧序 0~255 循环、同帧序响应帧等待、
 组帧前 65535 字节拒绝。
 
-覆盖的测试项：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_TTS 成功应答、
+覆盖的测试项：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_DEVICE_INFO / CMD_TTS 成功应答、
 TTS 缺 text / 非字符串 text / 空文本 / 未知命令、CRC 错帧丢弃且无应答。
 成功返回退出码 `0`，失败返回 `1` 并打印 `FAIL: ...`；测试结束**不 force-stop**，服务继续监听。
 
@@ -161,12 +178,12 @@ TTS 缺 text / 非字符串 text / 空文本 / 未知命令、CRC 错帧丢弃�
   | `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 `CMD_HEARTBEAT (0x00)` |
   | `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
-  `cmd` 限 0~255、`data` 必须为 JSON 对象、数据区超 65535 字节明确失败；每次请求都发幂等 START 广播；
+  `/api/probe/message` 的 `cmd` 仅接受 `0` / `1` / `2`（其余回 400 且不发帧）、
+  `data` 必须为 JSON 对象、数据区超 65535 字节明确失败；每次请求都发幂等 START 广播；
   同一设备按 `deviceId` 加锁串行化；`ACK_TIMEOUT=0.2`、`MAX_RETRY=3`、`RESPONSE_TIMEOUT=120.0`。
-- 前端 `DFM-frontend/src/menu/App_Probe.vue`「探针测试」页：左侧选设备，右侧四个测试区
-  （安装并通讯 / 快捷命令 心跳·未知命令 / TTS 朗读 / 自定义命令帧），下方展示请求、完整应答与帧 hex；
+- 前端 `DFM-frontend/src/menu/App_Probe.vue`「探针测试」页：左侧选设备，右侧测试区
+  （安装并通讯 / 快捷命令 心跳·设备详细信息 / TTS 朗读），下方展示请求、完整应答与帧 hex；
   底部「帧日志」累积记录时间 / 标题 / 设备 / 发送帧 / ACK / 响应帧三段真实字节 hex（最新在上、可滚动、可清空）。
-  自定义命令帧在本地校验命令字与 JSON 对象，解析失败不发到后端。
 - `App_Probe.vue` 与 `App_Utils.vue` 设备项的状态圆点：绿=通讯正常、红=失败、橙=处理中、灰=未检测，
   点击圆点=安装并重新通讯；设备列表刷新时只对**新出现**的设备自动调 `/api/probe/connect`，不重复安装。
 
@@ -176,7 +193,8 @@ TTS 缺 text / 非字符串 text / 空文本 / 未知命令、CRC 错帧丢弃�
 
 明确列出，避免把验证工程当成完整控制能力：
 
-- **只实现通讯 + 系统 TTS 朗读**：root shell、输入注入、截屏、文件传输、应用管理等控制能力**尚未实现**。
+- **只实现通讯 + 系统 TTS 朗读 + 设备信息采集**：root shell、输入注入、截屏、文件传输、应用管理等控制能力**尚未实现**；
+  `0x02` 的设备信息列表依赖真机系统节点/服务可读性，无真机时未做端到端验证。
 - **不做拆帧**：单帧数据区最多 65535 字节（长度字段 2 字节、低字节在前），超长判失败不截断，不支持自动分片。
 - **不做多帧并发**：连接内串行（窗口 1）；TTS 朗读期间同步等待 `onDone`，最长占用该连接线程 60 秒，
   期间不处理该连接上的其它请求（其它连接与 `accept` 不受影响）。
