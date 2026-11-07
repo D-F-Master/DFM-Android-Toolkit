@@ -5,7 +5,7 @@
   2. adb install -r DFMProbe.apk（--skip-install 可跳过）
   3. am broadcast 启动 APK 服务（adb 不再传地址）
   4. USB 设备：adb forward 随机本地端口 -> 设备 21104；网络设备：直连 <IP>:21104
-  5. PC 主动 connect，按二进制帧协议测试 心跳 / TTS / 参数错误 / 未知命令 / CRC 错帧
+  5. PC 主动 connect，按二进制帧协议测试 心跳 / 设备详细信息 / TTS / 参数错误 / 未知命令 / CRC 错帧
 
 帧格式：AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
 详见 probe与service通讯协议.md
@@ -31,6 +31,7 @@ FRAME_HEADER = b"\xaa\x55"
 
 CMD_HEARTBEAT = 0x00
 CMD_TTS = 0x01
+CMD_DEVICE_INFO = 0x02
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
@@ -201,7 +202,7 @@ def main():
     ok = False
     seq = 0
     try:
-        print("[1/6] 检查设备 {} ...".format(args.device))
+        print("[1/7] 检查设备 {} ...".format(args.device))
         rc, out, err = adb(args.device, "get-state")
         if rc != 0 or out != "device":
             raise RuntimeError("设备不在线: rc={} out={!r} err={!r}".format(rc, out, err))
@@ -211,15 +212,15 @@ def main():
             apk = Path(args.apk)
             if not apk.is_file():
                 raise RuntimeError("找不到 APK: {}".format(apk))
-            print("[2/6] 安装 {} ...".format(apk))
+            print("[2/7] 安装 {} ...".format(apk))
             rc, out, err = adb(args.device, "install", "-r", str(apk), timeout=180)
             print("      {}".format((out + " " + err).strip()))
             if rc != 0 or "Success" not in out:
                 raise RuntimeError("adb install 失败: rc={}".format(rc))
         else:
-            print("[2/6] 跳过安装")
+            print("[2/7] 跳过安装")
 
-        print("[3/6] 启动服务并建立连接 ...")
+        print("[3/7] 启动服务并建立连接 ...")
         rc, out, err = adb(
             args.device, "shell", "am", "broadcast",
             "--include-stopped-packages", "-n", RECEIVER, "-a", ACTION,
@@ -260,7 +261,7 @@ def main():
         if len(pack_frame(seq, CMD_HEARTBEAT, b"x" * 65535)) != 8 + 65535:
             raise RuntimeError("65535 字节数据区组帧异常")
 
-        print("[4/6] 心跳 CMD_HEARTBEAT (0x00) ...")
+        print("[4/7] 心跳 CMD_HEARTBEAT (0x00) ...")
         hb, _ = call(reader, conn, seq, CMD_HEARTBEAT, {}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(hb, "code", 200)
@@ -270,7 +271,20 @@ def main():
             raise RuntimeError("心跳应答缺少 version: {}".format(hb))
         print("      heartbeat OK (version={})".format(version))
 
-        print("[5/6] TTS CMD_TTS (0x01) / 参数错误 / 未知命令 / CRC 错帧 ...")
+        print("[5/7] 设备详细信息 CMD_DEVICE_INFO (0x02) ...")
+        detail, _ = call(reader, conn, seq, CMD_DEVICE_INFO, {}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(detail, "code", 200)
+        expect(detail, "message", "success")
+        for key in ("androidVersion", "sdk", "model", "manufacturer", "device", "displayVersion",
+                    "sn", "buildDate", "kernelVersion", "serialPorts", "cameras", "peripherals"):
+            if key not in detail.get("data", {}):
+                raise RuntimeError("设备详细信息缺少 {}: {}".format(key, detail))
+        print("      device info OK (serialPorts={}, cameras={}, peripherals={})".format(
+            len(detail["data"]["serialPorts"]), len(detail["data"]["cameras"]),
+            len(detail["data"]["peripherals"])))
+
+        print("[6/7] TTS CMD_TTS (0x01) / 参数错误 / 未知命令 / CRC 错帧 ...")
         tts, _ = call(reader, conn, seq, CMD_TTS, {"text": args.tts_text}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(tts, "code", 200)
@@ -316,7 +330,7 @@ def main():
             print("      CRC 错帧被丢弃（无 ACK/响应）OK")
         seq = (seq + 1) & 0xFF
 
-        print("[6/6] PASS：帧协议链路建立且心跳 / TTS 收发正常")
+        print("[7/7] PASS：帧协议链路建立且心跳 / 设备详细信息 / TTS 收发正常")
         ok = True
     except Exception as e:
         print("FAIL: {}".format(e))
