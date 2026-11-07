@@ -79,17 +79,24 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 | --- | --- | --- | --- | --- |
 | `0x00` | CMD_HEARTBEAT | PC→设备 | `{}` | `{"code":200,"message":"success","data":{"version":"1.0"}}` |
 | `0x01` | CMD_TTS | PC→设备 | `{"text":"..."}` | `{"code":200,"message":"success","data":{"status":"done"}}` / `{"code":400/500,"message":"...","data":null}` |
+| `0x02` | CMD_DEVICE_INFO | PC→设备 | `{}` | 统一信封，`data` 为设备基础信息 + 串口 / 摄像头 / 外设列表（见 `接口文档.md`「三」） |
 | `0x06` | CMD_ACK | 设备→PC | 无 | 无（通知类） |
-| `0x80`、`0x81` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
+| `0x80`、`0x81`、`0x82` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
 | `0xFF` | CMD_ERROR | 设备→PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 无（通知类） |
 
 > 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
 > 没有关闭连接的命令字，连接由 PC 侧主动关闭。
+> `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
 
 `CMD_TTS` 用系统 `TextToSpeech` 朗读 `text`，读完回
 `{"code":200,"message":"success","data":{"status":"done"}}`，
 失败回 `{"code":400/500,"message":"...","data":null}`（连接不断开）。空文本、引擎不可用、
 朗读超时都会明确回错误码，不会崩服务。
+
+`CMD_DEVICE_INFO` 由设备端 APK 采集并返回：安卓版本 / SDK / 机型 / 厂商 / 设备代号 /
+显示版本 / SN / 构建日期 / 内核版本，以及 `/dev` 下的串口节点列表、`CameraManager` 的
+摄像头列表、`InputManager` + `UsbManager` 的外设/输入设备列表。单项采集不可读时降级为
+空数组或 `Unknown`，不会让整帧失败；参数规范见 `接口文档.md`「3.3」。
 
 ## 联调测试
 
@@ -103,15 +110,16 @@ python pc/probe_test.py --device 202600298120 --skip-install
 `--device` 含 `:` 视为网络设备（直连该 IP 的 21104），否则视为 USB 设备（自动
 `adb forward` 随机本地端口并在结束时 `--remove`）。
 `--tts-text` 自定义朗读文本，`--skip-install` 跳过安装。
-脚本覆盖：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_TTS 成功应答、
+脚本覆盖：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_DEVICE_INFO / CMD_TTS 成功应答、
 TTS 缺 text / 非字符串 text / 空文本 / 未知命令 / CRC 错帧丢弃。
 测试结束**不 force-stop**，服务常驻监听 21104。
 
 ## 实机验证结果（2026-11-05，设备 202600298120 / USB / Android 11 / rk3568_r）
 
 > 本表及下方 46/46、前端构建记录均为**旧版 1 字节长度帧协议 + 旧命令字**构建的实机/回归结果；
-> 当前 2 字节长度帧协议、统一信封与 `CMD_HEARTBEAT (0x00)` / `CMD_TTS (0x01)`
-> 目前只有编译、静态与帧仿真验证，尚未实机复测；表内 `ok` 类应答与 `CMD_QUIT` 仅属历史记录。
+> 当前 2 字节长度帧协议、统一信封与 `CMD_HEARTBEAT (0x00)` / `CMD_TTS (0x01)` /
+> `CMD_DEVICE_INFO (0x02)` 目前只有编译、静态与帧仿真验证，尚未实机复测；
+> 表内 `ok` 类应答与 `CMD_QUIT` 仅属历史记录。
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
@@ -154,19 +162,19 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 | `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 `CMD_HEARTBEAT (0x00)` |
 | `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
-- `cmd` 限 0~255；`data` 必须是 JSON 对象；数据区超过 65535 字节明确返回失败。
+- `/api/probe/message` 的 `cmd` 仅接受 `0` / `1` / `2`（其余值回 400 且不发帧）；
+  `data` 必须是 JSON 对象；数据区超过 65535 字节明确返回失败。
 - 服务路由每次都发幂等的 START 广播启动 APK；USB 设备用系统分配的随机本地端口做
   `adb forward`（结束时 `--remove`，多设备不抢端口），网络设备直连 `<IP>:21104`。
   **不再用 `adb reverse`，也不再 `force-stop`**：服务常驻监听 21104。
 - `RESPONSE_TIMEOUT = 120.0` 覆盖 TTS 引擎初始化 30s + 朗读 60s；`ACK_TIMEOUT = 0.2`、
   `MAX_RETRY = 3`。同一设备的请求按 `deviceId` 加锁串行化，避免帧序与 forward 端口互相干扰。
 - 首页菜单「探针测试」进入独立页 `DFM-frontend/src/menu/App_Probe.vue`：左侧选设备，
-  右侧四个测试区（安装并通讯 / 快捷命令 心跳·未知命令 / TTS 朗读 / 自定义命令帧），
-  下方展示请求、完整应答与帧 hex。自定义命令帧在本地校验命令字 0~255 与数据区 JSON 对象，
-  解析失败不会发到后端。
+  右侧测试区（安装并通讯 / 快捷命令 心跳·设备详细信息 / TTS 朗读），
+  下方展示请求、完整应答与帧 hex。
 - 独立页底部「帧日志」按测试累积记录（最新在上、可滚动、可清空）：时间 / 标题 / 设备 /
   发送帧 / ACK / 响应帧三段真实字节 hex。失败请求也记录并带错误说明，缺失的帧显示 `—`。
-  只记录右侧手动测试（四个测试区 + 安装并通讯 / 仅检测）；圆点点击与进入页面自动安装不写日志。
+  只记录右侧手动测试（快捷命令、TTS 朗读 + 安装并通讯 / 仅检测）；圆点点击与进入页面自动安装不写日志。
 - `App_Probe.vue` 与 `App_Utils.vue` 的设备项里，圆点都放在「断开连接」按钮左边：
   绿=通讯正常、红=失败、橙=处理中、灰=未检测；点击圆点=安装并重新通讯。两个页面都用
   `Set` 记住已处理过的 deviceId，只在设备列表刷新时对**新出现**的设备自动调
