@@ -207,6 +207,10 @@ const sendHeartbeat = () => {
   sendMessage(0x00, {}, '心跳');
 };
 
+const sendDeviceInfo = () => {
+  sendMessage(0x02, {}, '设备详细信息');
+};
+
 const sendTts = () => {
   sendMessage(0x01, { text: ttsText.value }, 'TTS 语音朗读');
 };
@@ -298,6 +302,7 @@ onMounted(async () => {
               <p class="card-desc">发送内置命令字，查看设备应答。</p>
               <div class="button-row">
                 <button @click="sendHeartbeat" :disabled="busy">心跳 (0x00)</button>
+                <button @click="sendDeviceInfo" :disabled="busy">设备详细信息 (0x02)</button>
               </div>
             </div>
 
