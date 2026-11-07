@@ -6,21 +6,34 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.hardware.input.InputManager;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
+import android.util.Size;
+import android.view.InputDevice;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.Charset;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -31,7 +44,7 @@ import java.util.concurrent.TimeUnit;
  * 二进制帧协议详见 probe与service通讯协议.md：
  *   AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
  *   数据区为 UTF-8 JSON，最长 65535 字节。
- *   业务帧（0x00、0x01）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
+ *   业务帧（0x00、0x01、0x02）校验通过先回 ACK(0x06)，再发同帧序响应帧（命令字|0x80 或 0xFF）。
  *   CRC 错、数据区不是合法 JSON 对象的帧直接丢弃，不回 ACK，由发送端超时重传。
  */
 public class ProbeService extends Service {
@@ -44,6 +57,7 @@ public class ProbeService extends Service {
 
     private static final int CMD_HEARTBEAT = 0x00;
     private static final int CMD_TTS = 0x01;
+    private static final int CMD_DEVICE_INFO = 0x02;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -252,7 +266,7 @@ public class ProbeService extends Service {
             lastSeq = seq;
             // 先回 ACK 确认帧已完整收到，避免发送端 200ms 超时重传（业务可能耗时数十秒）
             sendFrame(out, seq, CMD_ACK, new byte[0]);
-            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS;
+            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS && cmd != CMD_DEVICE_INFO;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -299,6 +313,14 @@ public class ProbeService extends Service {
                 return fail(500, "execute failed: " + e);
             }
         }
+        if (cmd == CMD_DEVICE_INFO) {
+            try {
+                return ok(deviceInfo());
+            } catch (Exception e) {
+                Log.w(TAG, "device info failed: " + e);
+                return fail(500, "device info failed: " + e);
+            }
+        }
         return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
     }
 
@@ -318,6 +340,166 @@ public class ProbeService extends Service {
         res.put("message", message);
         res.put("data", JSONObject.NULL);
         return res;
+    }
+
+    /** CMD_DEVICE_INFO (0x02)：基础信息 + 串口 / 摄像头 / 外设列表，采集失败降级为空或 Unknown。 */
+    private JSONObject deviceInfo() throws Exception {
+        JSONObject data = new JSONObject();
+        data.put("androidVersion", Build.VERSION.RELEASE);
+        data.put("sdk", Build.VERSION.SDK_INT);
+        data.put("model", Build.MODEL);
+        data.put("manufacturer", Build.MANUFACTURER);
+        data.put("device", Build.DEVICE);
+        data.put("displayVersion", Build.DISPLAY);
+        data.put("sn", getprop("ro.serialno"));
+        data.put("buildDate", getprop("ro.build.date"));
+        data.put("kernelVersion", kernelVersion());
+        data.put("serialPorts", serialPorts());
+        data.put("cameras", cameras());
+        data.put("peripherals", peripherals());
+        return data;
+    }
+
+    /** 读取单个 getprop；不可读时返回 Unknown，不抛异常。 */
+    private static String getprop(String key) {
+        Process proc = null;
+        BufferedReader reader = null;
+        try {
+            proc = Runtime.getRuntime().exec("getprop " + key);
+            reader = new BufferedReader(new InputStreamReader(proc.getInputStream(), UTF8));
+            String line = reader.readLine();
+            return line == null || line.trim().isEmpty() ? "Unknown" : line.trim();
+        } catch (Exception e) {
+            Log.w(TAG, "getprop " + key + " failed: " + e);
+            return "Unknown";
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (proc != null) {
+                proc.destroy();
+            }
+        }
+    }
+
+    /** /proc/version 首行；不可读时返回 Unknown。 */
+    private static String kernelVersion() {
+        FileInputStream in = null;
+        BufferedReader reader = null;
+        try {
+            in = new FileInputStream("/proc/version");
+            reader = new BufferedReader(new InputStreamReader(in, UTF8));
+            String line = reader.readLine();
+            return line == null || line.trim().isEmpty() ? "Unknown" : line.trim();
+        } catch (Exception e) {
+            Log.w(TAG, "kernel version failed: " + e);
+            return "Unknown";
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Exception ignored) {
+                }
+            }
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /** 枚举 /dev 下的串口节点（ttyS* / ttyUSB* / ttyACM*），不可读时返回空数组。 */
+    private static JSONArray serialPorts() throws Exception {
+        JSONArray arr = new JSONArray();
+        File dev = new File("/dev");
+        String[] names = dev.list();
+        if (names == null) {
+            return arr;
+        }
+        Arrays.sort(names);
+        for (String name : names) {
+            if (name.startsWith("ttyS") || name.startsWith("ttyUSB") || name.startsWith("ttyACM")) {
+                arr.put("/dev/" + name);
+            }
+        }
+        return arr;
+    }
+
+    /** 用 CameraManager 枚举摄像头 id、朝向与分辨率；不可用时返回空数组。 */
+    private JSONArray cameras() {
+        JSONArray arr = new JSONArray();
+        try {
+            CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+            if (manager == null) {
+                return arr;
+            }
+            for (String id : manager.getCameraIdList()) {
+                JSONObject item = new JSONObject();
+                item.put("id", id);
+                try {
+                    CameraCharacteristics c = manager.getCameraCharacteristics(id);
+                    Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                    int f = facing == null ? -1 : facing;
+                    item.put("facing", f == CameraCharacteristics.LENS_FACING_FRONT ? "front"
+                            : f == CameraCharacteristics.LENS_FACING_BACK ? "back"
+                            : f == CameraCharacteristics.LENS_FACING_EXTERNAL ? "external" : "unknown");
+                    Size size = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+                    item.put("resolution", size == null ? "unknown" : size.getWidth() + "x" + size.getHeight());
+                } catch (Exception e) {
+                    Log.w(TAG, "camera " + id + " characteristics failed: " + e);
+                    item.put("facing", "unknown");
+                    item.put("resolution", "unknown");
+                }
+                arr.put(item);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "camera list failed: " + e);
+        }
+        return arr;
+    }
+
+    /** 枚举输入设备与 USB 设备；不可用时返回空数组。 */
+    private JSONArray peripherals() {
+        JSONArray arr = new JSONArray();
+        try {
+            InputManager im = (InputManager) getSystemService(Context.INPUT_SERVICE);
+            if (im != null) {
+                for (int id : im.getInputDeviceIds()) {
+                    InputDevice d = InputDevice.getDevice(id);
+                    String name = d == null ? null : d.getName();
+                    JSONObject item = new JSONObject();
+                    item.put("type", "input");
+                    item.put("id", id);
+                    item.put("name", name == null ? "unknown" : name);
+                    arr.put(item);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "input devices failed: " + e);
+        }
+        try {
+            UsbManager um = (UsbManager) getSystemService(Context.USB_SERVICE);
+            if (um != null) {
+                for (UsbDevice u : um.getDeviceList().values()) {
+                    String name = u.getProductName();
+                    JSONObject item = new JSONObject();
+                    item.put("type", "usb");
+                    item.put("id", u.getDeviceId());
+                    item.put("name", name == null ? u.getDeviceName() : name);
+                    item.put("vendorId", u.getVendorId());
+                    item.put("productId", u.getProductId());
+                    arr.put(item);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "usb devices failed: " + e);
+        }
+        return arr;
     }
 
     private static void sendFrame(OutputStream out, int seq, int cmd, byte[] data) throws Exception {
