@@ -4,7 +4,6 @@ import App_Utils from './menu/App_Utils.vue';
 import App_PortTool from './menu/App_PortTool.vue';
 import App_Settings from './menu/App_Settings.vue';
 import App_Production from './menu/App_Production.vue';
-import App_Probe from './menu/App_Probe.vue';
 import { useAppConfig } from './composables/useAppConfig';
 
 const currentPage = ref('home');
@@ -27,11 +26,6 @@ const MENU_ITEMS = [
     key: 'production',
     label: '生产工具',
     icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" transform="translate(-1 -1) scale(0.92)"/></svg>'
-  },
-  {
-    key: 'probe',
-    label: '探针测试',
-    icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path fill-rule="evenodd" d="M10 2a8 8 0 100 16 8 8 0 000-16zm0 2a6 6 0 100 12 6 6 0 000-12zm0 2a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 100 4 2 2 0 000-4z" clip-rule="evenodd"/><circle cx="10" cy="10" r="1"/></svg>'
   }
 ];
 
@@ -129,7 +123,6 @@ const goBack = () => {
   <App_PortTool v-else-if="currentPage === 'portTool'" @back="goBack" />
   <App_Settings v-else-if="currentPage === 'settings'" @back="goBack" />
   <App_Production v-else-if="currentPage === 'production'" @back="goBack" />
-  <App_Probe v-else-if="currentPage === 'probe'" @back="goBack" />
 </template>
 
 <style scoped>
