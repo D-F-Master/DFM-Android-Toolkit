@@ -1962,6 +1962,44 @@ const batchShellCommand = async () => {
   modalVisible.value = true
 }
 
+// 批量按键：选按键后对所有勾选设备执行 input keyevent（复用批量 Shell 接口）
+const batchKeyLoading = ref(false)
+const batchKeyevent = async () => {
+  const deviceIds = Array.from(batchSelectedDevices.value)
+  if (deviceIds.length === 0) {
+    showMessage('请先选择设备')
+    return
+  }
+
+  showList(
+    SCRIPT_COMMON_KEYS.map(k => ({ value: String(k.code), label: k.name, desc: `keyevent ${k.code}` })),
+    async (value?: string) => {
+      if (!value) return
+      batchKeyLoading.value = true
+      try {
+        const response = await axios.post(`${API_BASE.value}/api/device/shell/batch`, {
+          deviceIds,
+          command: `input keyevent ${Number(value)}`
+        })
+        if (response.data.code === 200) {
+          const data = response.data.data
+          showMessage(`批量按键完成：成功 ${data.successCount} 个，失败 ${data.failedCount} 个`, '批量按键')
+        } else {
+          showMessage(response.data.message || '批量按键失败', '错误')
+        }
+      } catch (error: any) {
+        console.error('批量按键失败:', error)
+        showMessage(`批量按键失败: ${error.message}`, '错误')
+      } finally {
+        batchKeyLoading.value = false
+      }
+    },
+    '批量按键',
+    '暂无按键',
+    '执行'
+  )
+}
+
 const batchReboot = async () => {
   const deviceIds = Array.from(batchSelectedDevices.value)
   if (deviceIds.length === 0) {
@@ -5711,7 +5749,7 @@ button.file-act-btn.delete:hover {
 .batch-action-grid {
   flex: none;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   width: 100%;
   max-width: 600px;
@@ -5722,6 +5760,8 @@ button.batch-action-btn {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  /* 5 列后按钮变窄，禁止文字换行以免撑高按钮区 */
+  white-space: nowrap;
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 500;
@@ -8213,6 +8253,14 @@ button.batch-remote-tile-tag:disabled.active {
                             <line x1="12" y1="18" x2="12" y2="21"/>
                           </svg>
                           <span>{{ batchRemoteConnecting && !batchRemoteActive ? '连接中...' : batchRemoteActive ? '结束投屏' : '批量投屏' }}</span>
+                        </button>
+                        <button class="batch-action-btn" @click="batchKeyevent" :disabled="batchKeyLoading">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <rect x="4" y="2" width="16" height="20" rx="2"/>
+                            <line x1="8" y1="6" x2="16" y2="6"/>
+                            <line x1="12" y1="6" x2="12" y2="2"/>
+                          </svg>
+                          <span>{{ batchKeyLoading ? '执行中...' : '批量按键' }}</span>
                         </button>
                       </div>
 
