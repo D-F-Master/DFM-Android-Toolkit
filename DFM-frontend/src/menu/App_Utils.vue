@@ -4015,6 +4015,12 @@ const serialStreamPid = ref('')
 const serialStreamLog = ref('')
 const serialStreamBusy = ref(false)
 
+// 读取串口数据（探针 0x03）
+const serialReadBaud = ref('9600')
+const serialReadDuration = ref('2000')
+const serialReadMaxBytes = ref('1024')
+const serialReadBusy = ref(false)
+
 // 切换设备后重新拉取串口列表
 watch(selectedDevice, async (deviceId) => {
   serialPorts.value = []
@@ -4142,9 +4148,67 @@ const serialStream = async (action: 'start' | 'stop' | 'status') => {
   }
 }
 
+// 读取串口数据：按探针 0x03 接口组帧，结果与其它方案共用执行日志区
+const readSerialData = async () => {
+  if (!selectedDevice.value) return
+  const data: Record<string, unknown> = {
+    serial: serialDevice.value,
+    baud: Number(serialReadBaud.value)
+  }
+  const duration = Number(serialReadDuration.value)
+  const maxBytes = Number(serialReadMaxBytes.value)
+  if (duration > 10000 || maxBytes > 4096) {
+    serialMessage.value = '读取时长不超过 10000ms，最大字节数不超过 4096'
+    serialMessageType.value = 'err'
+    return
+  }
+  if (duration > 0) {
+    data.duration = duration
+  }
+  if (maxBytes > 0) {
+    data.maxBytes = maxBytes
+  }
+  if (!data.duration && !data.maxBytes) {
+    serialMessage.value = '请填写读取时长或最大字节数'
+    serialMessageType.value = 'err'
+    return
+  }
+  serialReadBusy.value = true
+  serialMessage.value = ''
+  serialOutput.value = ''
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+      deviceId: selectedDevice.value,
+      cmd: 0x03,
+      data
+    }, { timeout: 200000 })
+    const d = res.data
+    if (d?.code !== 200 || d?.data?.connected !== true) {
+      serialMessage.value = d?.message || '读取失败'
+      serialMessageType.value = 'err'
+      return
+    }
+    const r = d.data.response || {}
+    if (r.code !== 200) {
+      serialMessage.value = r.message || '读取失败'
+      serialMessageType.value = 'err'
+      return
+    }
+    const rd = r.data || {}
+    serialOutput.value = rd.hex || '（无数据）'
+    serialMessage.value = `读取成功（${rd.bytes ?? 0} 字节，耗时 ${rd.duration ?? 0} ms）`
+    serialMessageType.value = 'ok'
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || e?.message || '读取失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialReadBusy.value = false
+  }
+}
+
 // ---------- 模拟串口：方案 B（pty 替换 + 按键注入） ----------
 
-const serialScheme = ref<'loop' | 'pty'>('loop')
+const serialScheme = ref<'loop' | 'pty' | 'read'>('loop')
 
 // pty 状态
 const ptyRunning = ref(false)
@@ -8338,10 +8402,16 @@ button.batch-remote-tile-tag:disabled.active {
                         :class="{ active: serialScheme === 'pty' }"
                         @click="serialScheme = 'pty'"
                       >键盘模拟</button>
+                      <button
+                        class="serial-scheme-btn"
+                        :class="{ active: serialScheme === 'read' }"
+                        @click="serialScheme = 'read'"
+                      >读取串口数据</button>
                     </div>
                     <div class="serial-hint">
                       串口写入：向设备串口发送数据，通过 UART 内部回环让读取该串口的程序收到。
                       键盘模拟：把串口替换为 pty，向实体键盘协议注入按键帧。
+                      读取串口数据：通过探针 0x03 读取设备串口原始数据，需已在探针测试页安装通讯、设备已 root 且串口节点可读写。
                     </div>
                   </div>
                 </div>
@@ -8459,7 +8529,7 @@ button.batch-remote-tile-tag:disabled.active {
                 </template>
 
                 <!-- ============ 方案 B：键盘模拟 ============ -->
-                <template v-else>
+                <template v-else-if="serialScheme === 'pty'">
                 <!-- 卡片: pty 替换 -->
                 <div class="scrcpy-card">
                   <div class="card-header">
@@ -8569,6 +8639,84 @@ button.batch-remote-tile-tag:disabled.active {
                         @click="clearKeySequence"
                         :disabled="keyInjectBusy || keySequence.length === 0"
                       >清空序列</button>
+                    </div>
+                  </div>
+                </div>
+                </template>
+
+                <!-- ============ 方案 C：读取串口数据 ============ -->
+                <template v-else-if="serialScheme === 'read'">
+                <!-- 卡片: 读取串口数据 -->
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <polyline points="4 17 10 11 4 5"/>
+                        <line x1="12" y1="19" x2="20" y2="19"/>
+                      </svg>
+                    </span>
+                    <span>读取串口数据</span>
+                  </div>
+                  <div class="card-body">
+                    <div class="serial-row">
+                      <label class="serial-label">串口设备</label>
+                      <select v-model="serialDevice" class="serial-select" :disabled="serialPortsLoading">
+                        <option v-for="p in serialPorts" :key="p.device" :value="p.device">
+                          {{ p.device }}{{ p.majorMinor ? ` (${p.majorMinor})` : '' }}
+                        </option>
+                      </select>
+                      <button class="serial-mini-btn" @click="loadSerialPorts" :disabled="serialPortsLoading">刷新</button>
+                    </div>
+
+                    <div v-if="serialPortsLoading" class="loading-text">加载串口列表中...</div>
+                    <div v-else-if="serialPorts.length === 0" class="loading-text">该设备未发现串口节点</div>
+
+                    <div class="serial-row">
+                      <label class="serial-label">波特率</label>
+                      <select v-model="serialReadBaud" class="serial-select">
+                        <option value="1200">1200</option>
+                        <option value="2400">2400</option>
+                        <option value="4800">4800</option>
+                        <option value="9600">9600</option>
+                        <option value="19200">19200</option>
+                        <option value="38400">38400</option>
+                        <option value="57600">57600</option>
+                        <option value="115200">115200</option>
+                        <option value="230400">230400</option>
+                        <option value="460800">460800</option>
+                        <option value="921600">921600</option>
+                        <option value="1500000">1500000</option>
+                        <option value="3000000">3000000</option>
+                      </select>
+                      <label class="serial-label">读取时长(ms)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10000"
+                        v-model="serialReadDuration"
+                        class="serial-input serial-input-sm"
+                      />
+                      <label class="serial-label">最大字节数</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="4096"
+                        v-model="serialReadMaxBytes"
+                        class="serial-input serial-input-sm"
+                      />
+                    </div>
+
+                    <div class="serial-actions">
+                      <button
+                        class="check-button"
+                        @click="readSerialData"
+                        :disabled="serialReadBusy || !selectedDevice"
+                      >{{ serialReadBusy ? '读取中...' : '读取一次' }}</button>
+                    </div>
+
+                    <div class="serial-hint serial-hint-block">
+                      提示：读取结果（hex / 字节数 / 耗时）显示在下方「执行日志」中；
+                      duration 与 maxBytes 至少填一个，两者都填时先到者停止。
                     </div>
                   </div>
                 </div>
