@@ -199,11 +199,13 @@ CMD_TTS 成功应答、TTS 缺 text / 非字符串 text / 空文本 / 未知命�
   | `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 `CMD_HEARTBEAT (0x00)` |
   | `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
-  `/api/probe/message` 的 `cmd` 仅接受 `0` / `1` / `2` / `3`（其余回 400 且不发帧）、
+  `/api/probe/message` 的 `cmd` 接受 `0`~`255`（`0x00`~`0xFF`）任意整数，越界回 422；
+  已登记的 `0` / `1` / `2` / `3` 返回业务应答，其余命令字由设备端回 `0xFF CMD_ERROR`。
   `data` 必须为 JSON 对象、数据区超 65535 字节明确失败；每次请求都发幂等 START 广播；
   同一设备按 `deviceId` 加锁串行化；`ACK_TIMEOUT=0.2`、`MAX_RETRY=3`、`RESPONSE_TIMEOUT=120.0`。
 - 前端 `DFM-frontend/src/menu/App_Probe.vue`「探针测试」页：左侧选设备，右侧测试区
-  （安装并通讯 / 快捷命令 心跳·设备详细信息 / 串口读取 / TTS 朗读），下方展示请求、完整应答与帧 hex；
+  （安装并通讯 / 快捷命令 心跳·设备详细信息 / 串口读取 / TTS 朗读 / 自定义发送：
+  自定义 0x00~0xFF 命令字与 JSON 数据区），下方展示请求、完整应答与帧 hex；
   底部「帧日志」累积记录时间 / 标题 / 设备 / 发送帧 / ACK / 响应帧三段真实字节 hex（最新在上、可滚动、可清空）。
 - `App_Probe.vue` 与 `App_Utils.vue` 设备项的状态圆点：绿=通讯正常、红=失败、橙=处理中、灰=未检测，
   点击圆点=安装并重新通讯；设备列表刷新时只对**新出现**的设备自动调 `/api/probe/connect`，不重复安装。
