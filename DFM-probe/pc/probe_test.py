@@ -5,7 +5,7 @@
   2. adb install -r DFMProbe.apk（--skip-install 可跳过）
   3. am broadcast 启动 APK 服务（adb 不再传地址）
   4. USB 设备：adb forward 随机本地端口 -> 设备 21104；网络设备：直连 <IP>:21104
-  5. PC 主动 connect，按二进制帧协议测试 心跳 / 设备详细信息 / TTS / 参数错误 / 未知命令 / CRC 错帧
+  5. PC 主动 connect，按二进制帧协议测试 心跳 / 设备详细信息 / 串口读取 / TTS / 参数错误 / 未知命令 / CRC 错帧
 
 帧格式：AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
 详见 probe与service通讯协议.md
@@ -32,6 +32,7 @@ FRAME_HEADER = b"\xaa\x55"
 CMD_HEARTBEAT = 0x00
 CMD_TTS = 0x01
 CMD_DEVICE_INFO = 0x02
+CMD_SERIAL_READ = 0x03
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
@@ -261,7 +262,7 @@ def main():
         if len(pack_frame(seq, CMD_HEARTBEAT, b"x" * 65535)) != 8 + 65535:
             raise RuntimeError("65535 字节数据区组帧异常")
 
-        print("[4/7] 心跳 CMD_HEARTBEAT (0x00) ...")
+        print("[4/8] 心跳 CMD_HEARTBEAT (0x00) ...")
         hb, _ = call(reader, conn, seq, CMD_HEARTBEAT, {}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(hb, "code", 200)
@@ -271,7 +272,7 @@ def main():
             raise RuntimeError("心跳应答缺少 version: {}".format(hb))
         print("      heartbeat OK (version={})".format(version))
 
-        print("[5/7] 设备详细信息 CMD_DEVICE_INFO (0x02) ...")
+        print("[5/8] 设备详细信息 CMD_DEVICE_INFO (0x02) ...")
         detail, _ = call(reader, conn, seq, CMD_DEVICE_INFO, {}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(detail, "code", 200)
@@ -284,7 +285,33 @@ def main():
             len(detail["data"]["serialPorts"]), len(detail["data"]["cameras"]),
             len(detail["data"]["peripherals"])))
 
-        print("[6/7] TTS CMD_TTS (0x01) / 参数错误 / 未知命令 / CRC 错帧 ...")
+        print("[6/8] 串口读取 CMD_SERIAL_READ (0x03) 参数校验 ...")
+        no_serial, _ = call(reader, conn, seq, CMD_SERIAL_READ, {}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(no_serial, "code", 400)
+        expect(no_serial, "data", None)
+        expect(no_serial, "message", "serial is required")
+        print("      缺少 serial -> 400 OK")
+
+        bad_baud, _ = call(reader, conn, seq, CMD_SERIAL_READ,
+                           {"serial": "/dev/ttyS3", "baud": 12345, "duration": 500}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_baud, "code", 400)
+        expect(bad_baud, "data", None)
+        if "baud" not in bad_baud.get("message", ""):
+            raise RuntimeError("非法波特率应答异常: {}".format(bad_baud))
+        print("      非法波特率 -> 400 OK")
+
+        no_stop, _ = call(reader, conn, seq, CMD_SERIAL_READ,
+                          {"serial": "/dev/ttyS3", "baud": 115200}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(no_stop, "code", 400)
+        expect(no_stop, "data", None)
+        if "duration" not in no_stop.get("message", ""):
+            raise RuntimeError("缺停止条件应答异常: {}".format(no_stop))
+        print("      缺 duration/maxBytes -> 400 OK")
+
+        print("[7/8] TTS CMD_TTS (0x01) / 参数错误 / 未知命令 / CRC 错帧 ...")
         tts, _ = call(reader, conn, seq, CMD_TTS, {"text": args.tts_text}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(tts, "code", 200)
@@ -330,7 +357,7 @@ def main():
             print("      CRC 错帧被丢弃（无 ACK/响应）OK")
         seq = (seq + 1) & 0xFF
 
-        print("[7/7] PASS：帧协议链路建立且心跳 / 设备详细信息 / TTS 收发正常")
+        print("[8/8] PASS：帧协议链路建立且心跳 / 设备详细信息 / 串口读取参数校验 / TTS 收发正常")
         ok = True
     except Exception as e:
         print("FAIL: {}".format(e))
