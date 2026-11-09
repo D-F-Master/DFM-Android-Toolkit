@@ -1807,10 +1807,27 @@ async def batch_shell_command(request: DeviceCommandsRequest):
     if not request.command or not request.command.strip():
         return {"code": 400, "message": "command 不能为空", "data": None}
 
-    shell_cmd = f"adb -s {{}} shell {request.command}"
-
+    # 用户输入直接拼进命令字符串会被 execute_adb_command 的全局
+    # replace('adb ', '"<内置 adb 路径>" ') 污染，把 Windows 路径注入设备端 shell，
+    # 这里改用参数列表调用，命令作为独立参数交给 adb，不做任何字符串替换。
     def exec_on_device(device_id: str) -> dict:
-        result = execute_adb_command(shell_cmd.format(device_id))
+        try:
+            proc = subprocess.run(
+                [get_adb_path(), "-s", device_id, "shell", request.command],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=5
+            )
+            if proc.returncode != 0:
+                result = {"success": False, "error": proc.stderr or proc.stdout, "stderr": proc.stderr}
+            else:
+                result = {"success": True, "stdout": proc.stdout, "stderr": proc.stderr}
+        except subprocess.TimeoutExpired:
+            result = {"success": False, "error": "Command timeout", "stderr": ""}
+        except Exception as e:
+            result = {"success": False, "error": str(e), "stderr": ""}
         output = result.get("stdout", "")
         error = result.get("error", "")
         return {
