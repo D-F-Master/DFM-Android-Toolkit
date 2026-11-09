@@ -55,6 +55,8 @@ const resultTitle = ref('尚未执行测试');
 const requestText = ref('');
 const responseText = ref('');
 const ttsText = ref('设备语音测试');
+const customCmd = ref('0x00');
+const customData = ref('{}');
 const serialPath = ref('/dev/ttyS3');
 const serialBaud = ref(115200);
 const serialDuration = ref(2000);
@@ -235,6 +237,33 @@ const sendTts = () => {
   sendMessage(0x01, { text: ttsText.value }, 'TTS 语音朗读');
 };
 
+const sendCustom = () => {
+  const raw = customCmd.value.trim();
+  const cmd = Number(raw);
+  if (!raw || !Number.isInteger(cmd) || cmd < 0 || cmd > 255) {
+    resultTitle.value = '自定义发送';
+    requestText.value = '';
+    responseText.value = '命令字必须是 0~255 的整数（十进制或 0x 前缀十六进制）';
+    frameText.value = '';
+    return;
+  }
+  let data: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(customData.value.trim() || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('数据区必须是 JSON 对象');
+    }
+    data = parsed;
+  } catch (err: any) {
+    resultTitle.value = '自定义发送';
+    requestText.value = '';
+    responseText.value = `数据区 JSON 解析失败: ${err?.message || err}`;
+    frameText.value = '';
+    return;
+  }
+  sendMessage(cmd, data, `自定义发送 (0x${cmd.toString(16).toUpperCase().padStart(2, '0')})`);
+};
+
 watch(selectedDevice, (deviceId) => {
   resultTitle.value = deviceId ? '尚未执行测试' : '请先选择设备';
   requestText.value = '';
@@ -355,6 +384,16 @@ onMounted(async () => {
               <div class="input-row">
                 <input v-model="ttsText" class="text-input" placeholder="输入要朗读的文本">
                 <button @click="sendTts" :disabled="busy">朗读</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>自定义发送</h3>
+              <p class="card-desc">自定义命令字与 JSON 数据区，向设备发一帧查看应答。</p>
+              <div class="input-row">
+                <input v-model="customCmd" class="text-input" placeholder="命令字，如 0x10 或 16" title="0~255，支持十进制或 0x 前缀十六进制">
+                <input v-model="customData" class="text-input" placeholder="数据区 JSON 对象，如 {}" title="数据区必须是 JSON 对象">
+                <button @click="sendCustom" :disabled="busy">发送</button>
               </div>
             </div>
 
