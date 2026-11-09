@@ -55,6 +55,10 @@ const resultTitle = ref('尚未执行测试');
 const requestText = ref('');
 const responseText = ref('');
 const ttsText = ref('设备语音测试');
+const serialPath = ref('/dev/ttyS3');
+const serialBaud = ref(115200);
+const serialDuration = ref(2000);
+const serialMaxBytes = ref(1024);
 const frameText = ref('');
 const frameLogs = ref<FrameLog[]>([]);
 let frameLogId = 0;
@@ -211,6 +215,22 @@ const sendDeviceInfo = () => {
   sendMessage(0x02, {}, '设备详细信息');
 };
 
+const sendSerialRead = () => {
+  const data: Record<string, unknown> = {
+    serial: serialPath.value.trim(),
+    baud: Number(serialBaud.value),
+  };
+  const duration = Number(serialDuration.value);
+  const maxBytes = Number(serialMaxBytes.value);
+  if (duration > 0) {
+    data.duration = duration;
+  }
+  if (maxBytes > 0) {
+    data.maxBytes = maxBytes;
+  }
+  sendMessage(0x03, data, '串口读取');
+};
+
 const sendTts = () => {
   sendMessage(0x01, { text: ttsText.value }, 'TTS 语音朗读');
 };
@@ -303,6 +323,29 @@ onMounted(async () => {
               <div class="button-row">
                 <button @click="sendHeartbeat" :disabled="busy">心跳 (0x00)</button>
                 <button @click="sendDeviceInfo" :disabled="busy">设备详细信息 (0x02)</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>串口读取</h3>
+              <p class="card-desc">打开设备串口按波特率读取数据，需设备已 root 且串口节点可读写。</p>
+              <div class="input-row">
+                <input v-model="serialPath" class="text-input" placeholder="/dev/ttyS3">
+                <select v-model="serialBaud" class="text-input">
+                  <option :value="9600">9600</option>
+                  <option :value="19200">19200</option>
+                  <option :value="38400">38400</option>
+                  <option :value="57600">57600</option>
+                  <option :value="115200">115200</option>
+                  <option :value="230400">230400</option>
+                  <option :value="460800">460800</option>
+                  <option :value="921600">921600</option>
+                </select>
+                <button @click="sendSerialRead" :disabled="busy">读取 (0x03)</button>
+              </div>
+              <div class="input-row">
+                <input v-model="serialDuration" class="text-input" placeholder="时长(ms)，0=不限" title="读取时长(毫秒)，最大 10000">
+                <input v-model="serialMaxBytes" class="text-input" placeholder="字节数，0=不限" title="读取字节数上限，最大 4096">
               </div>
             </div>
 
