@@ -80,13 +80,15 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 | `0x00` | CMD_HEARTBEAT | PC→设备 | `{}` | `{"code":200,"message":"success","data":{"version":"1.0"}}` |
 | `0x01` | CMD_TTS | PC→设备 | `{"text":"..."}` | `{"code":200,"message":"success","data":{"status":"done"}}` / `{"code":400/500,"message":"...","data":null}` |
 | `0x02` | CMD_DEVICE_INFO | PC→设备 | `{}` | 统一信封，`data` 为设备基础信息 + 串口 / 摄像头 / 外设列表（见 `接口文档.md`「三」） |
+| `0x03` | CMD_SERIAL_READ | PC→设备 | `{"serial":"/dev/ttyS3","baud":115200,"duration":2000,"maxBytes":1024}` | 统一信封，`data` 为 `{"hex":"01 02 03","bytes":N,"duration":Ms}`（见 `接口文档.md`「3.4」） |
 | `0x06` | CMD_ACK | 设备→PC | 无 | 无（通知类） |
-| `0x80`、`0x81`、`0x82` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
+| `0x80`、`0x81`、`0x82`、`0x83` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
 | `0xFF` | CMD_ERROR | 设备→PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 无（通知类） |
 
 > 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
 > 没有关闭连接的命令字，连接由 PC 侧主动关闭。
 > `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
+> `0x03` / `0x83` 为新增的串口读取命令字/响应字。
 
 `CMD_TTS` 用系统 `TextToSpeech` 朗读 `text`，读完回
 `{"code":200,"message":"success","data":{"status":"done"}}`，
@@ -97,6 +99,12 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 显示版本 / SN / 构建日期 / 内核版本，以及 `/dev` 下的串口节点列表、`CameraManager` 的
 摄像头列表、`InputManager` + `UsbManager` 的外设/输入设备列表。单项采集不可读时降级为
 空数组或 `Unknown`，不会让整帧失败；参数规范见 `接口文档.md`「3.3」。
+
+`CMD_SERIAL_READ` 由设备端 APK 直接打开指定串口（默认 `/dev/ttyS3`）按波特率读取数据，
+返回读到的 hex、字节数与实际耗时。需设备已 root 且串口节点可读写；`stty` 配置失败或
+`open` 被拒回 `500 serial read failed`，参数缺失/波特率非法/无停止条件回 `400`。
+空闲串口在 `duration` 内可能读到 `bytes: 0`、`hex: ""`（属正常）；参数规范见
+`接口文档.md`「3.4」。
 
 ## 联调测试
 
@@ -110,15 +118,15 @@ python pc/probe_test.py --device 202600298120 --skip-install
 `--device` 含 `:` 视为网络设备（直连该 IP 的 21104），否则视为 USB 设备（自动
 `adb forward` 随机本地端口并在结束时 `--remove`）。
 `--tts-text` 自定义朗读文本，`--skip-install` 跳过安装。
-脚本覆盖：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_DEVICE_INFO / CMD_TTS 成功应答、
-TTS 缺 text / 非字符串 text / 空文本 / 未知命令 / CRC 错帧丢弃。
+脚本覆盖：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_DEVICE_INFO / CMD_SERIAL_READ 参数校验 /
+CMD_TTS 成功应答、TTS 缺 text / 非字符串 text / 空文本 / 未知命令 / CRC 错帧丢弃。
 测试结束**不 force-stop**，服务常驻监听 21104。
 
 ## 实机验证结果（2026-11-05，设备 202600298120 / USB / Android 11 / rk3568_r）
 
 > 本表及下方 46/46、前端构建记录均为**旧版 1 字节长度帧协议 + 旧命令字**构建的实机/回归结果；
 > 当前 2 字节长度帧协议、统一信封与 `CMD_HEARTBEAT (0x00)` / `CMD_TTS (0x01)` /
-> `CMD_DEVICE_INFO (0x02)` 目前只有编译、静态与帧仿真验证，尚未实机复测；
+> `CMD_DEVICE_INFO (0x02)` / `CMD_SERIAL_READ (0x03)` 目前只有编译、静态与帧仿真验证，尚未实机复测；
 > 表内 `ok` 类应答与 `CMD_QUIT` 仅属历史记录。
 
 | 项 | 命令 | 结果 |
@@ -162,7 +170,7 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 | `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 `CMD_HEARTBEAT (0x00)` |
 | `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
-- `/api/probe/message` 的 `cmd` 仅接受 `0` / `1` / `2`（其余值回 400 且不发帧）；
+- `/api/probe/message` 的 `cmd` 仅接受 `0` / `1` / `2` / `3`（其余值回 400 且不发帧）；
   `data` 必须是 JSON 对象；数据区超过 65535 字节明确返回失败。
 - 服务路由每次都发幂等的 START 广播启动 APK；USB 设备用系统分配的随机本地端口做
   `adb forward`（结束时 `--remove`，多设备不抢端口），网络设备直连 `<IP>:21104`。
@@ -170,7 +178,7 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 - `RESPONSE_TIMEOUT = 120.0` 覆盖 TTS 引擎初始化 30s + 朗读 60s；`ACK_TIMEOUT = 0.2`、
   `MAX_RETRY = 3`。同一设备的请求按 `deviceId` 加锁串行化，避免帧序与 forward 端口互相干扰。
 - 首页菜单「探针测试」进入独立页 `DFM-frontend/src/menu/App_Probe.vue`：左侧选设备，
-  右侧测试区（安装并通讯 / 快捷命令 心跳·设备详细信息 / TTS 朗读），
+  右侧测试区（安装并通讯 / 快捷命令 心跳·设备详细信息 / 串口读取 / TTS 朗读），
   下方展示请求、完整应答与帧 hex。
 - 独立页底部「帧日志」按测试累积记录（最新在上、可滚动、可清空）：时间 / 标题 / 设备 /
   发送帧 / ACK / 响应帧三段真实字节 hex。失败请求也记录并带错误说明，缺失的帧显示 `—`。
@@ -192,7 +200,9 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 - 单帧数据区最多 65535 字节（长度字段 2 字节、低字节在前），超长判失败不截断；当前工程不做拆帧。
 - 21104 端口若被设备上其它程序占用会 bind 失败，服务会记日志 `listen failed on port 21104`
   并把 `running` 置 false；当前未做端口自适应。
-- 当前只做「通讯 + 系统 TTS 朗读」验证，尚未实现 root shell、输入注入、截屏等控制能力。
+- 当前只做「通讯 + 系统 TTS 朗读 + 设备信息采集 + 串口读取」验证，尚未实现 root shell、
+  输入注入、截屏等控制能力。串口读取（`0x03`）依赖设备已 root 且串口节点可读写，
+  无真机时未做端到端验证。
 - 通知常驻（前台服务），Android 8+ 需要通知渠道，本工程已处理。
 - TTS 依赖设备装有可用引擎（本机为 `com.iflytek.speechcloud`）；Android 11 (targetSdk 30)
   必须在清单声明 `<queries>` 里含 `android.intent.action.TTS_SERVICE`，否则 bind 不上引擎、
