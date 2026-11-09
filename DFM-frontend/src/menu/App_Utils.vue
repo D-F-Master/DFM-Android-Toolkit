@@ -3988,6 +3988,8 @@ onUnmounted(() => {
   // 关闭模拟脚本屏幕流（含重连定时器与卡顿看门狗）
   stopScriptStream()
   stopStallWatch()
+  // 停止持续读取串口（0x03）循环
+  stopSerialRead()
 })
 
 // ---------- 模拟串口 ----------
@@ -4019,7 +4021,8 @@ const serialStreamBusy = ref(false)
 const serialReadBaud = ref('9600')
 const serialReadDuration = ref('2000')
 const serialReadMaxBytes = ref('1024')
-const serialReadBusy = ref(false)
+const serialReading = ref(false)
+let serialReadLoopId = 0
 
 // 切换设备后重新拉取串口列表
 watch(selectedDevice, async (deviceId) => {
@@ -4148,9 +4151,8 @@ const serialStream = async (action: 'start' | 'stop' | 'status') => {
   }
 }
 
-// 读取串口数据：按探针 0x03 接口组帧，结果与其它方案共用执行日志区
-const readSerialData = async () => {
-  if (!selectedDevice.value) return
+// 组 0x03 请求参数；参数不合法时写入提示并返回 null
+const buildSerialReadPayload = (): Record<string, unknown> | null => {
   const data: Record<string, unknown> = {
     serial: serialDevice.value,
     baud: Number(serialReadBaud.value)
@@ -4160,7 +4162,7 @@ const readSerialData = async () => {
   if (duration > 10000 || maxBytes > 4096) {
     serialMessage.value = '读取时长不超过 10000ms，最大字节数不超过 4096'
     serialMessageType.value = 'err'
-    return
+    return null
   }
   if (duration > 0) {
     data.duration = duration
@@ -4171,39 +4173,106 @@ const readSerialData = async () => {
   if (!data.duration && !data.maxBytes) {
     serialMessage.value = '请填写读取时长或最大字节数'
     serialMessageType.value = 'err'
-    return
+    return null
   }
-  serialReadBusy.value = true
-  serialMessage.value = ''
-  serialOutput.value = ''
+  return data
+}
+
+// 执行日志追加一行，最多保留最近 100 行
+const appendSerialReadLine = (line: string) => {
+  const lines = serialOutput.value ? serialOutput.value.split('\n') : []
+  lines.push(line)
+  if (lines.length > 100) lines.splice(0, lines.length - 100)
+  serialOutput.value = lines.join('\n')
+}
+
+// 记录一轮失败（日志行 + 状态提示）
+const failSerialReadLine = (count: number, msg: string) => {
+  appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} 错误：${msg}`)
+  serialMessage.value = `持续读取中（第 ${count} 次失败：${msg}）`
+  serialMessageType.value = 'err'
+}
+
+// 单轮读取：结果追加到执行日志；true 成功 / false 失败 / null 参数不合法需停止
+const readSerialData = async (count: number, token: number): Promise<boolean | null> => {
+  const data = buildSerialReadPayload()
+  if (!data) return null
   try {
     const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
       deviceId: selectedDevice.value,
       cmd: 0x03,
       data
     }, { timeout: 200000 })
+    if (serialReadLoopId !== token) return false
     const d = res.data
     if (d?.code !== 200 || d?.data?.connected !== true) {
-      serialMessage.value = d?.message || '读取失败'
-      serialMessageType.value = 'err'
-      return
+      failSerialReadLine(count, d?.message || '读取失败')
+      return false
     }
     const r = d.data.response || {}
     if (r.code !== 200) {
-      serialMessage.value = r.message || '读取失败'
-      serialMessageType.value = 'err'
-      return
+      failSerialReadLine(count, r.message || '读取失败')
+      return false
     }
     const rd = r.data || {}
-    serialOutput.value = rd.hex || '（无数据）'
-    serialMessage.value = `读取成功（${rd.bytes ?? 0} 字节，耗时 ${rd.duration ?? 0} ms）`
+    appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} ${rd.hex || '（无数据）'} | ${rd.bytes ?? 0} 字节 | ${rd.duration ?? 0} ms`)
+    serialMessage.value = `持续读取中（第 ${count} 次：${rd.bytes ?? 0} 字节，${rd.duration ?? 0} ms）`
     serialMessageType.value = 'ok'
+    return true
   } catch (e: any) {
-    serialMessage.value = e?.response?.data?.message || e?.message || '读取失败'
-    serialMessageType.value = 'err'
-  } finally {
-    serialReadBusy.value = false
+    if (serialReadLoopId !== token) return false
+    failSerialReadLine(count, e?.response?.data?.message || e?.message || '读取失败')
+    return false
   }
+}
+
+const stopSerialRead = () => {
+  serialReading.value = false
+}
+
+// 开启后连续读取：成功立即下一轮，失败等 1 秒；关闭 / 切设备 / 切方案后停发新请求
+const runSerialReadLoop = async (token: number) => {
+  const deviceAtStart = selectedDevice.value
+  let count = 0
+  while (
+    serialReading.value &&
+    serialReadLoopId === token &&
+    serialScheme.value === 'read' &&
+    selectedDevice.value === deviceAtStart
+  ) {
+    count += 1
+    const ok = await readSerialData(count, token)
+    if (ok === null) {
+      serialReading.value = false
+      return
+    }
+    if (!serialReading.value || serialReadLoopId !== token) break
+    if (!ok) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+  }
+  if (serialReadLoopId === token) {
+    serialReading.value = false
+    serialMessage.value = `已停止持续读取（共 ${count} 次）`
+    serialMessageType.value = 'ok'
+  }
+}
+
+// 按钮：开启读取 / 关闭读取
+const toggleSerialRead = () => {
+  if (serialReading.value) {
+    stopSerialRead()
+    return
+  }
+  if (!selectedDevice.value) return
+  if (!buildSerialReadPayload()) return
+  serialOutput.value = ''
+  serialReadLoopId += 1
+  const token = serialReadLoopId
+  serialReading.value = true
+  serialMessage.value = '持续读取中...'
+  serialMessageType.value = 'ok'
+  runSerialReadLoop(token)
 }
 
 // ---------- 模拟串口：方案 B（pty 替换 + 按键注入） ----------
@@ -8709,13 +8778,14 @@ button.batch-remote-tile-tag:disabled.active {
                     <div class="serial-actions">
                       <button
                         class="check-button"
-                        @click="readSerialData"
-                        :disabled="serialReadBusy || !selectedDevice"
-                      >{{ serialReadBusy ? '读取中...' : '读取一次' }}</button>
+                        @click="toggleSerialRead"
+                        :disabled="!selectedDevice"
+                      >{{ serialReading ? '关闭读取' : '开启读取' }}</button>
                     </div>
 
                     <div class="serial-hint serial-hint-block">
-                      提示：读取结果（hex / 字节数 / 耗时）显示在下方「执行日志」中；
+                      提示：开启后连续读取，成功立即读下一轮、失败等 1 秒再试；结果逐行追加到下方「执行日志」（最多保留最近 100 行）。
+                      关闭后不再发起新请求，当前轮读完后停止；切换设备、切换方案或离开页面会自动停止。
                       duration 与 maxBytes 至少填一个，两者都填时先到者停止。
                     </div>
                   </div>
