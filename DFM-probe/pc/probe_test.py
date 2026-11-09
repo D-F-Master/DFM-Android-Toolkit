@@ -5,7 +5,7 @@
   2. adb install -r DFMProbe.apk（--skip-install 可跳过）
   3. am broadcast 启动 APK 服务（adb 不再传地址）
   4. USB 设备：adb forward 随机本地端口 -> 设备 21104；网络设备：直连 <IP>:21104
-  5. PC 主动 connect，按二进制帧协议测试 心跳 / 设备详细信息 / 串口读取 / TTS / 参数错误 / 未知命令 / CRC 错帧
+  5. PC 主动 connect，按二进制帧协议测试 心跳 / 设备详细信息 / 串口会话 / TTS / 参数错误 / 未知命令 / CRC 错帧
 
 帧格式：AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
 详见 probe与service通讯协议.md
@@ -33,6 +33,9 @@ CMD_HEARTBEAT = 0x00
 CMD_TTS = 0x01
 CMD_DEVICE_INFO = 0x02
 CMD_SERIAL_READ = 0x03
+CMD_SERIAL_OPEN = 0x04
+CMD_SERIAL_SEND = 0x05
+CMD_SERIAL_CLOSE = 0x07
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
@@ -285,31 +288,123 @@ def main():
             len(detail["data"]["serialPorts"]), len(detail["data"]["cameras"]),
             len(detail["data"]["peripherals"])))
 
-        print("[6/8] 串口读取 CMD_SERIAL_READ (0x03) 参数校验 ...")
-        no_serial, _ = call(reader, conn, seq, CMD_SERIAL_READ, {}, args.timeout)
+        print("[6/8] 串口会话四命令字参数校验 ...")
+        # 以下用例只触发参数校验，不打开真机串口，和旧版一样无需空闲串口节点
+        no_session, _ = call(reader, conn, seq, CMD_SERIAL_READ, {}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(no_session, "code", 400)
+        expect(no_session, "data", None)
+        expect(no_session, "message", "serial session not opened")
+        print("      0x03 未打开会话 -> 400 OK")
+
+        send_no_session, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                                  {"mode": "text", "payload": "AT"}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(send_no_session, "code", 400)
+        expect(send_no_session, "data", None)
+        expect(send_no_session, "message", "serial session not opened")
+        print("      0x05 未打开会话 -> 400 OK")
+
+        closed, _ = call(reader, conn, seq, CMD_SERIAL_CLOSE, {}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(closed, "code", 200)
+        expect(closed.get("data", {}), "closed", False)
+        print("      0x07 未打开会话 -> 200 closed=false OK")
+
+        no_serial, _ = call(reader, conn, seq, CMD_SERIAL_OPEN, {}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(no_serial, "code", 400)
         expect(no_serial, "data", None)
         expect(no_serial, "message", "serial is required")
-        print("      缺少 serial -> 400 OK")
+        print("      0x04 缺少 serial -> 400 OK")
 
-        bad_baud, _ = call(reader, conn, seq, CMD_SERIAL_READ,
-                           {"serial": "/dev/ttyS3", "baud": 12345, "duration": 500}, args.timeout)
+        bad_baud, _ = call(reader, conn, seq, CMD_SERIAL_OPEN,
+                           {"serial": "/dev/ttyS3", "baud": 12345}, args.timeout)
         seq = (seq + 1) & 0xFF
         expect(bad_baud, "code", 400)
         expect(bad_baud, "data", None)
         if "baud" not in bad_baud.get("message", ""):
             raise RuntimeError("非法波特率应答异常: {}".format(bad_baud))
-        print("      非法波特率 -> 400 OK")
+        print("      0x04 非法波特率 -> 400 OK")
 
-        no_stop, _ = call(reader, conn, seq, CMD_SERIAL_READ,
-                          {"serial": "/dev/ttyS3", "baud": 115200}, args.timeout)
+        bad_parity, _ = call(reader, conn, seq, CMD_SERIAL_OPEN,
+                             {"serial": "/dev/ttyS3", "baud": 9600, "parity": "mark"}, args.timeout)
         seq = (seq + 1) & 0xFF
-        expect(no_stop, "code", 400)
-        expect(no_stop, "data", None)
-        if "duration" not in no_stop.get("message", ""):
-            raise RuntimeError("缺停止条件应答异常: {}".format(no_stop))
-        print("      缺 duration/maxBytes -> 400 OK")
+        expect(bad_parity, "code", 400)
+        expect(bad_parity, "message", "parity must be none / odd / even")
+        print("      0x04 非法校验位 -> 400 OK")
+
+        bad_data_bits, _ = call(reader, conn, seq, CMD_SERIAL_OPEN,
+                                {"serial": "/dev/ttyS3", "baud": 9600, "dataBits": 9}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_data_bits, "code", 400)
+        expect(bad_data_bits, "message", "dataBits must be 5 / 6 / 7 / 8")
+        print("      0x04 非法数据位 -> 400 OK")
+
+        bad_stop_bits, _ = call(reader, conn, seq, CMD_SERIAL_OPEN,
+                                {"serial": "/dev/ttyS3", "baud": 9600, "stopBits": 3}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_stop_bits, "code", 400)
+        expect(bad_stop_bits, "message", "stopBits must be 1 / 2")
+        print("      0x04 非法停止位 -> 400 OK")
+
+        no_port, _ = call(reader, conn, seq, CMD_SERIAL_OPEN,
+                          {"serial": "/dev/definitely_missing_tty", "baud": 9600}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(no_port, "code", 400)
+        if "serial port not found" not in no_port.get("message", ""):
+            raise RuntimeError("串口不存在应答异常: {}".format(no_port))
+        print("      0x04 串口不存在 -> 400 OK")
+
+        bad_mode, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                           {"mode": "raw", "payload": "AT"}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_mode, "code", 400)
+        expect(bad_mode, "message", "mode must be text / hex")
+        print("      0x05 非法 mode -> 400 OK")
+
+        no_payload, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                             {"mode": "text"}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(no_payload, "code", 400)
+        expect(no_payload, "message", "payload is required")
+        print("      0x05 空 payload -> 400 OK")
+
+        odd_hex, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                          {"mode": "hex", "payload": "0"}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(odd_hex, "code", 400)
+        expect(odd_hex, "message", "hex payload must have even length")
+        print("      0x05 hex 奇数位 -> 400 OK")
+
+        bad_hex, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                          {"mode": "hex", "payload": "GG"}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_hex, "code", 400)
+        if "hex payload has invalid digit" not in bad_hex.get("message", ""):
+            raise RuntimeError("hex 非法字符应答异常: {}".format(bad_hex))
+        print("      0x05 hex 非法字符 -> 400 OK")
+
+        bad_times, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                            {"mode": "text", "payload": "AT", "times": 10001}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_times, "code", 400)
+        expect(bad_times, "message", "times must be 0..10000 (0 = until stopped)")
+        print("      0x05 times 越界 -> 400 OK")
+
+        bad_interval, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                               {"mode": "text", "payload": "AT", "interval": 60001}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(bad_interval, "code", 400)
+        expect(bad_interval, "message", "interval must be 0..60000ms")
+        print("      0x05 interval 越界 -> 400 OK")
+
+        stop_idle, _ = call(reader, conn, seq, CMD_SERIAL_SEND,
+                            {"stop": True}, args.timeout)
+        seq = (seq + 1) & 0xFF
+        expect(stop_idle, "code", 200)
+        expect(stop_idle.get("data", {}), "stopped", False)
+        print("      0x05 stop 幂等 -> 200 stopped=false OK")
 
         print("[7/8] TTS CMD_TTS (0x01) / 参数错误 / 未知命令 / CRC 错帧 ...")
         tts, _ = call(reader, conn, seq, CMD_TTS, {"text": args.tts_text}, args.timeout)
@@ -357,7 +452,7 @@ def main():
             print("      CRC 错帧被丢弃（无 ACK/响应）OK")
         seq = (seq + 1) & 0xFF
 
-        print("[8/8] PASS：帧协议链路建立且心跳 / 设备详细信息 / 串口读取参数校验 / TTS 收发正常")
+        print("[8/8] PASS：帧协议链路建立且心跳 / 设备详细信息 / 串口会话参数校验 / TTS 收发正常")
         ok = True
     except Exception as e:
         print("FAIL: {}".format(e))
