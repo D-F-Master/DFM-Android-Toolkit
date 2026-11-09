@@ -357,7 +357,8 @@ def probe_message(req: ProbeMessageRequest):
     """按命令字向设备探针发一帧，返回设备应答，供页面调试。
 
     命令字接受 0~255 任意值，供页面「自定义发送」填写；设备端已登记的
-    0x00 心跳 / 0x01 TTS / 0x02 设备详细信息 / 0x03 串口读取返回业务应答，
-    其余命令字由设备端回 0xFF CMD_ERROR。
+    0x00 心跳 / 0x01 TTS / 0x02 设备详细信息 / 0x03 串口读取 / 0x04 打开串口会话 /
+    0x05 串口发送 / 0x07 关闭串口会话返回业务应答，其余命令字由设备端回
+    0xFF CMD_ERROR。
     """
     return _result(req.deviceId, False, req.cmd, req.data)
