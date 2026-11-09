@@ -288,6 +288,9 @@ def get_devices():
             line = lines[i].strip()
             if line:
                 parts = line.split()
+                # 只保留在线设备，offline / unauthorized 等状态不进设备列表
+                if len(parts) < 2 or parts[1] != 'device':
+                    continue
                 device_id = parts[0]
                 device_info = {}
                 
