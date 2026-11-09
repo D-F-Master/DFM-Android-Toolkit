@@ -60,12 +60,20 @@ public class ProbeService extends Service {
     private static final int CMD_TTS = 0x01;
     private static final int CMD_DEVICE_INFO = 0x02;
     private static final int CMD_SERIAL_READ = 0x03;
+    private static final int CMD_SERIAL_OPEN = 0x04;
+    private static final int CMD_SERIAL_SEND = 0x05;
+    private static final int CMD_SERIAL_CLOSE = 0x07;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
+
+    /** 串口会话读缓冲上限，超出时丢弃最旧的字节，避免长时间无人读取撑爆内存。 */
+    private static final int MAX_SERIAL_BUFFER = 65536;
 
     private volatile boolean running = false;
     private volatile ServerSocket serverSocket;
     private volatile TextToSpeech tts;
+    /** 设备端只保持一个串口会话，OPEN 会先关闭旧会话。 */
+    private volatile SerialSession serialSession;
 
     @Override
     public void onCreate() {
@@ -95,6 +103,7 @@ public class ProbeService extends Service {
             }
         }
         shutdownTts();
+        shutdownSerialSession();
         super.onDestroy();
     }
 
@@ -268,7 +277,10 @@ public class ProbeService extends Service {
             lastSeq = seq;
             // 先回 ACK 确认帧已完整收到，避免发送端 200ms 超时重传（业务可能耗时数十秒）
             sendFrame(out, seq, CMD_ACK, new byte[0]);
-            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS && cmd != CMD_DEVICE_INFO && cmd != CMD_SERIAL_READ;
+            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS
+                    && cmd != CMD_DEVICE_INFO && cmd != CMD_SERIAL_READ
+                    && cmd != CMD_SERIAL_OPEN && cmd != CMD_SERIAL_SEND
+                    && cmd != CMD_SERIAL_CLOSE;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -323,15 +335,26 @@ public class ProbeService extends Service {
                 return fail(500, "device info failed: " + e);
             }
         }
-        if (cmd == CMD_SERIAL_READ) {
+        if (cmd == CMD_SERIAL_READ || cmd == CMD_SERIAL_OPEN
+                || cmd == CMD_SERIAL_SEND || cmd == CMD_SERIAL_CLOSE) {
             try {
-                return ok(serialRead(req));
+                JSONObject data;
+                if (cmd == CMD_SERIAL_OPEN) {
+                    data = serialOpen(req);
+                } else if (cmd == CMD_SERIAL_SEND) {
+                    data = serialSend(req);
+                } else if (cmd == CMD_SERIAL_CLOSE) {
+                    data = serialClose();
+                } else {
+                    data = serialRead();
+                }
+                return ok(data);
             } catch (IllegalArgumentException e) {
-                Log.w(TAG, "serial read param error: " + e);
+                Log.w(TAG, "serial cmd param error: " + e);
                 return fail(400, e.getMessage());
             } catch (Exception e) {
-                Log.w(TAG, "serial read failed: " + e);
-                return fail(500, "serial read failed: " + e);
+                Log.w(TAG, "serial cmd failed: " + e);
+                return fail(500, "serial cmd failed: " + e);
             }
         }
         return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
@@ -373,8 +396,8 @@ public class ProbeService extends Service {
         return data;
     }
 
-    /** CMD_SERIAL_READ (0x03)：打开串口按波特率读取数据，按时长或字节数停止，返回 hex 字符串。 */
-    private JSONObject serialRead(JSONObject req) throws Exception {
+    /** CMD_SERIAL_OPEN (0x04)：按完整参数打开串口，起后台读线程持续把字节写入会话缓冲。 */
+    private synchronized JSONObject serialOpen(JSONObject req) throws Exception {
         String serial = req.optString("serial", null);
         if (serial == null || serial.trim().isEmpty()) {
             throw new IllegalArgumentException("serial is required");
@@ -384,82 +407,319 @@ public class ProbeService extends Service {
         if (!isValidBaud(baud)) {
             throw new IllegalArgumentException("baud must be one of: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000, 3000000");
         }
-        int duration = req.optInt("duration", 0);
-        int maxBytes = req.optInt("maxBytes", 0);
-        if (duration <= 0 && maxBytes <= 0) {
-            throw new IllegalArgumentException("duration or maxBytes is required");
-        }
-        if (duration > 10000) {
-            throw new IllegalArgumentException("duration must be <= 10000ms");
-        }
-        if (maxBytes > 4096) {
-            throw new IllegalArgumentException("maxBytes must be <= 4096");
-        }
+        String parity = req.optString("parity", "none");
+        int dataBits = req.optInt("dataBits", 8);
+        int stopBits = req.optInt("stopBits", 1);
+        String sttyCmd = buildSttyCommand(serial, baud, parity, dataBits, stopBits);
         File port = new File(serial);
         if (!port.exists()) {
             throw new IllegalArgumentException("serial port not found: " + serial);
         }
-        String sttyCmd = "stty -F " + serial + " " + baud + " raw -echo";
+        shutdownSerialSession();
         Process sttyProc = Runtime.getRuntime().exec(sttyCmd);
         int sttyExit = sttyProc.waitFor();
-        sttyProc.destroy();
         if (sttyExit != 0) {
             BufferedReader errReader = new BufferedReader(
                     new InputStreamReader(sttyProc.getErrorStream(), UTF8));
             String errLine = errReader.readLine();
+            sttyProc.destroy();
             throw new Exception("stty failed (exit " + sttyExit + "): " +
                     (errLine == null ? "unknown error" : errLine));
         }
-        RandomAccessFile raf = new RandomAccessFile(serial, "r");
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        long startMs = System.currentTimeMillis();
-        byte[] chunk = new byte[512];
-        int total = 0;
-        try {
-            while (true) {
-                long now = System.currentTimeMillis();
-                long elapsed = now - startMs;
-                if (duration > 0 && elapsed >= duration) {
-                    break;
-                }
-                if (maxBytes > 0 && total >= maxBytes) {
-                    break;
-                }
-                int toRead = chunk.length;
-                if (maxBytes > 0 && total + toRead > maxBytes) {
-                    toRead = maxBytes - total;
-                }
-                int n = raf.read(chunk, 0, toRead);
-                if (n < 0) {
-                    break;
-                }
-                if (n > 0) {
-                    buf.write(chunk, 0, n);
-                    total += n;
-                } else {
-                    Thread.sleep(10);
-                }
-            }
-        } finally {
-            try {
-                raf.close();
-            } catch (Exception ignored) {
-            }
+        sttyProc.destroy();
+        RandomAccessFile raf = new RandomAccessFile(serial, "rw");
+        SerialSession session = new SerialSession(serial, baud, parity, dataBits, stopBits, raf);
+        session.readerThread = new Thread(new SerialReadTask(session), "dfm-probe-serial-read");
+        session.readerThread.start();
+        serialSession = session;
+        JSONObject data = new JSONObject();
+        data.put("serial", serial);
+        data.put("baud", baud);
+        data.put("parity", parity);
+        data.put("dataBits", dataBits);
+        data.put("stopBits", stopBits);
+        data.put("stty", sttyCmd);
+        return data;
+    }
+
+    /** CMD_SERIAL_READ (0x03)：取走会话缓冲里的增量字节，Hex/Txt 原样返回，不做帧解析。 */
+    private synchronized JSONObject serialRead() throws Exception {
+        SerialSession s = serialSession;
+        if (s == null) {
+            throw new IllegalArgumentException("serial session not opened");
         }
-        long actualDuration = System.currentTimeMillis() - startMs;
-        byte[] bytes = buf.toByteArray();
-        StringBuilder hexBuilder = new StringBuilder();
-        for (int i = 0; i < bytes.length; i++) {
-            if (i > 0) {
-                hexBuilder.append(' ');
-            }
-            hexBuilder.append(String.format("%02X", bytes[i]));
+        if (!s.reading) {
+            throw new IllegalArgumentException("serial read thread stopped");
+        }
+        byte[] bytes;
+        synchronized (s.lock) {
+            bytes = s.buffer.toByteArray();
+            s.buffer.reset();
         }
         JSONObject data = new JSONObject();
-        data.put("hex", hexBuilder.toString());
+        data.put("hex", toHex(bytes));
+        data.put("text", new String(bytes, UTF8));
         data.put("bytes", bytes.length);
-        data.put("duration", actualDuration);
         return data;
+    }
+
+    /** CMD_SERIAL_SEND (0x05)：单次写出，或起后台线程按 times / interval 循环写出。 */
+    private synchronized JSONObject serialSend(JSONObject req) throws Exception {
+        SerialSession s = serialSession;
+        if (s == null) {
+            throw new IllegalArgumentException("serial session not opened");
+        }
+        if (req.optBoolean("stop", false)) {
+            stopSerialLoop(s);
+            JSONObject stopped = new JSONObject();
+            stopped.put("stopped", true);
+            return stopped;
+        }
+        String mode = req.optString("mode", "text");
+        if (!"text".equals(mode) && !"hex".equals(mode)) {
+            throw new IllegalArgumentException("mode must be text / hex");
+        }
+        String payload = req.optString("payload", null);
+        if (payload == null || payload.isEmpty()) {
+            throw new IllegalArgumentException("payload is required");
+        }
+        byte[] bytes = "hex".equals(mode) ? hexToBytes(payload) : payload.getBytes(UTF8);
+        if (bytes.length == 0) {
+            throw new IllegalArgumentException("payload is empty");
+        }
+        int times = req.optInt("times", 1);
+        int interval = req.optInt("interval", 500);
+        if (times < 0 || times > 10000) {
+            throw new IllegalArgumentException("times must be 0..10000 (0 = until stopped)");
+        }
+        if (interval < 0 || interval > 60000) {
+            throw new IllegalArgumentException("interval must be 0..60000ms");
+        }
+        JSONObject data = new JSONObject();
+        data.put("mode", mode);
+        data.put("bytes", bytes.length);
+        data.put("times", times);
+        data.put("interval", interval);
+        if (times == 1) {
+            s.raf.write(bytes);
+            data.put("loop", false);
+            return data;
+        }
+        stopSerialLoop(s);
+        s.looping = true;
+        s.sendThread = new Thread(new SerialSendTask(s, bytes, times, interval),
+                "dfm-probe-serial-send");
+        s.sendThread.start();
+        data.put("loop", true);
+        return data;
+    }
+
+    /** CMD_SERIAL_CLOSE (0x07)：停读线程与循环发送线程、关串口、清缓冲。 */
+    private synchronized JSONObject serialClose() throws Exception {
+        boolean had = serialSession != null;
+        shutdownSerialSession();
+        JSONObject data = new JSONObject();
+        data.put("closed", had);
+        return data;
+    }
+
+    /** 服务销毁或重新 OPEN 时清理会话；可重复调用。 */
+    private synchronized void shutdownSerialSession() {
+        SerialSession s = serialSession;
+        serialSession = null;
+        if (s == null) {
+            return;
+        }
+        s.reading = false;
+        stopSerialLoop(s);
+        Thread reader = s.readerThread;
+        if (reader != null) {
+            reader.interrupt();
+        }
+        try {
+            s.raf.close();
+        } catch (Exception ignored) {
+        }
+        synchronized (s.lock) {
+            s.buffer.reset();
+        }
+    }
+
+    private static void stopSerialLoop(SerialSession s) {
+        s.looping = false;
+        Thread send = s.sendThread;
+        if (send != null) {
+            send.interrupt();
+        }
+    }
+
+    /** 读线程写入缓冲；超过上限时丢弃最旧的字节。 */
+    private static void appendSerialBytes(SerialSession s, byte[] chunk, int n) {
+        synchronized (s.lock) {
+            if (s.buffer.size() + n > MAX_SERIAL_BUFFER) {
+                byte[] old = s.buffer.toByteArray();
+                s.buffer.reset();
+                int keep = Math.max(0, MAX_SERIAL_BUFFER - n);
+                int drop = old.length - keep;
+                if (drop < old.length) {
+                    s.buffer.write(old, drop, old.length - drop);
+                }
+            }
+            s.buffer.write(chunk, 0, n);
+        }
+    }
+
+    /** 拼 stty 命令：端口 / 波特率 / 校验位 / 数据位 / 停止位，静态纯逻辑便于校验。 */
+    private static String buildSttyCommand(String serial, int baud, String parity,
+                                           int dataBits, int stopBits) {
+        if (serial == null || serial.isEmpty() || !serial.matches("[A-Za-z0-9_/.-]+")) {
+            throw new IllegalArgumentException("serial must be a plain device path");
+        }
+        if (!"none".equals(parity) && !"odd".equals(parity) && !"even".equals(parity)) {
+            throw new IllegalArgumentException("parity must be none / odd / even");
+        }
+        if (dataBits < 5 || dataBits > 8) {
+            throw new IllegalArgumentException("dataBits must be 5 / 6 / 7 / 8");
+        }
+        if (stopBits != 1 && stopBits != 2) {
+            throw new IllegalArgumentException("stopBits must be 1 / 2");
+        }
+        StringBuilder cmd = new StringBuilder();
+        cmd.append("stty -F ").append(serial).append(' ').append(baud)
+                .append(" cs").append(dataBits);
+        if ("none".equals(parity)) {
+            cmd.append(" -parenb");
+        } else if ("odd".equals(parity)) {
+            cmd.append(" parenb parodd");
+        } else {
+            cmd.append(" parenb -parodd");
+        }
+        cmd.append(stopBits == 2 ? " cstopb" : " -cstopb");
+        cmd.append(" raw -echo");
+        return cmd.toString();
+    }
+
+    /** Hex 字符串转字节；允许空白分隔，奇数位或非法字符明确报错。 */
+    private static byte[] hexToBytes(String hex) {
+        String cleaned = hex.replaceAll("\\s+", "");
+        if (cleaned.isEmpty()) {
+            throw new IllegalArgumentException("hex payload is empty");
+        }
+        if ((cleaned.length() & 1) != 0) {
+            throw new IllegalArgumentException("hex payload must have even length");
+        }
+        byte[] out = new byte[cleaned.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(cleaned.charAt(i * 2), 16);
+            int lo = Character.digit(cleaned.charAt(i * 2 + 1), 16);
+            if (hi < 0 || lo < 0) {
+                throw new IllegalArgumentException("hex payload has invalid digit: "
+                        + cleaned.substring(i * 2, i * 2 + 2));
+            }
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
+
+    private static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < bytes.length; i++) {
+            if (i > 0) {
+                sb.append(' ');
+            }
+            sb.append(String.format("%02X", bytes[i]));
+        }
+        return sb.toString();
+    }
+
+    /** 设备端只保持一个串口会话：OPEN 后常驻，直到 CLOSE 或服务销毁。 */
+    private static final class SerialSession {
+        final String serial;
+        final int baud;
+        final String parity;
+        final int dataBits;
+        final int stopBits;
+        final RandomAccessFile raf;
+        final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        final Object lock = new Object();
+        volatile boolean reading = true;
+        volatile boolean looping = false;
+        volatile Thread readerThread;
+        volatile Thread sendThread;
+
+        SerialSession(String serial, int baud, String parity, int dataBits,
+                      int stopBits, RandomAccessFile raf) {
+            this.serial = serial;
+            this.baud = baud;
+            this.parity = parity;
+            this.dataBits = dataBits;
+            this.stopBits = stopBits;
+            this.raf = raf;
+        }
+    }
+
+    /** 打开串口后持续读：read() 返回多少就追加多少，不做帧解析。 */
+    private final class SerialReadTask implements Runnable {
+        private final SerialSession session;
+
+        SerialReadTask(SerialSession session) {
+            this.session = session;
+        }
+
+        @Override
+        public void run() {
+            byte[] chunk = new byte[512];
+            while (session.reading && running) {
+                try {
+                    int n = session.raf.read(chunk, 0, chunk.length);
+                    if (n > 0) {
+                        appendSerialBytes(session, chunk, n);
+                    } else {
+                        Thread.sleep(10);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "serial read thread stopped: " + e);
+                    break;
+                }
+            }
+            session.reading = false;
+        }
+    }
+
+    /** 循环发送：times=0 表示一直发到 stop / CLOSE。 */
+    private final class SerialSendTask implements Runnable {
+        private final SerialSession session;
+        private final byte[] bytes;
+        private final int times;
+        private final int interval;
+
+        SerialSendTask(SerialSession session, byte[] bytes, int times, int interval) {
+            this.session = session;
+            this.bytes = bytes;
+            this.times = times;
+            this.interval = interval;
+        }
+
+        @Override
+        public void run() {
+            int sent = 0;
+            while (session.looping && running && (times == 0 || sent < times)) {
+                try {
+                    session.raf.write(bytes);
+                    sent++;
+                    if (interval > 0) {
+                        Thread.sleep(interval);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    Log.w(TAG, "serial send thread stopped: " + e);
+                    break;
+                }
+            }
+            session.looping = false;
+        }
     }
 
     /** 检查波特率是否在支持的列表中（对齐 serial-writer 的 baud_speed）。 */
