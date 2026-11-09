@@ -4017,10 +4017,17 @@ const serialStreamPid = ref('')
 const serialStreamLog = ref('')
 const serialStreamBusy = ref(false)
 
-// 读取串口数据（探针 0x03）
+// 串口会话（探针 0x04 打开 / 0x03 取增量 / 0x05 发送 / 0x07 关闭）
 const serialReadBaud = ref('9600')
-const serialReadDuration = ref('2000')
-const serialReadMaxBytes = ref('1024')
+const serialReadParity = ref('none')
+const serialReadDataBits = ref('8')
+const serialReadStopBits = ref('1')
+const serialReadView = ref<'hex' | 'text'>('hex')
+const serialSendMode = ref<'text' | 'hex'>('text')
+const serialSendPayload = ref('HELLO')
+const serialSendTimes = ref('1')
+const serialSendInterval = ref('500')
+const serialSessionOpened = ref(false)
 const serialReading = ref(false)
 let serialReadLoopId = 0
 
@@ -4151,31 +4158,48 @@ const serialStream = async (action: 'start' | 'stop' | 'status') => {
   }
 }
 
-// 组 0x03 请求参数；参数不合法时写入提示并返回 null
-const buildSerialReadPayload = (): Record<string, unknown> | null => {
-  const data: Record<string, unknown> = {
+// 组 0x04 打开串口会话参数；串口未选时写入提示并返回 null
+const buildSerialOpenPayload = (): Record<string, unknown> | null => {
+  if (!serialDevice.value) {
+    serialMessage.value = '请先选择串口设备'
+    serialMessageType.value = 'err'
+    return null
+  }
+  return {
     serial: serialDevice.value,
-    baud: Number(serialReadBaud.value)
+    baud: Number(serialReadBaud.value),
+    parity: serialReadParity.value,
+    dataBits: Number(serialReadDataBits.value),
+    stopBits: Number(serialReadStopBits.value)
   }
-  const duration = Number(serialReadDuration.value)
-  const maxBytes = Number(serialReadMaxBytes.value)
-  if (duration > 10000 || maxBytes > 4096) {
-    serialMessage.value = '读取时长不超过 10000ms，最大字节数不超过 4096'
+}
+
+// 向探针发一条串口命令并解出业务 data；失败写入状态提示并返回 null
+const postSerialCommand = async (cmd: number, data: Record<string, unknown>, label: string): Promise<Record<string, any> | null> => {
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+      deviceId: selectedDevice.value,
+      cmd,
+      data
+    }, { timeout: 200000 })
+    const d = res.data
+    if (d?.code !== 200 || d?.data?.connected !== true) {
+      serialMessage.value = `${label}失败：${d?.message || '通讯失败'}`
+      serialMessageType.value = 'err'
+      return null
+    }
+    const r = d.data.response || {}
+    if (r.code !== 200) {
+      serialMessage.value = `${label}失败：${r.message || '设备返回错误'}`
+      serialMessageType.value = 'err'
+      return null
+    }
+    return r.data || {}
+  } catch (e: any) {
+    serialMessage.value = `${label}失败：${e?.response?.data?.message || e?.message || '请求异常'}`
     serialMessageType.value = 'err'
     return null
   }
-  if (duration > 0) {
-    data.duration = duration
-  }
-  if (maxBytes > 0) {
-    data.maxBytes = maxBytes
-  }
-  if (!data.duration && !data.maxBytes) {
-    serialMessage.value = '请填写读取时长或最大字节数'
-    serialMessageType.value = 'err'
-    return null
-  }
-  return data
 }
 
 // 执行日志追加一行，最多保留最近 100 行
@@ -4193,41 +4217,35 @@ const failSerialReadLine = (count: number, msg: string) => {
   serialMessageType.value = 'err'
 }
 
-// 单轮读取：结果追加到执行日志；true 成功 / false 失败 / null 参数不合法需停止
+// 单轮读取：从会话缓冲取增量字节并按 Hex/Txt 原样追加；true 成功 / false 失败 / null 会话已关闭需停止
 const readSerialData = async (count: number, token: number): Promise<boolean | null> => {
-  const data = buildSerialReadPayload()
-  if (!data) return null
-  try {
-    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
-      deviceId: selectedDevice.value,
-      cmd: 0x03,
-      data
-    }, { timeout: 200000 })
-    if (serialReadLoopId !== token) return false
-    const d = res.data
-    if (d?.code !== 200 || d?.data?.connected !== true) {
-      failSerialReadLine(count, d?.message || '读取失败')
-      return false
-    }
-    const r = d.data.response || {}
-    if (r.code !== 200) {
-      failSerialReadLine(count, r.message || '读取失败')
-      return false
-    }
-    const rd = r.data || {}
-    appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} ${rd.hex || '（无数据）'} | ${rd.bytes ?? 0} 字节 | ${rd.duration ?? 0} ms`)
-    serialMessage.value = `持续读取中（第 ${count} 次：${rd.bytes ?? 0} 字节，${rd.duration ?? 0} ms）`
-    serialMessageType.value = 'ok'
-    return true
-  } catch (e: any) {
-    if (serialReadLoopId !== token) return false
-    failSerialReadLine(count, e?.response?.data?.message || e?.message || '读取失败')
+  if (!serialSessionOpened.value) return null
+  const rd = await postSerialCommand(0x03, {}, '串口读取')
+  if (serialReadLoopId !== token) return false
+  if (!rd) {
+    failSerialReadLine(count, serialMessage.value)
     return false
   }
+  const bytes = Number(rd.bytes ?? 0)
+  if (bytes > 0) {
+    const shown = serialReadView.value === 'text' ? (rd.text ?? '') : (rd.hex ?? '')
+    appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} [Read][${serialReadView.value === 'text' ? 'Txt' : 'Hex'}] ${shown}`)
+  }
+  serialMessage.value = `持续读取中（第 ${count} 次：${bytes} 字节）`
+  serialMessageType.value = 'ok'
+  return true
 }
 
-const stopSerialRead = () => {
+const stopSerialRead = async () => {
   serialReading.value = false
+  serialReadLoopId += 1
+  if (serialSessionOpened.value) {
+    serialSessionOpened.value = false
+    const closed = await postSerialCommand(0x07, {}, '关闭串口会话')
+    if (closed) {
+      appendSerialReadLine(`${new Date().toLocaleTimeString()} 串口已关闭`)
+    }
+  }
 }
 
 // 开启后连续读取：成功立即下一轮，失败等 1 秒；关闭 / 切设备 / 切方案后停发新请求
@@ -4258,21 +4276,76 @@ const runSerialReadLoop = async (token: number) => {
   }
 }
 
-// 按钮：开启读取 / 关闭读取
-const toggleSerialRead = () => {
+// 按钮：打开串口并开启持续读 / 关闭读取并关闭串口会话
+const toggleSerialRead = async () => {
   if (serialReading.value) {
     stopSerialRead()
     return
   }
   if (!selectedDevice.value) return
-  if (!buildSerialReadPayload()) return
+  const openData = buildSerialOpenPayload()
+  if (!openData) return
   serialOutput.value = ''
+  const opened = await postSerialCommand(0x04, openData, '打开串口会话')
+  if (!opened) return
+  serialSessionOpened.value = true
+  appendSerialReadLine(`${new Date().toLocaleTimeString()} 串口已打开：${opened.serial || serialDevice.value} ${opened.baud || ''} ${opened.parity || ''}/${opened.dataBits || ''}/${opened.stopBits || ''}`)
   serialReadLoopId += 1
   const token = serialReadLoopId
   serialReading.value = true
   serialMessage.value = '持续读取中...'
   serialMessageType.value = 'ok'
   runSerialReadLoop(token)
+}
+
+// 单次 / 循环发送：mode=text|hex，times=0 表示持续到手动停止
+const sendSerialSessionData = async () => {
+  if (!selectedDevice.value) {
+    serialMessage.value = '请先在左侧选择设备'
+    serialMessageType.value = 'err'
+    return
+  }
+  if (!serialSessionOpened.value) {
+    serialMessage.value = '请先打开串口会话'
+    serialMessageType.value = 'err'
+    return
+  }
+  const payload = serialSendPayload.value
+  if (!payload.trim()) {
+    serialMessage.value = '发送内容不能为空'
+    serialMessageType.value = 'err'
+    return
+  }
+  const times = Number(serialSendTimes.value)
+  const interval = Number(serialSendInterval.value)
+  if (!Number.isInteger(times) || times < 0 || times > 10000) {
+    serialMessage.value = '发送次数必须是 0~10000 的整数（0=持续到手动停止）'
+    serialMessageType.value = 'err'
+    return
+  }
+  if (!Number.isInteger(interval) || interval < 0 || interval > 60000) {
+    serialMessage.value = '循环间隔必须是 0~60000 的整数（毫秒）'
+    serialMessageType.value = 'err'
+    return
+  }
+  const r = await postSerialCommand(0x05, {
+    mode: serialSendMode.value,
+    payload,
+    times,
+    interval
+  }, '串口发送')
+  if (!r) return
+  appendSerialReadLine(`${new Date().toLocaleTimeString()} [Send][${serialSendMode.value === 'text' ? 'Txt' : 'Hex'}] ${payload}`)
+  serialMessage.value = r.loop ? `循环发送中（${times || '持续'} 次 / ${interval}ms）` : '发送成功'
+  serialMessageType.value = 'ok'
+}
+
+const stopSerialSessionSend = async () => {
+  const r = await postSerialCommand(0x05, { stop: true }, '停止循环发送')
+  if (!r) return
+  appendSerialReadLine(`${new Date().toLocaleTimeString()} [Send] 循环发送已停止`)
+  serialMessage.value = '循环发送已停止'
+  serialMessageType.value = 'ok'
 }
 
 // ---------- 模拟串口：方案 B（pty 替换 + 按键注入） ----------
@@ -8475,12 +8548,12 @@ button.batch-remote-tile-tag:disabled.active {
                         class="serial-scheme-btn"
                         :class="{ active: serialScheme === 'read' }"
                         @click="serialScheme = 'read'"
-                      >读取串口数据</button>
+                      >串口会话</button>
                     </div>
                     <div class="serial-hint">
                       串口写入：向设备串口发送数据，通过 UART 内部回环让读取该串口的程序收到。
                       键盘模拟：把串口替换为 pty，向实体键盘协议注入按键帧。
-                      读取串口数据：通过探针 0x03 读取设备串口原始数据，需已在探针测试页安装通讯、设备已 root 且串口节点可读写。
+                      串口会话：通过探针 0x04 打开设备串口持续读、0x03 取增量、0x05 发送、0x07 关闭，需设备已 root 且串口节点可读写。
                     </div>
                   </div>
                 </div>
@@ -8713,9 +8786,9 @@ button.batch-remote-tile-tag:disabled.active {
                 </div>
                 </template>
 
-                <!-- ============ 方案 C：读取串口数据 ============ -->
+                <!-- ============ 方案 C：串口会话 ============ -->
                 <template v-else-if="serialScheme === 'read'">
-                <!-- 卡片: 读取串口数据 -->
+                <!-- 卡片: 串口会话 -->
                 <div class="scrcpy-card">
                   <div class="card-header">
                     <span class="card-icon">
@@ -8724,7 +8797,7 @@ button.batch-remote-tile-tag:disabled.active {
                         <line x1="12" y1="19" x2="20" y2="19"/>
                       </svg>
                     </span>
-                    <span>读取串口数据</span>
+                    <span>串口会话</span>
                   </div>
                   <div class="card-body">
                     <div class="serial-row">
@@ -8757,22 +8830,43 @@ button.batch-remote-tile-tag:disabled.active {
                         <option value="1500000">1500000</option>
                         <option value="3000000">3000000</option>
                       </select>
-                      <label class="serial-label">读取时长(ms)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="10000"
-                        v-model="serialReadDuration"
-                        class="serial-input serial-input-sm"
-                      />
-                      <label class="serial-label">最大字节数</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="4096"
-                        v-model="serialReadMaxBytes"
-                        class="serial-input serial-input-sm"
-                      />
+                      <label class="serial-label">校验位</label>
+                      <select v-model="serialReadParity" class="serial-select">
+                        <option value="none">None</option>
+                        <option value="odd">Odd</option>
+                        <option value="even">Even</option>
+                      </select>
+                      <label class="serial-label">数据位</label>
+                      <select v-model="serialReadDataBits" class="serial-select">
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7">7</option>
+                        <option value="8">8</option>
+                      </select>
+                      <label class="serial-label">停止位</label>
+                      <select v-model="serialReadStopBits" class="serial-select">
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                      </select>
+                      <label class="serial-label">显示</label>
+                      <select v-model="serialReadView" class="serial-select">
+                        <option value="hex">Hex</option>
+                        <option value="text">Txt</option>
+                      </select>
+                    </div>
+
+                    <div class="serial-row">
+                      <label class="serial-label">发送格式</label>
+                      <select v-model="serialSendMode" class="serial-select">
+                        <option value="text">Txt</option>
+                        <option value="hex">Hex</option>
+                      </select>
+                      <label class="serial-label">发送内容</label>
+                      <input v-model="serialSendPayload" class="serial-input" placeholder="Txt 原样 / Hex 如 01 0A FF" />
+                      <label class="serial-label">次数(0=持续)</label>
+                      <input type="number" min="0" max="10000" v-model="serialSendTimes" class="serial-input serial-input-sm" />
+                      <label class="serial-label">间隔(ms)</label>
+                      <input type="number" min="0" max="60000" v-model="serialSendInterval" class="serial-input serial-input-sm" />
                     </div>
 
                     <div class="serial-actions">
@@ -8780,13 +8874,23 @@ button.batch-remote-tile-tag:disabled.active {
                         class="check-button"
                         @click="toggleSerialRead"
                         :disabled="!selectedDevice"
-                      >{{ serialReading ? '关闭读取' : '开启读取' }}</button>
+                      >{{ serialReading ? '关闭串口' : '打开串口并持续读' }}</button>
+                      <button
+                        class="serial-mini-btn"
+                        @click="sendSerialSessionData"
+                        :disabled="!selectedDevice || !serialSessionOpened"
+                      >发送</button>
+                      <button
+                        class="serial-mini-btn"
+                        @click="stopSerialSessionSend"
+                        :disabled="!selectedDevice || !serialSessionOpened"
+                      >停止循环发送</button>
                     </div>
 
                     <div class="serial-hint serial-hint-block">
-                      提示：开启后连续读取，成功立即读下一轮、失败等 1 秒再试；结果逐行追加到下方「执行日志」（最多保留最近 100 行）。
-                      关闭后不再发起新请求，当前轮读完后停止；切换设备、切换方案或离开页面会自动停止。
-                      duration 与 maxBytes 至少填一个，两者都填时先到者停止。
+                      提示：打开串口后设备端后台持续读，页面轮询 0x03 取增量字节，按 Hex/Txt 原样追加到下方「执行日志」（最多保留最近 100 行），不做帧解析。
+                      发送支持 Txt/Hex、单次或按次数/间隔循环；循环由设备端后台线程执行，点「停止循环发送」结束。
+                      点「关闭串口」会停止读取与循环发送并关闭设备端会话；切换设备、切换方案或离开页面只停止页面轮询。
                     </div>
                   </div>
                 </div>
