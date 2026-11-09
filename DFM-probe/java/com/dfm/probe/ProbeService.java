@@ -465,14 +465,13 @@ public class ProbeService extends Service {
 
     /** CMD_SERIAL_SEND (0x05)：单次写出，或起后台线程按 times / interval 循环写出。 */
     private synchronized JSONObject serialSend(JSONObject req) throws Exception {
-        SerialSession s = serialSession;
-        if (s == null) {
-            throw new IllegalArgumentException("serial session not opened");
-        }
         if (req.optBoolean("stop", false)) {
-            stopSerialLoop(s);
+            SerialSession s = serialSession;
+            if (s != null) {
+                stopSerialLoop(s);
+            }
             JSONObject stopped = new JSONObject();
-            stopped.put("stopped", true);
+            stopped.put("stopped", s != null);
             return stopped;
         }
         String mode = req.optString("mode", "text");
@@ -494,6 +493,10 @@ public class ProbeService extends Service {
         }
         if (interval < 0 || interval > 60000) {
             throw new IllegalArgumentException("interval must be 0..60000ms");
+        }
+        SerialSession s = serialSession;
+        if (s == null) {
+            throw new IllegalArgumentException("serial session not opened");
         }
         JSONObject data = new JSONObject();
         data.put("mode", mode);
