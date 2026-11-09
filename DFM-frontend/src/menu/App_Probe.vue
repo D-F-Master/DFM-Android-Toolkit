@@ -59,8 +59,13 @@ const customCmd = ref('0x00');
 const customData = ref('{}');
 const serialPath = ref('/dev/ttyS3');
 const serialBaud = ref(115200);
-const serialDuration = ref(2000);
-const serialMaxBytes = ref(1024);
+const serialParity = ref('none');
+const serialDataBits = ref(8);
+const serialStopBits = ref(1);
+const serialSendMode = ref('text');
+const serialSendPayload = ref('AT');
+const serialSendTimes = ref(1);
+const serialSendInterval = ref(500);
 const frameText = ref('');
 const frameLogs = ref<FrameLog[]>([]);
 let frameLogId = 0;
@@ -217,20 +222,69 @@ const sendDeviceInfo = () => {
   sendMessage(0x02, {}, '设备详细信息');
 };
 
-const sendSerialRead = () => {
-  const data: Record<string, unknown> = {
+const serialError = (message: string) => {
+  resultTitle.value = '串口会话';
+  requestText.value = '';
+  responseText.value = message;
+  frameText.value = '';
+};
+
+const serialGuard = () => {
+  if (!selectedDevice.value || busy.value) {
+    serialError(selectedDevice.value ? '设备正在处理其它请求，请稍后再试' : '请先在左侧选择设备');
+    return false;
+  }
+  return true;
+};
+
+const sendSerialOpen = () => {
+  if (!serialGuard()) return;
+  if (!serialPath.value.trim()) {
+    serialError('串口路径不能为空');
+    return;
+  }
+  sendMessage(0x04, {
     serial: serialPath.value.trim(),
     baud: Number(serialBaud.value),
-  };
-  const duration = Number(serialDuration.value);
-  const maxBytes = Number(serialMaxBytes.value);
-  if (duration > 0) {
-    data.duration = duration;
+    parity: serialParity.value,
+    dataBits: Number(serialDataBits.value),
+    stopBits: Number(serialStopBits.value),
+  }, '打开串口会话 (0x04)');
+};
+
+const sendSerialRead = () => {
+  if (!serialGuard()) return;
+  sendMessage(0x03, {}, '串口读取 (0x03)');
+};
+
+const sendSerialClose = () => {
+  if (!serialGuard()) return;
+  sendMessage(0x07, {}, '关闭串口会话 (0x07)');
+};
+
+const sendSerialData = () => {
+  if (!serialGuard()) return;
+  const payload = serialSendPayload.value;
+  if (!payload.trim()) {
+    serialError('发送内容不能为空');
+    return;
   }
-  if (maxBytes > 0) {
-    data.maxBytes = maxBytes;
+  const times = Number(serialSendTimes.value);
+  const interval = Number(serialSendInterval.value);
+  if (!Number.isInteger(times) || times < 0 || times > 10000) {
+    serialError('发送次数必须是 0~10000 的整数（0=持续到手动停止）');
+    return;
   }
-  sendMessage(0x03, data, '串口读取');
+  if (!Number.isInteger(interval) || interval < 0 || interval > 60000) {
+    serialError('循环间隔必须是 0~60000 的整数（毫秒）');
+    return;
+  }
+  sendMessage(0x05, { mode: serialSendMode.value, payload, times, interval }, '串口发送 (0x05)');
+};
+
+const stopSerialData = () => {
+  if (!serialGuard()) return;
+  sendMessage(0x05, { stop: true }, '停止循环发送 (0x05)');
 };
 
 const sendTts = () => {
@@ -369,11 +423,11 @@ onMounted(async () => {
             </div>
 
             <div class="card">
-              <h3>串口读取</h3>
-              <p class="card-desc">打开设备串口按波特率读取数据，需设备已 root 且串口节点可读写。</p>
+              <h3>串口会话</h3>
+              <p class="card-desc">打开设备串口后持续读、单次/循环发送；应答含 hex 与 text 两种原样显示，不做帧解析。</p>
               <div class="input-row">
                 <input v-model="serialPath" class="text-input" placeholder="/dev/ttyS3">
-                <select v-model="serialBaud" class="text-input">
+                <select v-model="serialBaud" class="text-input" title="波特率">
                   <option :value="9600">9600</option>
                   <option :value="19200">19200</option>
                   <option :value="38400">38400</option>
@@ -383,11 +437,37 @@ onMounted(async () => {
                   <option :value="460800">460800</option>
                   <option :value="921600">921600</option>
                 </select>
-                <button @click="sendSerialRead" :disabled="busy">读取 (0x03)</button>
+                <select v-model="serialParity" class="text-input" title="校验位">
+                  <option value="none">None</option>
+                  <option value="odd">Odd</option>
+                  <option value="even">Even</option>
+                </select>
+                <select v-model="serialDataBits" class="text-input" title="数据位">
+                  <option :value="5">5</option>
+                  <option :value="6">6</option>
+                  <option :value="7">7</option>
+                  <option :value="8">8</option>
+                </select>
+                <select v-model="serialStopBits" class="text-input" title="停止位">
+                  <option :value="1">1</option>
+                  <option :value="2">2</option>
+                </select>
               </div>
               <div class="input-row">
-                <input v-model="serialDuration" class="text-input" placeholder="时长(ms)，0=不限" title="读取时长(毫秒)，最大 10000">
-                <input v-model="serialMaxBytes" class="text-input" placeholder="字节数，0=不限" title="读取字节数上限，最大 4096">
+                <button @click="sendSerialOpen" :disabled="busy">打开 (0x04)</button>
+                <button @click="sendSerialRead" :disabled="busy">读取 (0x03)</button>
+                <button @click="sendSerialClose" :disabled="busy">关闭 (0x07)</button>
+              </div>
+              <div class="input-row">
+                <select v-model="serialSendMode" class="text-input" title="发送格式">
+                  <option value="text">Txt</option>
+                  <option value="hex">Hex</option>
+                </select>
+                <input v-model="serialSendPayload" class="text-input" placeholder="发送内容，Txt 原样 / Hex 如 01 0A FF">
+                <input v-model="serialSendTimes" class="text-input" placeholder="次数，0=持续" title="发送次数 0~10000，0 表示持续到手动停止">
+                <input v-model="serialSendInterval" class="text-input" placeholder="间隔(ms)" title="循环间隔 0~60000 毫秒">
+                <button @click="sendSerialData" :disabled="busy">发送 (0x05)</button>
+                <button @click="stopSerialData" :disabled="busy">停止</button>
               </div>
             </div>
 
