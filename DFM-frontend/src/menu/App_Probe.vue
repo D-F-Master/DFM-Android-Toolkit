@@ -261,6 +261,15 @@ const sendCustom = () => {
     frameText.value = '';
     return;
   }
+  if (!selectedDevice.value || busy.value) {
+    resultTitle.value = '自定义发送';
+    requestText.value = '';
+    responseText.value = selectedDevice.value
+      ? '设备正在处理其它请求，请稍后再试'
+      : '请先在左侧选择设备';
+    frameText.value = '';
+    return;
+  }
   sendMessage(cmd, data, `自定义发送 (0x${cmd.toString(16).toUpperCase().padStart(2, '0')})`);
 };
 
