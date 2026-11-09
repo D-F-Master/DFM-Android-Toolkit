@@ -249,7 +249,11 @@ const sendCustom = () => {
   }
   let data: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(customData.value.trim() || '{}');
+    const rawData = customData.value.trim();
+    if (!rawData) {
+      throw new Error('数据区不能为空，请填写 JSON 对象（如 {}）');
+    }
+    const parsed = JSON.parse(rawData);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error('数据区必须是 JSON 对象');
     }
