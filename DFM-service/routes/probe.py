@@ -356,9 +356,8 @@ def probe_connect(req: ProbeRequest):
 def probe_message(req: ProbeMessageRequest):
     """按命令字向设备探针发一帧，返回设备应答，供页面调试。
 
-    业务命令字只保留 0x00 心跳 / 0x01 TTS / 0x02 设备详细信息 / 0x03 串口读取，
-    其余直接回 400，不向设备发帧。
+    命令字接受 0~255 任意值，供页面「自定义发送」填写；设备端已登记的
+    0x00 心跳 / 0x01 TTS / 0x02 设备详细信息 / 0x03 串口读取返回业务应答，
+    其余命令字由设备端回 0xFF CMD_ERROR。
     """
-    if req.cmd not in (CMD_HEARTBEAT, CMD_TTS, CMD_DEVICE_INFO, CMD_SERIAL_READ):
-        return {"code": 400, "message": "cmd 只支持 0x00 / 0x01 / 0x02 / 0x03", "data": {"connected": False}}
     return _result(req.deviceId, False, req.cmd, req.data)
