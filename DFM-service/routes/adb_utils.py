@@ -2278,6 +2278,11 @@ def get_device_monitor_top(request: MonitorRateRequest):
         # （旧版表头显示为 "S[%CPU]" 合并列，但数据行始终是分开的两个字段）
         if len(parts) < 11:
             continue
+        command = parts[11] if len(parts) > 11 else ""
+        cmd_argv = command.split()
+        # top 快照进程自身会进入列表（ARGS 即 top -bn 2 -d 1 -m 10 -s 9），不是设备业务进程
+        if cmd_argv and cmd_argv[0].split("/")[-1] == "top" and "-bn" in cmd_argv:
+            continue
         try:
             if not parts[0].isdigit() or len(parts[7]) != 1 or not parts[7].isalpha():
                 continue
@@ -2287,7 +2292,7 @@ def get_device_monitor_top(request: MonitorRateRequest):
                 "stat": parts[7],
                 "cpuPercent": float(parts[8]),
                 "memPercent": float(parts[9]),
-                "command": parts[11] if len(parts) > 11 else "",
+                "command": command,
             })
         except (ValueError, IndexError):
             # 解析失败的行直接跳过
