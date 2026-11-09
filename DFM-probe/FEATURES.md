@@ -79,15 +79,19 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `0x00` | CMD_HEARTBEAT | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"version":"1.0"}}` | 心跳，返回 `AndroidManifest.xml` 的 `versionName` |
 | `0x01` | CMD_TTS | `{"text":"..."}` | `{"code":200,"message":"success","data":{"status":"done"}}` 或 `{"code":400/500,"message":"...","data":null}` | 调用系统 TTS 朗读文本，见 §4.2 |
 | `0x02` | CMD_DEVICE_INFO | `{}`（无必填字段） | 统一信封，`data` 为设备基础信息 + 串口 / 摄像头 / 外设列表 | 设备端采集详细信息，见 §4.3 |
-| `0x03` | CMD_SERIAL_READ | `{"serial":"/dev/ttyS3","baud":115200,"duration":2000,"maxBytes":1024}` | 统一信封，`data` 为 `{"hex":"01 02 03","bytes":N,"duration":Ms}` | 设备端打开串口按波特率读取，见 §4.4 |
+| `0x03` | CMD_SERIAL_READ | `{}`（会话已打开时取增量字节） | 统一信封，`data` 为 `{"hex":"01 02 03","text":"...","bytes":N}` | 从串口会话读缓冲取增量字节，见 §4.4 |
+| `0x04` | CMD_SERIAL_OPEN | `{"serial":"/dev/ttyS3","baud":9600,"parity":"none","dataBits":8,"stopBits":1}` | 统一信封，`data` 为打开参数与 `stty` 命令 | 打开串口并起后台读线程，见 §4.4 |
+| `0x05` | CMD_SERIAL_SEND | `{"mode":"text","payload":"AT","times":1,"interval":500}` 或 `{"stop":true}` | 统一信封，`data` 为 `{mode,bytes,times,interval,loop}` 或 `{stopped}` | 单次/循环发送或停止循环，见 §4.4 |
+| `0x07` | CMD_SERIAL_CLOSE | `{}` | 统一信封，`data` 为 `{"closed":bool}` | 停读线程与循环线程、关串口，见 §4.4 |
 | 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开 |
 
 > 旧版 `0x01`~`0x05`、`0x07`（PING / ECHO / TTS / INFO / QUIT / DEVICE_INFO）业务命令字已全部删除，
 > 本版为破坏性不兼容变更，PC 侧脚本、service 路由与前端页面须一起升级。
 > `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
-> `0x03` / `0x83` 为新增的串口读取命令字/响应字。
+> `0x03` / `0x83` 为串口读取（取会话增量）命令字/响应字；`0x04` / `0x84`、`0x05` / `0x85`、
+> `0x07` / `0x87` 为新增的串口会话打开 / 发送 / 关闭命令字/响应字。
 
-设备→PC 的通知类命令字：`0x06` ACK、`0x80` / `0x81` / `0x82` / `0x83` 数据响应帧、`0xFF` 错误帧。
+设备→PC 的通知类命令字：`0x06` ACK、`0x80` / `0x81` / `0x82` / `0x83` / `0x84` / `0x85` / `0x87` 数据响应帧、`0xFF` 错误帧。
 业务执行抛出未预期异常时回 `{"code":500,"message":"execute failed: ...","data":null}`，不会崩服务。
 
 ### 4.3 设备详细信息采集（`0x02`）
@@ -105,21 +109,31 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   摄像头特性读取失败回 `unknown`，互不影响，整帧仍为 `code:200`。
 - 仅采集整体抛异常时回 `{"code":500,"message":"device info failed: ...","data":null}`。
 
-### 4.4 串口读取（`0x03`）
+### 4.4 串口会话（`0x04` / `0x03` / `0x05` / `0x07`）
 
-- 设备端 APK 直接打开指定串口（默认 `/dev/ttyS3`）按波特率读取数据，不依赖 PC 侧
-  `adb shell`，也不依赖设备端 arm64 工具；请求字段 `serial`（必填非空）、`baud`
-  （必填，须在 13 个支持值内：1200/2400/4800/9600/19200/38400/57600/115200/230400/
-  460800/921600/1500000/3000000）、`duration`（毫秒 ≤10000）与 `maxBytes`（字节 ≤4096，
-  二者至少给一个，都给先到者停）。
-- 返回 `data` 含 `hex`（空格分隔大写、无数据为空串）、`bytes`（字节数）、`duration`
-  （实际耗时毫秒）。实现用 `stty -F <serial> <baud> raw -echo` 配串口 +
-  `RandomAccessFile(serial,"r")` 只读打开轮询读取（每轮 ≤512B、无数据 sleep 10ms）。
-- 参数错误（缺 `serial`、波特率非法、缺 `duration` 与 `maxBytes`）回
-  `{"code":400,...}`；`stty` 配置失败、`open` 被拒或读取异常回
-  `{"code":500,"message":"serial read failed: ...","data":null}`。
-- **权限依赖**：需设备已 root 且串口节点可读写；空闲串口在 `duration` 内可能读到
-  `bytes: 0`、`hex: ""`（属正常）。无真机时未做端到端验证。参数规范见 `接口文档.md`「3.4」。
+按 `串口助手-反编译说明.md` 的透传逻辑：设备端不做任何帧解析，`read()` 返回多少原样显示多少，
+发送侧把输入原样写出；Hex 与 Txt 两种展示由页面选择。设备端只保持**一个**串口会话。
+
+- `0x04 CMD_SERIAL_OPEN`：参数 `serial`（必填非空、须为纯设备路径）、`baud`（13 个支持值内：
+  1200/2400/4800/9600/19200/38400/57600/115200/230400/460800/921600/1500000/3000000）、
+  `parity`（`none` / `odd` / `even`，默认 `none`）、`dataBits`（5/6/7/8，默认 8）、
+  `stopBits`（1/2，默认 1）。先 `stty -F <serial> <baud> cs<N> [-]parenb [parodd] [-]cstopb raw -echo`
+  配串口（需 root），再 `RandomAccessFile(serial,"rw")` 打开并起后台读线程持续读；重复 OPEN 先关旧会话。
+  返回打开参数与 `stty` 命令。
+- `0x03 CMD_SERIAL_READ`：不带参数，从会话读缓冲**取增量并清空**，返回 `{"hex","text","bytes"}`；
+  `hex` 为空格分隔大写，`text` 为 UTF-8 解码文本。缓冲上限 65536 字节，溢出丢最旧字节。
+  未 OPEN 回 `400 serial session not opened`。PC 轮询此命令字实现「打开串口持续读」。
+- `0x05 CMD_SERIAL_SEND`：参数 `mode`（`text` / `hex`）、`payload`、`times`（默认 1，
+  `0` = 持续到手动停止，上限 10000）、`interval`（毫秒，默认 500，上限 60000）。`times == 1`
+  同步写出一帧；否则起设备端后台线程定时写出并立即回响应。`{"stop":true}` 停止循环（幂等）。
+  hex 载荷奇数位 / 非法字符 / 空串均回 `400`。
+- `0x07 CMD_SERIAL_CLOSE`：停读线程与循环发送线程、关串口、清缓冲，返回 `{"closed":bool}`；
+  服务 `onDestroy` 也会关闭会话。
+- 参数错误回 `{"code":400,...}`；`stty` 配置失败、`open` 被拒或线程异常回
+  `{"code":500,"message":"serial cmd failed: ...","data":null}`。
+- **权限依赖**：需设备已 root 且串口节点可读写；Android 设备的 `stty` 是否支持
+  `csN` / `parenb` / `parodd` / `cstopb` 选项、以及 `RandomAccessFile.read` 阻塞时 CLOSE 的行为
+  均未真机验证。参数规范见 `接口文档.md`「3.4」。
 
 ### 4.2 系统 TTS 朗读
 
@@ -158,7 +172,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 
 七步流程：检查设备在线（`adb get-state`）→ `adb install -r` → 发 START 广播 →
 建立 TCP 连接（USB 用 `bind(127.0.0.1, 0)` 取随机本地端口做 forward，结束时 `--remove`；
-网络直接连 `<IP>:21104`）→ 心跳 / 设备详细信息 / 串口读取参数校验 / TTS / 边界命令字测试 →
+网络直接连 `<IP>:21104`）→ 心跳 / 设备详细信息 / 串口会话四命令字参数校验 / TTS / 边界命令字测试 →
 关闭连接。
 START 广播是异步的，脚本用 10 次 × 0.3 秒的连接重试等待服务 bind 完成。
 
@@ -166,10 +180,11 @@ START 广播是异步的，脚本用 10 次 × 0.3 秒的连接重试等待服�
 **停等 ACK 重传**（T=200ms、最多共发 4 次、窗口 1）、帧序 0~255 循环、同帧序响应帧等待、
 组帧前 65535 字节拒绝。
 
-覆盖的测试项：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_DEVICE_INFO / CMD_SERIAL_READ 参数校验 /
-CMD_TTS 成功应答、TTS 缺 text / 非字符串 text / 空文本 / 未知命令、CRC 错帧丢弃且无应答。
-串口读取（`0x03`）在脚本里只覆盖参数校验（缺 `serial`、波特率非法、缺停止条件），成功读取
-依赖真机串口硬件可达、不在确定性脚本里断言。
+覆盖的测试项：组帧 65536 字节拒绝、CMD_HEARTBEAT / CMD_DEVICE_INFO / 串口会话四命令字
+（`0x03` / `0x04` / `0x05` / `0x07`）参数校验 / CMD_TTS 成功应答、TTS 缺 text /
+非字符串 text / 空文本 / 未知命令、CRC 错帧丢弃且无应答。
+串口会话在脚本里只覆盖参数校验（未 OPEN 读取/发送、`0x04` 五参数、`0x05` 载荷与次数/间隔边界、
+`0x07` / `stop` 幂等），真机打开串口、持续读与循环发送依赖硬件可达，不在确定性脚本里断言。
 成功返回退出码 `0`，失败返回 `1` 并打印 `FAIL: ...`；测试结束**不 force-stop**，服务继续监听。
 
 ---
@@ -200,13 +215,17 @@ CMD_TTS 成功应答、TTS 缺 text / 非字符串 text / 空文本 / 未知命�
   | `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
 
   `/api/probe/message` 的 `cmd` 接受 `0`~`255`（`0x00`~`0xFF`）任意整数，越界回 422；
-  已登记的 `0` / `1` / `2` / `3` 返回业务应答，其余命令字由设备端回 `0xFF CMD_ERROR`。
+  已登记的 `0` / `1` / `2` / `3` / `4` / `5` / `7` 返回业务应答（其中 `3` / `4` / `5` / `7` 为串口会话
+  四命令字），其余命令字由设备端回 `0xFF CMD_ERROR`。
   `data` 必须为 JSON 对象、数据区超 65535 字节明确失败；每次请求都发幂等 START 广播；
   同一设备按 `deviceId` 加锁串行化；`ACK_TIMEOUT=0.2`、`MAX_RETRY=3`、`RESPONSE_TIMEOUT=120.0`。
 - 前端 `DFM-frontend/src/menu/App_Probe.vue`「探针测试」页：左侧选设备，右侧测试区
-  （安装并通讯 / 快捷命令 心跳·设备详细信息 / 串口读取 / TTS 朗读 / 自定义发送：
-  自定义 0x00~0xFF 命令字与 JSON 数据区），下方展示请求、完整应答与帧 hex；
+  （安装并通讯 / 快捷命令 心跳·设备详细信息 / 串口会话：0x04 打开 / 0x03 取增量 /
+  0x05 单次·循环发送 / 0x07 关闭 / TTS 朗读 / 自定义发送：自定义 0x00~0xFF 命令字与 JSON 数据区），
+  下方展示请求、完整应答与帧 hex；
   底部「帧日志」累积记录时间 / 标题 / 设备 / 发送帧 / ACK / 响应帧三段真实字节 hex（最新在上、可滚动、可清空）。
+- `DFM-frontend/src/menu/App_Utils.vue` 串口 tab 方案 C「串口会话」：0x04 打开设备端会话后
+  页面轮询 0x03 取增量字节，按 Hex/Txt 原样追加执行日志，并支持 0x05 单次/循环发送、0x07 关闭。
 - `App_Probe.vue` 与 `App_Utils.vue` 设备项的状态圆点：绿=通讯正常、红=失败、橙=处理中、灰=未检测，
   点击圆点=安装并重新通讯；设备列表刷新时只对**新出现**的设备自动调 `/api/probe/connect`，不重复安装。
 
@@ -216,10 +235,11 @@ CMD_TTS 成功应答、TTS 缺 text / 非字符串 text / 空文本 / 未知命�
 
 明确列出，避免把验证工程当成完整控制能力：
 
-- **只实现通讯 + 系统 TTS 朗读 + 设备信息采集 + 串口读取**：root shell、输入注入、截屏、文件传输、应用管理等控制能力**尚未实现**；
+- **只实现通讯 + 系统 TTS 朗读 + 设备信息采集 + 串口会话**：root shell、输入注入、截屏、文件传输、应用管理等控制能力**尚未实现**；
   `0x02` 的设备信息列表依赖真机系统节点/服务可读性，无真机时未做端到端验证。
-  `0x03` 串口读取依赖设备已 root 且串口节点可读写，空闲串口可能读到 `bytes: 0`、`hex: ""`
-  （属正常），无真机时未做端到端验证。
+  `0x03` / `0x04` / `0x05` / `0x07` 串口会话依赖设备已 root 且串口节点可读写；设备端 `stty` 的
+  `csN` / `parenb` / `parodd` / `cstopb` 选项支持情况、读线程阻塞时 CLOSE 的行为均未真机验证。
+  设备端会话为服务级单例，页面切换设备/方案只停 PC 轮询、不自动发 `0x07`，需手动关闭。
 - **不做拆帧**：单帧数据区最多 65535 字节（长度字段 2 字节、低字节在前），超长判失败不截断，不支持自动分片。
 - **不做多帧并发**：连接内串行（窗口 1）；TTS 朗读期间同步等待 `onDone`，最长占用该连接线程 60 秒，
   期间不处理该连接上的其它请求（其它连接与 `accept` 不受影响）。
