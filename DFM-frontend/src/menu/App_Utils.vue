@@ -4231,8 +4231,6 @@ const readSerialData = async (count: number, token: number): Promise<boolean | n
     const shown = serialReadView.value === 'text' ? (rd.text ?? '') : (rd.hex ?? '')
     appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} [Read][${serialReadView.value === 'text' ? 'Txt' : 'Hex'}] ${shown}`)
   }
-  serialMessage.value = `持续读取中（第 ${count} 次：${bytes} 字节）`
-  serialMessageType.value = 'ok'
   return true
 }
 
