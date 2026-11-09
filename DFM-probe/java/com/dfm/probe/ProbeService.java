@@ -29,6 +29,7 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -58,6 +59,7 @@ public class ProbeService extends Service {
     private static final int CMD_HEARTBEAT = 0x00;
     private static final int CMD_TTS = 0x01;
     private static final int CMD_DEVICE_INFO = 0x02;
+    private static final int CMD_SERIAL_READ = 0x03;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -266,7 +268,7 @@ public class ProbeService extends Service {
             lastSeq = seq;
             // 先回 ACK 确认帧已完整收到，避免发送端 200ms 超时重传（业务可能耗时数十秒）
             sendFrame(out, seq, CMD_ACK, new byte[0]);
-            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS && cmd != CMD_DEVICE_INFO;
+            boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS && cmd != CMD_DEVICE_INFO && cmd != CMD_SERIAL_READ;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -321,6 +323,17 @@ public class ProbeService extends Service {
                 return fail(500, "device info failed: " + e);
             }
         }
+        if (cmd == CMD_SERIAL_READ) {
+            try {
+                return ok(serialRead(req));
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "serial read param error: " + e);
+                return fail(400, e.getMessage());
+            } catch (Exception e) {
+                Log.w(TAG, "serial read failed: " + e);
+                return fail(500, "serial read failed: " + e);
+            }
+        }
         return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
     }
 
@@ -358,6 +371,103 @@ public class ProbeService extends Service {
         data.put("cameras", cameras());
         data.put("peripherals", peripherals());
         return data;
+    }
+
+    /** CMD_SERIAL_READ (0x03)：打开串口按波特率读取数据，按时长或字节数停止，返回 hex 字符串。 */
+    private JSONObject serialRead(JSONObject req) throws Exception {
+        String serial = req.optString("serial", null);
+        if (serial == null || serial.trim().isEmpty()) {
+            throw new IllegalArgumentException("serial is required");
+        }
+        serial = serial.trim();
+        int baud = req.optInt("baud", 0);
+        if (!isValidBaud(baud)) {
+            throw new IllegalArgumentException("baud must be one of: 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000, 3000000");
+        }
+        int duration = req.optInt("duration", 0);
+        int maxBytes = req.optInt("maxBytes", 0);
+        if (duration <= 0 && maxBytes <= 0) {
+            throw new IllegalArgumentException("duration or maxBytes is required");
+        }
+        if (duration > 10000) {
+            throw new IllegalArgumentException("duration must be <= 10000ms");
+        }
+        if (maxBytes > 4096) {
+            throw new IllegalArgumentException("maxBytes must be <= 4096");
+        }
+        File port = new File(serial);
+        if (!port.exists()) {
+            throw new IllegalArgumentException("serial port not found: " + serial);
+        }
+        String sttyCmd = "stty -F " + serial + " " + baud + " raw -echo";
+        Process sttyProc = Runtime.getRuntime().exec(sttyCmd);
+        int sttyExit = sttyProc.waitFor();
+        sttyProc.destroy();
+        if (sttyExit != 0) {
+            BufferedReader errReader = new BufferedReader(
+                    new InputStreamReader(sttyProc.getErrorStream(), UTF8));
+            String errLine = errReader.readLine();
+            throw new Exception("stty failed (exit " + sttyExit + "): " +
+                    (errLine == null ? "unknown error" : errLine));
+        }
+        RandomAccessFile raf = new RandomAccessFile(serial, "r");
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        long startMs = System.currentTimeMillis();
+        byte[] chunk = new byte[512];
+        int total = 0;
+        try {
+            while (true) {
+                long now = System.currentTimeMillis();
+                long elapsed = now - startMs;
+                if (duration > 0 && elapsed >= duration) {
+                    break;
+                }
+                if (maxBytes > 0 && total >= maxBytes) {
+                    break;
+                }
+                int toRead = chunk.length;
+                if (maxBytes > 0 && total + toRead > maxBytes) {
+                    toRead = maxBytes - total;
+                }
+                int n = raf.read(chunk, 0, toRead);
+                if (n < 0) {
+                    break;
+                }
+                if (n > 0) {
+                    buf.write(chunk, 0, n);
+                    total += n;
+                } else {
+                    Thread.sleep(10);
+                }
+            }
+        } finally {
+            try {
+                raf.close();
+            } catch (Exception ignored) {
+            }
+        }
+        long actualDuration = System.currentTimeMillis() - startMs;
+        byte[] bytes = buf.toByteArray();
+        StringBuilder hexBuilder = new StringBuilder();
+        for (int i = 0; i < bytes.length; i++) {
+            if (i > 0) {
+                hexBuilder.append(' ');
+            }
+            hexBuilder.append(String.format("%02X", bytes[i]));
+        }
+        JSONObject data = new JSONObject();
+        data.put("hex", hexBuilder.toString());
+        data.put("bytes", bytes.length);
+        data.put("duration", actualDuration);
+        return data;
+    }
+
+    /** 检查波特率是否在支持的列表中（对齐 serial-writer 的 baud_speed）。 */
+    private static boolean isValidBaud(int baud) {
+        return baud == 1200 || baud == 2400 || baud == 4800 || baud == 9600 ||
+                baud == 19200 || baud == 38400 || baud == 57600 || baud == 115200 ||
+                baud == 230400 || baud == 460800 || baud == 921600 ||
+                baud == 1500000 || baud == 3000000;
     }
 
     /** 读取单个 getprop；不可读时返回 Unknown，不抛异常。 */
