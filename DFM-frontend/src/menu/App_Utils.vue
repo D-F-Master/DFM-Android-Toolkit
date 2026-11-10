@@ -1832,30 +1832,45 @@ const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
 const scriptExporting = ref(false)
 
 const exportScriptZip = async () => {
-  if (scriptSteps.value.length === 0) {
-    showMessage('没有步骤可导出，请先录制或导入脚本', '提示')
-    return
-  }
-  showPrompt('请输入要导出的脚本名称（需已保存过）', async (name?: string) => {
-    if (!name || !name.trim()) return
-    scriptExporting.value = true
-    try {
-      const response = await axios.post(`${API_BASE.value}/api/device/script/export-zip`, { name: name.trim() })
-      if (response.data.code === 200) {
-        const d = response.data.data
-        const parts = [`脚本「${d.path}」导出成功`, `大小 ${formatBytes(d.size)}`]
-        if (d.apkNames?.length) parts.push(`含 APK：${d.apkNames.join('、')}`)
-        if (d.templateNames?.length) parts.push(`含模板图：${d.templateNames.join('、')}`)
-        showNotification(parts.join('\n'), 'success')
-      } else {
-        showNotification('导出失败: ' + (response.data.message || '未知错误'), 'error')
-      }
-    } catch (error: any) {
-      showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
-    } finally {
-      scriptExporting.value = false
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
+    if (response.data.code !== 200) {
+      showNotification('获取脚本列表失败: ' + (response.data.message || '未知错误'), 'error')
+      return
     }
-  }, '', '导出脚本包')
+    const scripts = response.data.data || []
+    // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
+    const items = scripts
+      .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
+      .map((s: any) => ({
+        value: s.name,
+        label: s.name,
+        desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+      }))
+
+    showList(items, async (name?: string) => {
+      if (!name) return
+      scriptExporting.value = true
+      try {
+        const exported = await axios.post(`${API_BASE.value}/api/device/script/export-zip`, { name })
+        if (exported.data.code === 200) {
+          const d = exported.data.data
+          const parts = [`脚本「${d.path}」导出成功`, `大小 ${formatBytes(d.size)}`]
+          if (d.apkNames?.length) parts.push(`含 APK：${d.apkNames.join('、')}`)
+          if (d.templateNames?.length) parts.push(`含模板图：${d.templateNames.join('、')}`)
+          showNotification(parts.join('\n'), 'success')
+        } else {
+          showNotification('导出失败: ' + (exported.data.message || '未知错误'), 'error')
+        }
+      } catch (error: any) {
+        showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
+      } finally {
+        scriptExporting.value = false
+      }
+    }, '选择要导出的脚本', '还没有保存过脚本', '导出')
+  } catch (error: any) {
+    showNotification('获取脚本列表失败: ' + error.message, 'error')
+  }
 }
 
 // 从导出 zip 包一键导入：脚本 + 资源一次到位
