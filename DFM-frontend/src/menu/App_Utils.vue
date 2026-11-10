@@ -559,6 +559,19 @@ let scriptPreviewObserver: ResizeObserver | null = null
 const scriptStreaming = ref(false)
 const scriptWsStatus = ref('未连接')
 const scriptRecording = ref(false)
+// 画面校验：录制中开启后，每次在画面上的操作都追加一个等待组件步骤
+const scriptVerify = ref(false)
+const SCRIPT_VERIFY_THRESHOLD = 0.6
+const SCRIPT_VERIFY_CROP = 200
+let scriptVerifySeq = 0
+let scriptVerifyPending: string | null = null
+let scriptVerifyQueue: Promise<void> = Promise.resolve()
+// 录制结束（含屏幕流断开）时关掉校验，避免下次录制沿用上次的开关状态
+watch(scriptRecording, (on) => {
+  if (on) return
+  scriptVerify.value = false
+  scriptVerifyPending = null
+})
 const scriptSteps = ref<Array<{
   type: string;
   x1?: number; y1?: number;
@@ -1049,6 +1062,64 @@ const finishCropRegion = async () => {
   }
 }
 
+// ---------- 画面校验（录制中每次操作自动截图创建等待组件） ----------
+
+// 按下时把点击点周围的画面裁下来暂存：等手势步骤生成后再上传，保证用的是「点击时的画面」
+const captureVerifyFrame = (p: { x: number; y: number }) => {
+  scriptVerifyPending = null
+  const frame = scriptFrameCanvas
+  if (!frame || !frame.width || !frame.height || !scriptRecording.value || !scriptVerify.value) return
+  const w = Math.min(SCRIPT_VERIFY_CROP, frame.width)
+  const h = Math.min(SCRIPT_VERIFY_CROP, frame.height)
+  const left = Math.max(0, Math.min(frame.width - w, Math.round(p.x - w / 2)))
+  const top = Math.max(0, Math.min(frame.height - h, Math.round(p.y - h / 2)))
+  const crop = document.createElement('canvas')
+  crop.width = w
+  crop.height = h
+  crop.getContext('2d')!.drawImage(frame, left, top, w, h, 0, 0, w, h)
+  scriptVerifyPending = crop.toDataURL('image/png')
+}
+
+// 上传模板并把等待组件插到对应手势步骤后面；串行执行，保证快速连点时顺序不乱
+const flushScriptVerify = (gesture: any) => {
+  const image = scriptVerifyPending
+  scriptVerifyPending = null
+  if (!image) return
+  const name = `verify_${Date.now()}_${++scriptVerifySeq}`
+  scriptVerifyQueue = scriptVerifyQueue.then(async () => {
+    try {
+      const response = await axios.post(`${API_BASE.value}/api/device/script/save-template`, { name, image })
+      if (response.data.code === 200) {
+        const d = response.data.data
+        // 手势步骤若已被删除就不补孤儿步骤；否则插在它后面，保证「手势 → 等待组件」紧邻
+        const i = scriptSteps.value.indexOf(gesture)
+        if (i < 0) return
+        const step = {
+          type: 'waitFor',
+          template: d.name,
+          threshold: SCRIPT_VERIFY_THRESHOLD,
+          timeout: 15,
+          interval: 500,
+          count: 1,
+        }
+        scriptSteps.value.splice(i + 1, 0, step)
+        showNotification(`已记录第 ${i + 2} 步：${scriptStepLabel(step)}`, 'info')
+        fetchScriptTemplates()
+      } else {
+        showNotification('画面校验模板保存失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+    } catch (error: any) {
+      showNotification('画面校验模板保存失败: ' + error.message, 'error')
+    }
+  }).catch(() => {})
+}
+
+// 手势步骤照常记录，随后在它后面补一个画面校验的等待组件步骤
+const addRecordedStep = (step: any) => {
+  addScriptStep(step)
+  flushScriptVerify(scriptSteps.value[scriptSteps.value.length - 1])
+}
+
 // ---------- 屏幕流（复用 /ws/remote，单设备） ----------
 
 const scriptHandleBinary = (buf: ArrayBuffer) => {
@@ -1186,6 +1257,8 @@ const stopScriptStream = () => {
     scriptDecoder = null
   }
   scriptCodecConfig = null
+  // 丢弃旧画面缓存，避免下个设备首帧未到时截到上一个设备的画面
+  scriptFrameCanvas = null
   scriptStreaming.value = false
   scriptWsStatus.value = '未连接'
   scriptRecording.value = false
@@ -1449,6 +1522,8 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
     scriptSendTouch(0, p)
     return
   }
+  // 画面校验：先存下点击瞬间的画面，再注入触摸（避免新帧到达后截到操作后的画面）
+  captureVerifyFrame(p)
   // 录制模式：事件照常注入设备（记录的同时真实生效），并开始判定手势类型
   try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
   scriptRemotePressing = true
@@ -1460,7 +1535,7 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   scriptLongPressTimer = setTimeout(() => {
     if (scriptPointerActive && !scriptMoved) {
       scriptPointerActive = false
-      addScriptStep({
+      addRecordedStep({
         type: 'longpress',
         x1: p.x, y1: p.y,
         duration: SCRIPT_LONGPRESS_MS + 400,
@@ -1533,7 +1608,7 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
   const elapsed = Date.now() - scriptPressStart.time
   if (scriptMoved) {
     // 拖动 → 滑动步骤
-    addScriptStep({
+    addRecordedStep({
       type: 'swipe',
       x1: scriptPressStart.x, y1: scriptPressStart.y,
       x2: p.x, y2: p.y,
@@ -1541,7 +1616,7 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
     })
   } else if (elapsed < SCRIPT_LONGPRESS_MS) {
     // 快速点按 → 点击步骤
-    addScriptStep({
+    addRecordedStep({
       type: 'tap',
       x1: scriptPressStart.x, y1: scriptPressStart.y,
       ...scriptOpConfig.value.tap,
@@ -1552,6 +1627,8 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
 
 // 指针被中断（取消/离开窗口）：静默结束拖拽；框选中丢弃当前框但保留模式
 const scriptOnPointerCancel = () => {
+  // 手势被中断，丢弃这次按下的截图，避免下一步误用
+  scriptVerifyPending = null
   if (scriptCropMode.value) {
     scriptCropRegion.value = null
     scriptRedrawMarkers()
@@ -6659,6 +6736,31 @@ button.batch-remote-tile-tag:disabled.active {
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
+/* 录制中：按钮收窄一半，右侧留出画面校验开关 */
+.script-record-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.script-record-row .script-record-btn {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+.script-verify-switch {
+  flex: 0 0 calc(50% - 4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: #555;
+  white-space: nowrap;
+}
+
 .script-config-row {
   display: flex;
   align-items: center;
@@ -8440,9 +8542,15 @@ button.batch-remote-tile-tag:disabled.active {
                   <div class="script-side-panel" :class="{ 'two-col': scriptSideTwoCol }">
                     <!-- 上：录制控制 + 添加设备动作步骤 -->
                     <div class="script-section">
-                      <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
-                        {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
-                      </button>
+                      <div class="script-record-row">
+                        <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
+                          {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
+                        </button>
+                        <div v-if="scriptRecording" class="script-verify-switch">
+                          <span>画面校验</span>
+                          <el-switch v-model="scriptVerify" />
+                        </div>
+                      </div>
                       <div class="script-add-steps">
                         <span class="script-add-label">添加步骤</span>
                         <button
