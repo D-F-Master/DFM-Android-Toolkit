@@ -552,7 +552,9 @@ const stopBatchRemote = () => {
 
 const scriptCanvasRef = ref<HTMLCanvasElement | null>(null)
 const scriptScreenBodyRef = ref<HTMLElement | null>(null)
+const scriptLayoutRef = ref<HTMLElement | null>(null)
 const scriptPreviewWidth = ref(0)
+const scriptSideTwoCol = ref(false)
 let scriptPreviewObserver: ResizeObserver | null = null
 const scriptStreaming = ref(false)
 const scriptWsStatus = ref('未连接')
@@ -591,6 +593,17 @@ let scriptDecoder: VideoDecoder | null = null
 let scriptCodecConfig: Uint8Array | null = null
 let scriptMeta = { width: 1080, height: 2340 }
 
+// 右侧留白够放两列时，控制区改成左右两列并占满留白；不足则保持一列 300px。
+// 620px 是两列下限：每列不窄于现在一列时的 300px（含 10px 间距），沿用原 1600px 媒体查询的取值。
+const syncScriptSideLayout = () => {
+  const layout = scriptLayoutRef.value
+  if (!layout || layout.clientWidth <= 0 || scriptPreviewWidth.value <= 0) return
+  // -12 对应 .script-layout 的 gap；预览面板宽度含左右各 1px 边框
+  const free = layout.clientWidth - scriptPreviewWidth.value - 12
+  const twoCol = free >= 620
+  if (scriptSideTwoCol.value !== twoCol) scriptSideTwoCol.value = twoCol
+}
+
 // 竖屏时画面被高度限制而变窄，面板若还占满剩余宽度，左右就会空出大片深色底（黑框）。
 // 按「画面区高度 × 画面宽高比」给面板定宽，让它刚好包住画面；+2 补面板左右各 1px 边框。
 const syncScriptPreviewWidth = () => {
@@ -598,6 +611,7 @@ const syncScriptPreviewWidth = () => {
   if (!body || body.clientHeight <= 0 || scriptMeta.height <= 0) return
   const w = Math.ceil(body.clientHeight * scriptMeta.width / scriptMeta.height) + 2
   if (scriptPreviewWidth.value !== w) scriptPreviewWidth.value = w
+  syncScriptSideLayout()
 }
 
 // 画面尺寸变化（切设备 / 横竖屏切换）时同步刷新面板宽度；逐帧调用靠 early return 避免无谓重排
@@ -617,6 +631,8 @@ watch(activeTab, async (tab) => {
   if (scriptScreenBodyRef.value) {
     scriptPreviewObserver = new ResizeObserver(syncScriptPreviewWidth)
     scriptPreviewObserver.observe(scriptScreenBodyRef.value)
+    // 窗口只变宽不变高时画面区尺寸不变，需额外观察整行布局才能刷新两列状态
+    if (scriptLayoutRef.value) scriptPreviewObserver.observe(scriptLayoutRef.value)
   }
 }, { immediate: true })
 
@@ -6599,18 +6615,18 @@ button.batch-remote-tile-tag:disabled.active {
   min-height: 0;
 }
 
-/* 页面够宽时：录制功能区与脚本步骤区左右两列 */
-@media (min-width: 1600px) {
-  .script-side-panel {
-    width: 620px;
-    flex-direction: row;
-    align-items: stretch;
-  }
+/* 竖屏等场景下预览面板收窄，右侧留白足够时：录制功能区与脚本步骤区左右两列并占满留白。
+   触发由 JS 按「布局宽 - 预览宽 - gap」判断，横屏 / 窄窗口自动退回一列 */
+.script-side-panel.two-col {
+  width: auto;
+  flex: 1;
+  flex-direction: row;
+  align-items: stretch;
+}
 
-  .script-side-panel .script-section {
-    flex: 1;
-    min-width: 0;
-  }
+.script-side-panel.two-col .script-section {
+  flex: 1;
+  min-width: 0;
 }
 
 .script-section {
@@ -8383,7 +8399,7 @@ button.batch-remote-tile-tag:disabled.active {
               </div>
 
               <div v-if="activeTab === 'script'" class="keys-page script-page">
-                <div class="script-layout">
+                <div class="script-layout" ref="scriptLayoutRef">
                   <!-- 左：屏幕流 -->
                   <div class="script-screen-panel" :style="{ width: scriptPreviewWidth ? scriptPreviewWidth + 'px' : '100%' }">
                     <div class="script-screen-header">
@@ -8421,7 +8437,7 @@ button.batch-remote-tile-tag:disabled.active {
                   </div>
 
                   <!-- 右：控制区 -->
-                  <div class="script-side-panel">
+                  <div class="script-side-panel" :class="{ 'two-col': scriptSideTwoCol }">
                     <!-- 上：录制控制 + 添加设备动作步骤 -->
                     <div class="script-section">
                       <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
