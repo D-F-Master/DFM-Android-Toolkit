@@ -777,8 +777,33 @@ const fetchScriptTemplates = async () => {
 }
 
 // 等待组件步骤展开时，预览当前已选中的模板图
-const scriptTemplatePreviewUrl = (name: string) =>
-  `${API_BASE.value}/api/device/script/template/${encodeURIComponent(name || '')}`
+const scriptTemplatePreview = ref('')
+let scriptTemplatePreviewSeq = 0
+
+const loadScriptTemplatePreview = async (name: string) => {
+  const seq = ++scriptTemplatePreviewSeq
+  scriptTemplatePreview.value = ''
+  if (!name) return
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/script/get-template`, { name })
+    // 只让最后一次请求写入，避免模板快速切换时旧响应覆盖新图
+    if (seq === scriptTemplatePreviewSeq) {
+      scriptTemplatePreview.value = res.data.code === 200 ? (res.data.data || '') : ''
+    }
+  } catch {
+    if (seq === scriptTemplatePreviewSeq) scriptTemplatePreview.value = ''
+  }
+}
+
+watch(
+  () => {
+    const idx = scriptEditingStep.value
+    if (idx === null || scriptSteps.value[idx]?.type !== 'waitFor') return ''
+    return scriptSteps.value[idx]?.template || ''
+  },
+  loadScriptTemplatePreview,
+  { immediate: true },
+)
 
 const onScriptTemplatePreviewError = (e: Event) => {
   const img = e.target as HTMLImageElement
@@ -8667,11 +8692,11 @@ button.batch-remote-tile-tag:disabled.active {
                                 <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
                               </el-select>
                             </div>
-                            <div v-if="step.type === 'waitFor' && step.template" class="script-config-row script-template-preview-row">
+                            <div v-if="step.type === 'waitFor' && step.template && scriptTemplatePreview" class="script-config-row script-template-preview-row">
                               <span>模板预览</span>
                               <img
-                                :key="step.template"
-                                :src="scriptTemplatePreviewUrl(step.template)"
+                                :key="scriptTemplatePreview"
+                                :src="scriptTemplatePreview"
                                 class="script-template-preview"
                                 alt="模板预览"
                                 @error="onScriptTemplatePreviewError"
