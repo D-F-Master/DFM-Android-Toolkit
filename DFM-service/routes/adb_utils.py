@@ -288,10 +288,8 @@ def get_devices():
             line = lines[i].strip()
             if line:
                 parts = line.split()
-                # 只保留在线设备，offline / unauthorized 等状态不进设备列表
-                if len(parts) < 2 or parts[1] != 'device':
-                    continue
                 device_id = parts[0]
+                status = parts[1] if len(parts) > 1 else ''
                 device_info = {}
                 
                 # 解析设备信息
@@ -300,7 +298,7 @@ def get_devices():
                         key, value = parts[j].split(':', 1)
                         device_info[key] = value
                 
-                devices.append({"deviceId": device_id, **device_info})
+                devices.append({"deviceId": device_id, **device_info, "status": status})
         
         return {"code": 200, "message": "success", "data": devices}
     else:
