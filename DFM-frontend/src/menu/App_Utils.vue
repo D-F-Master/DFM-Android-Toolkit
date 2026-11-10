@@ -776,40 +776,6 @@ const fetchScriptTemplates = async () => {
   }
 }
 
-// 等待组件步骤展开时，预览当前已选中的模板图
-const scriptTemplatePreview = ref('')
-let scriptTemplatePreviewSeq = 0
-
-const loadScriptTemplatePreview = async (name: string) => {
-  const seq = ++scriptTemplatePreviewSeq
-  scriptTemplatePreview.value = ''
-  if (!name) return
-  try {
-    const res = await axios.post(`${API_BASE.value}/api/device/script/get-template`, { name })
-    // 只让最后一次请求写入，避免模板快速切换时旧响应覆盖新图
-    if (seq === scriptTemplatePreviewSeq) {
-      scriptTemplatePreview.value = res.data.code === 200 ? (res.data.data || '') : ''
-    }
-  } catch {
-    if (seq === scriptTemplatePreviewSeq) scriptTemplatePreview.value = ''
-  }
-}
-
-watch(
-  () => {
-    const idx = scriptEditingStep.value
-    if (idx === null || scriptSteps.value[idx]?.type !== 'waitFor') return ''
-    return scriptSteps.value[idx]?.template || ''
-  },
-  loadScriptTemplatePreview,
-  { immediate: true },
-)
-
-const onScriptTemplatePreviewError = (e: Event) => {
-  const img = e.target as HTMLImageElement
-  if (img) img.style.visibility = 'hidden'
-}
-
 // 设备动作步骤的默认参数
 const scriptAdbStepDefaults = (type: string): Record<string, any> => {
   switch (type) {
@@ -1090,7 +1056,7 @@ const finishCropRegion = async () => {
       } finally {
         scriptRedrawMarkers()
       }
-    }, `template_${Date.now() % 10000}`, '保存模板')
+    }, `template_${Date.now() % 10000}`, '保存模板', dataUrl)
   } catch (error: any) {
     showNotification('裁剪画面失败: ' + error.message, 'error')
     scriptRedrawMarkers()
@@ -2101,6 +2067,7 @@ const batchShellCommand = async () => {
   // 使用 prompt 弹窗输入命令
   modalType.value = 'prompt'
   modalTitle.value = '批量 Shell 命令'
+  modalImageSrc.value = ''
   modalMessage.value = '请输入要执行的 shell 命令'
   modalPlaceholder.value = '例如: ls -la /sdcard'
   modalConfirmText.value = '执行'
@@ -2254,6 +2221,7 @@ const modalType = ref('message') // message, confirm, prompt, list
 const modalTitle = ref('')
 const modalMessage = ref('')
 const modalPlaceholder = ref('')
+const modalImageSrc = ref('')
 const modalConfirmText = ref('确定')
 const modalVariant = ref<'success' | 'error' | 'info'>('success')
 const modalProgress = ref(false)
@@ -3442,11 +3410,12 @@ const showConfirm = (message: string, callback: Function, title: string = '确�
   modalCallback.value = callback
 };
 
-const showPrompt = (message: string, callback: Function, placeholder: string = '', title: string = '输入') => {
+const showPrompt = (message: string, callback: Function, placeholder: string = '', title: string = '输入', imageSrc: string = '') => {
   modalType.value = 'prompt'
   modalTitle.value = title
   modalMessage.value = message
   modalPlaceholder.value = placeholder
+  modalImageSrc.value = imageSrc
   modalVisible.value = true
   modalCallback.value = callback
 };
@@ -6824,20 +6793,6 @@ button.batch-remote-tile-tag:disabled.active {
   margin-bottom: 0;
 }
 
-/* 等待组件步骤：已选模板图预览 */
-.script-template-preview-row {
-  align-items: flex-start;
-}
-
-.script-template-preview {
-  max-width: 68%;
-  max-height: 120px;
-  border: 1px solid #dfe3e8;
-  border-radius: 6px;
-  background: #fff;
-  object-fit: contain;
-}
-
 .script-config-input {
   width: 90px;
   padding: 4px 8px;
@@ -8692,16 +8647,6 @@ button.batch-remote-tile-tag:disabled.active {
                                 <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
                               </el-select>
                             </div>
-                            <div v-if="step.type === 'waitFor' && step.template && scriptTemplatePreview" class="script-config-row script-template-preview-row">
-                              <span>模板预览</span>
-                              <img
-                                :key="scriptTemplatePreview"
-                                :src="scriptTemplatePreview"
-                                class="script-template-preview"
-                                alt="模板预览"
-                                @error="onScriptTemplatePreviewError"
-                              />
-                            </div>
                             <div v-if="step.type === 'waitFor'" class="script-config-row">
                               <span>匹配阈值</span>
                               <el-input-number v-model="step.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
@@ -9364,6 +9309,7 @@ button.batch-remote-tile-tag:disabled.active {
       :title="modalTitle"
       :message="modalMessage"
       :placeholder="modalPlaceholder"
+      :image-src="modalImageSrc"
       :confirm-text="modalConfirmText"
       :variant="modalVariant"
       :progress="modalProgress"

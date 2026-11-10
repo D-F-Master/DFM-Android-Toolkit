@@ -1286,17 +1286,6 @@ def save_template(request: TemplateUploadBase64Request):
         return {"code": 500, "message": f"保存模板失败: {str(e)}", "data": None}
 
 
-@router.post("/device/script/get-template")
-def get_template_image(request: TemplateNameRequest):
-    """返回单张模板图的 base64，供等待组件步骤展开时预览已选中的图片"""
-    filename = _safe_name(os.path.splitext(request.name)[0]) + ".png"
-    path = TEMPLATES_DIR / filename
-    if not path.is_file():
-        return {"code": 404, "message": "模板图不存在", "data": None}
-    data = base64.b64encode(path.read_bytes()).decode()
-    return {"code": 200, "message": "success", "data": "data:image/png;base64," + data}
-
-
 @router.post("/device/script/list-templates")
 def list_templates():
     """列出所有模板图（名称 + 尺寸）"""
