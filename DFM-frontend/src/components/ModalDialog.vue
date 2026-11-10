@@ -7,10 +7,6 @@
       </div>
       <div class="modal-body">
         <p v-if="type === 'message' || type === 'confirm' || type === 'notification'">{{ message }}</p>
-        <!-- 框选模板时预览刚裁出的图片 -->
-        <div v-if="type === 'prompt' && imageSrc" class="prompt-image-preview">
-          <img :src="imageSrc" alt="模板预览" />
-        </div>
         <!-- 进度通知：不定进度动画，用于 adb 这类拿不到百分比的长耗时操作 -->
         <div v-if="type === 'notification' && progress" class="notification-progress">
           <div class="notification-progress-track">
@@ -97,10 +93,6 @@ const props = defineProps({
     default: ''
   },
   message: {
-    type: String,
-    default: ''
-  },
-  imageSrc: {
     type: String,
     default: ''
   },
@@ -272,20 +264,6 @@ watch(
   margin: 0;
   color: #333;
   line-height: 1.5;
-}
-
-/* 框选模板时预览刚裁出的图片 */
-.prompt-image-preview {
-  margin-bottom: 12px;
-  text-align: center;
-}
-
-.prompt-image-preview img {
-  max-width: 100%;
-  max-height: 200px;
-  border: 1px solid #e8e8e8;
-  border-radius: 4px;
-  object-fit: contain;
 }
 
 .input-field {
