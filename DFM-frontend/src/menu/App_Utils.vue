@@ -589,6 +589,13 @@ const scriptSteps = ref<Array<{
   template?: string;
   threshold?: number;
   timeout?: number;
+  kind?: string;
+  negate?: boolean;
+  onTrue?: { action: string; target?: number };
+  onFalse?: { action: string; target?: number };
+  command?: string;
+  expected?: string;
+  targetTime?: string;
   interval: number;
   count: number;
 }>>([])
@@ -672,6 +679,14 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
   if (step.type === 'reboot') return '重启设备'
   if (step.type === 'waitFor') return `等待组件 ${step.template || '（未选择模板）'}（阈值${step.threshold ?? 0.85}）`
+  if (step.type === 'condition') {
+    const prefix = step.negate ? '判断非' : '判断'
+    if (step.kind === 'appInstalled') return `${prefix} 应用已安装 ${step.packageName || '（未填包名）'}`
+    if (step.kind === 'template') return `${prefix} 组件出现 ${step.template || '（未选模板）'}`
+    if (step.kind === 'shell') return `${prefix} Shell 输出含「${step.expected || '（未填）'}」`
+    if (step.kind === 'time') return `${prefix} 时刻到 ${step.targetTime || '（未填）'}`
+    return `${prefix} 条件（未设置）`
+  }
   return step.type
 }
 
@@ -721,6 +736,51 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'volume', label: '音量控制', icon: '🔊' },
   { type: 'reboot', label: '重启设备', icon: '🔄' },
 ]
+
+// 判断步骤：四种条件与分支动作
+const SCRIPT_CONDITION_KINDS: Array<{ kind: string; label: string }> = [
+  { kind: 'appInstalled', label: '应用已安装' },
+  { kind: 'template', label: '组件出现' },
+  { kind: 'shell', label: 'Shell 输出包含' },
+  { kind: 'time', label: '设备时刻已到' },
+]
+const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
+  { action: 'continue', label: '继续下一步' },
+  { action: 'goto', label: '跳到第 N 步' },
+  { action: 'stop', label: '终止脚本' },
+  { action: 'fail', label: '判定失败' },
+]
+
+const scriptConditionDefaults = (kind: string): Record<string, any> => {
+  switch (kind) {
+    case 'appInstalled': return { packageName: '' }
+    case 'template': return { template: '', threshold: 0.85 }
+    case 'shell': return { command: '', expected: '' }
+    case 'time': return { targetTime: '09:00', timeout: 3600 }
+    default: return {}
+  }
+}
+
+// 切换判断类型时清掉上一种类型的参数，避免脏字段落盘
+const onScriptConditionKindChange = (step: any, kind: string) => {
+  for (const field of ['packageName', 'template', 'threshold', 'command', 'expected', 'targetTime', 'timeout']) {
+    delete step[field]
+  }
+  Object.assign(step, scriptConditionDefaults(kind))
+  if (kind === 'template') fetchScriptTemplates()
+}
+
+// 只允许跳到本步骤之后的步骤（target 是 1-based 步骤序号）
+const scriptGotoTargets = (idx: number): number[] => {
+  const targets: number[] = []
+  for (let n = idx + 2; n <= scriptSteps.value.length; n++) targets.push(n)
+  return targets
+}
+
+const onScriptBranchActionChange = (branch: any, idx: number) => {
+  if (branch.action === 'goto') branch.target = idx + 2
+  else delete branch.target
+}
 
 // 已上传的 APK 列表（安装APK步骤的下拉数据源）
 const scriptApkOptions = ref<Array<{ name: string; size: number }>>([])
@@ -867,7 +927,7 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
 
   scriptSteps.value.forEach((step, idx) => {
     // 输入步骤与设备动作步骤没有坐标，画面上不画标记（序号也就不占位）
-    if (step.type === 'input' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) return
+    if (step.type === 'input' || step.type === 'condition' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) return
     const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
     const x = step.x1
     const y = step.y1
@@ -996,7 +1056,7 @@ const scriptHitTest = (x: number, y: number): { stepIndex: number; part: 'start'
   for (let idx = scriptSteps.value.length - 1; idx >= 0; idx--) {
     const step = scriptSteps.value[idx]
     // 输入步骤与设备动作步骤没有坐标，不参与命中
-    if (step.type === 'input' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) continue
+    if (step.type === 'input' || step.type === 'condition' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) continue
     const d1 = Math.hypot(x - step.x1, y - step.y1)
     if (d1 <= tolerance) return { stepIndex: idx, part: 'start' }
     if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
@@ -1697,6 +1757,20 @@ const addScriptAdbStep = (type: string) => {
     type,
     ...scriptAdbStepDefaults(type),
     interval: 500,
+    count: 1,
+  })
+}
+
+// 添加判断步骤（单次求值 + 真/假分支）
+const addScriptConditionStep = () => {
+  addScriptStep({
+    type: 'condition',
+    kind: 'appInstalled',
+    ...scriptConditionDefaults('appInstalled'),
+    negate: false,
+    onTrue: { action: 'continue' },
+    onFalse: { action: 'continue' },
+    interval: 1000,
     count: 1,
   })
 }
@@ -8632,6 +8706,12 @@ button.batch-remote-tile-tag:disabled.active {
                           title="开启后在画面上框住组件，松开保存为模板并添加等待步骤"
                           @click="toggleCropMode"
                         >{{ scriptCropMode ? '✕ 取消框选' : '👁 等待组件(框选)' }}</button>
+                        <button
+                          class="script-add-btn"
+                          :disabled="scriptRunning"
+                          title="按应用/组件/Shell 输出/设备时刻判断，并按成立与否跳转"
+                          @click="addScriptConditionStep"
+                        >🧭 判断步骤</button>
                       </div>
                     </div>
 
@@ -8710,6 +8790,85 @@ button.batch-remote-tile-tag:disabled.active {
                               <span>超时(秒)</span>
                               <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="600" controls-position="right" />
                             </div>
+                            <!-- 判断步骤的专属参数 -->
+                            <template v-if="step.type === 'condition'">
+                              <div class="script-config-row">
+                                <span>判断类型</span>
+                                <el-select v-model="step.kind" class="ep-config-select" @change="onScriptConditionKindChange(step, $event)">
+                                  <el-option v-for="k in SCRIPT_CONDITION_KINDS" :key="k.kind" :value="k.kind" :label="k.label" />
+                                </el-select>
+                              </div>
+                              <div class="script-config-row">
+                                <span>条件取反</span>
+                                <el-switch v-model="step.negate" />
+                              </div>
+                              <div v-if="step.kind === 'appInstalled'" class="script-config-row">
+                                <span>应用包名</span>
+                                <el-input v-model="step.packageName" class="ep-config-input" placeholder="com.example.app" />
+                              </div>
+                              <div v-if="step.kind === 'template'" class="script-config-row">
+                                <span>模板</span>
+                                <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
+                                  <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.kind === 'template'" class="script-config-row">
+                                <span>匹配阈值</span>
+                                <el-input-number v-model="step.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
+                              </div>
+                              <div v-if="step.kind === 'shell'" class="script-config-row">
+                                <span>Shell 命令</span>
+                                <el-input v-model="step.command" class="ep-config-input" placeholder="getprop ro.build.version.release" />
+                              </div>
+                              <div v-if="step.kind === 'shell'" class="script-config-row">
+                                <span>输出包含</span>
+                                <el-input v-model="step.expected" class="ep-config-input" placeholder="13" />
+                              </div>
+                              <div v-if="step.kind === 'time'" class="script-config-row">
+                                <span>目标时刻</span>
+                                <el-input v-model="step.targetTime" class="ep-config-input" placeholder="09:30 或 09:30:00" />
+                              </div>
+                              <div v-if="step.kind === 'time'" class="script-config-row">
+                                <span>等待上限(秒)</span>
+                                <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="86400" controls-position="right" />
+                              </div>
+                              <div class="script-config-row">
+                                <span>成立时</span>
+                                <el-select v-model="step.onTrue.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onTrue, idx)">
+                                  <el-option
+                                    v-for="a in SCRIPT_BRANCH_ACTIONS"
+                                    :key="a.action"
+                                    :value="a.action"
+                                    :label="a.label"
+                                    :disabled="a.action === 'goto' && scriptGotoTargets(idx).length === 0"
+                                  />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'goto'" class="script-config-row">
+                                <span>跳到</span>
+                                <el-select v-model="step.onTrue.target" class="ep-config-select" placeholder="选择目标步骤">
+                                  <el-option v-for="n in scriptGotoTargets(idx)" :key="n" :value="n" :label="`第 ${n} 步：${scriptStepLabel(scriptSteps[n - 1])}`" />
+                                </el-select>
+                              </div>
+                              <div class="script-config-row">
+                                <span>不成立时</span>
+                                <el-select v-model="step.onFalse.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onFalse, idx)">
+                                  <el-option
+                                    v-for="a in SCRIPT_BRANCH_ACTIONS"
+                                    :key="a.action"
+                                    :value="a.action"
+                                    :label="a.label"
+                                    :disabled="a.action === 'goto' && scriptGotoTargets(idx).length === 0"
+                                  />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'goto'" class="script-config-row">
+                                <span>跳到</span>
+                                <el-select v-model="step.onFalse.target" class="ep-config-select" placeholder="选择目标步骤">
+                                  <el-option v-for="n in scriptGotoTargets(idx)" :key="n" :value="n" :label="`第 ${n} 步：${scriptStepLabel(scriptSteps[n - 1])}`" />
+                                </el-select>
+                              </div>
+                            </template>
                             <!-- 设备动作类步骤的专属参数 -->
                             <div v-if="step.type === 'installApk'" class="script-config-row">
                               <span>APK 文件</span>
@@ -8766,10 +8925,10 @@ button.batch-remote-tile-tag:disabled.active {
                               </el-select>
                             </div>
                             <div class="script-config-row">
-                              <span>执行间隔(ms)</span>
+                              <span>{{ step.type === 'condition' ? '轮询/步间(ms)' : '执行间隔(ms)' }}</span>
                               <el-input-number v-model="step.interval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
                             </div>
-                            <div class="script-config-row">
+                            <div v-if="step.type !== 'condition'" class="script-config-row">
                               <span>执行次数</span>
                               <el-input-number v-model="step.count" class="ep-config-num" :min="1" :max="99" controls-position="right" />
                             </div>
@@ -8778,6 +8937,9 @@ button.batch-remote-tile-tag:disabled.active {
                             </div>
                             <div v-else-if="step.type === 'waitFor'" class="script-config-hint">
                               反复截屏搜索模板，组件出现才继续下一步；超时未出现判失败
+                            </div>
+                            <div v-else-if="step.type === 'condition'" class="script-config-hint">
+                              单次判断后按「成立/不成立」分支；时间条件按上面的间隔轮询设备时钟（当天目标时刻已过则立即成立），跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
                             </div>
                             <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
