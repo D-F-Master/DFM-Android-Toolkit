@@ -562,7 +562,8 @@ const scriptRecording = ref(false)
 // 画面校验：录制中开启后，每次在画面上的操作都追加一个等待组件步骤
 const scriptVerify = ref(false)
 const SCRIPT_VERIFY_THRESHOLD = 0.6
-const SCRIPT_VERIFY_CROP = 200
+// 裁块放大到 300：点击点常落在纯色区域，太小容易因低纹理导致匹配分数塌掉
+const SCRIPT_VERIFY_CROP = 300
 let scriptVerifySeq = 0
 let scriptVerifyPending: string | null = null
 let scriptVerifyQueue: Promise<void> = Promise.resolve()
