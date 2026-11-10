@@ -795,16 +795,6 @@ const loadScriptTemplatePreview = async (name: string) => {
   }
 }
 
-watch(
-  () => {
-    const idx = scriptEditingStep.value
-    if (idx === null || scriptSteps.value[idx]?.type !== 'waitFor') return ''
-    return scriptSteps.value[idx]?.template || ''
-  },
-  loadScriptTemplatePreview,
-  { immediate: true },
-)
-
 const onScriptTemplatePreviewError = (e: Event) => {
   const img = e.target as HTMLImageElement
   if (img) img.style.visibility = 'hidden'
@@ -833,6 +823,17 @@ const scriptShowMarkers = ref(false)
 const scriptDragging = ref<{ stepIndex: number; part: 'start' | 'end' } | null>(null)
 // 正在编辑配置的步骤索引（展开 interval/count 编辑项）
 const scriptEditingStep = ref<number | null>(null)
+
+// 等待组件步骤展开时加载模板预览（immediate watch 须在 scriptEditingStep 声明之后，否则 TDZ 报错）
+watch(
+  () => {
+    const idx = scriptEditingStep.value
+    if (idx === null || scriptSteps.value[idx]?.type !== 'waitFor') return ''
+    return scriptSteps.value[idx]?.template || ''
+  },
+  loadScriptTemplatePreview,
+  { immediate: true },
+)
 
 // 步骤标记颜色（按类型区分）
 const SCRIPT_MARKER_COLORS: Record<string, string> = {
