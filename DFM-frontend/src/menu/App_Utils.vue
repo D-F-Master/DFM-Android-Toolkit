@@ -551,6 +551,9 @@ const stopBatchRemote = () => {
 // ==================== 模拟脚本 ====================
 
 const scriptCanvasRef = ref<HTMLCanvasElement | null>(null)
+const scriptScreenBodyRef = ref<HTMLElement | null>(null)
+const scriptPreviewWidth = ref(0)
+let scriptPreviewObserver: ResizeObserver | null = null
 const scriptStreaming = ref(false)
 const scriptWsStatus = ref('未连接')
 const scriptRecording = ref(false)
@@ -587,6 +590,36 @@ let scriptWs: WebSocket | null = null
 let scriptDecoder: VideoDecoder | null = null
 let scriptCodecConfig: Uint8Array | null = null
 let scriptMeta = { width: 1080, height: 2340 }
+
+// 竖屏时画面被高度限制而变窄，面板若还占满剩余宽度，左右就会空出大片深色底（黑框）。
+// 按「画面区高度 × 画面宽高比」给面板定宽，让它刚好包住画面；+2 补面板左右各 1px 边框。
+const syncScriptPreviewWidth = () => {
+  const body = scriptScreenBodyRef.value
+  if (!body || body.clientHeight <= 0 || scriptMeta.height <= 0) return
+  const w = Math.ceil(body.clientHeight * scriptMeta.width / scriptMeta.height) + 2
+  if (scriptPreviewWidth.value !== w) scriptPreviewWidth.value = w
+}
+
+// 画面尺寸变化（切设备 / 横竖屏切换）时同步刷新面板宽度；逐帧调用靠 early return 避免无谓重排
+const setScriptMeta = (width: number, height: number) => {
+  if (scriptMeta.width === width && scriptMeta.height === height) return
+  scriptMeta = { width, height }
+  syncScriptPreviewWidth()
+}
+
+// 面板宽度随画面区尺寸变化；脚本页用 v-if 挂载，切换 Tab 时要重新挂观察器
+watch(activeTab, async (tab) => {
+  scriptPreviewObserver?.disconnect()
+  scriptPreviewObserver = null
+  if (tab !== 'script') return
+  await nextTick()
+  syncScriptPreviewWidth()
+  if (scriptScreenBodyRef.value) {
+    scriptPreviewObserver = new ResizeObserver(syncScriptPreviewWidth)
+    scriptPreviewObserver.observe(scriptScreenBodyRef.value)
+  }
+}, { immediate: true })
+
 let scriptPointerActive = false
 let scriptRemotePressing = false
 let scriptPressStart = { x: 0, y: 0, time: 0 }
@@ -1022,7 +1055,7 @@ const scriptHandleBinary = (buf: ArrayBuffer) => {
         if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
         const ctx = cv.getContext('2d')!
         scriptDrawFrame(ctx, frame)
-        scriptMeta = { width: frame.displayWidth, height: frame.displayHeight }
+        setScriptMeta(frame.displayWidth, frame.displayHeight)
         frame.close()
       },
       error: (e) => { scriptWsStatus.value = `解码错误: ${e.message}` },
@@ -1070,11 +1103,11 @@ const startScriptStream = () => {
     if (typeof ev.data === 'string') {
       const msg = JSON.parse(ev.data)
       if (msg.type === 'ready' && msg.devices?.length) {
-        scriptMeta = { width: msg.devices[0].width, height: msg.devices[0].height }
+        setScriptMeta(msg.devices[0].width, msg.devices[0].height)
         scriptStreaming.value = true
         scriptWsStatus.value = '实时'
       } else if (msg.type === 'meta') {
-        scriptMeta = { width: msg.width, height: msg.height }
+        setScriptMeta(msg.width, msg.height)
         scriptStreaming.value = true
         scriptWsStatus.value = '实时'
       } else if (msg.type === 'error') {
@@ -4019,6 +4052,8 @@ onUnmounted(() => {
   // 组件销毁时务必停掉轮询并释放图表实例
   window.removeEventListener('resize', resizeMonitorCharts)
   window.removeEventListener('keydown', scriptOnKeyDown)
+  scriptPreviewObserver?.disconnect()
+  scriptPreviewObserver = null
   stopMonitor()
   disposeMonitorCharts()
   // 关闭批量投屏会话
@@ -6382,7 +6417,9 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 .script-screen-panel {
-  flex: 1;
+  /* 宽度由 JS 按画面比例给出，不再占满剩余空间（避免竖屏时左右大片黑框）；
+     可用空间不足时允许收缩，保证右侧控制区不被挤掉 */
+  flex: 0 1 auto;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -6396,6 +6433,8 @@ button.batch-remote-tile-tag:disabled.active {
 .script-screen-header {
   display: flex;
   align-items: center;
+  /* 面板随画面收窄后，头部控件换行而不被裁切 */
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px 14px;
   border-bottom: 1px solid #e8eaed;
@@ -8346,7 +8385,7 @@ button.batch-remote-tile-tag:disabled.active {
               <div v-if="activeTab === 'script'" class="keys-page script-page">
                 <div class="script-layout">
                   <!-- 左：屏幕流 -->
-                  <div class="script-screen-panel">
+                  <div class="script-screen-panel" :style="{ width: scriptPreviewWidth ? scriptPreviewWidth + 'px' : '100%' }">
                     <div class="script-screen-header">
                       <span>屏幕预览</span>
                       <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
@@ -8361,7 +8400,7 @@ button.batch-remote-tile-tag:disabled.active {
                         <span class="script-switch-text">显示步骤</span>
                       </label>
                     </div>
-                    <div class="script-screen-body">
+                    <div class="script-screen-body" ref="scriptScreenBodyRef">
                       <canvas
                         ref="scriptCanvasRef"
                         class="script-canvas"
