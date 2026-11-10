@@ -27,12 +27,14 @@
     { "type": "uninstallApp","packageName": "com.x" },
     { "type": "keyevent",    "keycode": 4 },
     { "type": "volume",      "action": "up", "stream": "media" },
-    { "type": "reboot" }
+    { "type": "reboot" },
+    { "type": "condition", "kind": "appInstalled", "packageName": "com.x" }
   ]
 }
 
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
-其余注入类步骤走 scrcpy 会话。
+其余注入类步骤走 scrcpy 会话。判断步骤（condition）求一次条件后按真/假分支动作
+（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，走 adb 或截屏，不占会话。
 
 执行（/script/run）：
   临时起一个 scrcpy DeviceSession（复用批量远控的会话实现），
@@ -139,7 +141,12 @@ ADB_STEP_TYPES = (
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
-VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES + VISION_STEP_TYPES
+# 判断步骤：求一次条件，按真/假分支动作决定下一步
+CONDITION_STEP_TYPES = ("condition",)
+CONDITION_KINDS = ("appInstalled", "template", "shell", "time")
+BRANCH_ACTIONS = ("continue", "goto", "stop", "fail")
+MAX_SCRIPT_JUMPS = 100  # 每轮脚本的跳转次数上限，防止分支构成死循环
+VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES + VISION_STEP_TYPES + CONDITION_STEP_TYPES
 
 
 def _validate_steps(steps) -> str:
@@ -197,6 +204,13 @@ def _validate_steps(steps) -> str:
                 return f"第 {i + 1} 步的匹配阈值无效"
             if not (0.5 <= threshold <= 1.0):
                 return f"第 {i + 1} 步的匹配阈值需在 0.5-1.0 之间"
+            continue
+
+        # 判断步骤：按子类型校验条件参数与分支动作
+        if step_type in CONDITION_STEP_TYPES:
+            error = _validate_condition_step(step, i + 1, len(steps))
+            if error:
+                return error
             continue
 
         for field in ("x1", "y1"):
@@ -274,6 +288,94 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
     return ""
 
 
+def _parse_clock(value: str):
+    """把 HH:mm / HH:mm:ss 解析成当天秒数，格式非法返回 None"""
+    m = re.fullmatch(r'(\d{1,2}):(\d{2})(?::(\d{2}))?', str(value).strip())
+    if not m:
+        return None
+    hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    if hh > 23 or mm > 59 or ss > 59:
+        return None
+    return hh * 3600 + mm * 60 + ss
+
+
+def _validate_condition_step(step: dict, idx: int, total: int) -> str:
+    """校验判断步骤，返回空串表示通过"""
+    kind = step.get("kind")
+    if kind not in CONDITION_KINDS:
+        return f"第 {idx} 步的判断类型无效: {kind}（应为 {'/'.join(CONDITION_KINDS)}）"
+
+    if not isinstance(step.get("negate", False), bool):
+        return f"第 {idx} 步的 negate 必须是布尔值"
+
+    for label in ("onTrue", "onFalse"):
+        branch = step.get(label, {"action": "continue"})
+        if not isinstance(branch, dict):
+            return f"第 {idx} 步的 {label} 必须是对象"
+        action = branch.get("action", "continue")
+        if action not in BRANCH_ACTIONS:
+            return f"第 {idx} 步的 {label} 动作无效: {action}（应为 {'/'.join(BRANCH_ACTIONS)}）"
+        if action == "goto":
+            target = branch.get("target")
+            if not isinstance(target, int) or isinstance(target, bool) or not (idx < target <= total):
+                return f"第 {idx} 步的 {label} 跳转目标必须是第 {idx + 1}-{total} 步之间的序号"
+
+    if kind == "appInstalled":
+        pkg = str(step.get("packageName", "")).strip()
+        if not pkg:
+            return f"第 {idx} 步未填写应用包名"
+        if re.search(r'[\s"\'&|;$<>`\\]', pkg):
+            return f"第 {idx} 步的包名不能包含空格或特殊字符"
+    elif kind == "template":
+        template = str(step.get("template", "")).strip()
+        if not template:
+            return f"第 {idx} 步是判断组件步骤，未选择模板图"
+        if "/" in template or "\\" in template or ".." in template:
+            return f"第 {idx} 步的模板名不能包含路径分隔符"
+        try:
+            threshold = float(step.get("threshold", 0.85))
+        except (TypeError, ValueError):
+            return f"第 {idx} 步的匹配阈值无效"
+        if not (0.5 <= threshold <= 1.0):
+            return f"第 {idx} 步的匹配阈值需在 0.5-1.0 之间"
+    elif kind == "shell":
+        cmd = str(step.get("command", "")).strip()
+        if not cmd:
+            return f"第 {idx} 步未填写 Shell 命令"
+        lowered = cmd.lower()
+        if lowered.startswith("adb ") or lowered.startswith("adb.exe "):
+            return f"第 {idx} 步的 Shell 命令不要带 adb 前缀，命令会在设备 shell 中执行"
+        if '"' in cmd:
+            return f"第 {idx} 步的 Shell 命令不能包含双引号"
+        if not str(step.get("expected", "")):
+            return f"第 {idx} 步未填写断言包含的字符串"
+    elif kind == "time":
+        target_time = str(step.get("targetTime", "")).strip()
+        if _parse_clock(target_time) is None:
+            return f"第 {idx} 步的目标时刻无效: {target_time}（应为 HH:mm 或 HH:mm:ss）"
+        try:
+            timeout = float(step.get("timeout", 3600))
+        except (TypeError, ValueError):
+            return f"第 {idx} 步的等待超时无效"
+        if timeout <= 0 or timeout > 86400:
+            return f"第 {idx} 步的等待超时需在 0-86400 秒之间"
+        interval = step.get("interval", 1000)
+        if not isinstance(interval, (int, float)) or interval < 0:
+            return f"第 {idx} 步的轮询间隔必须是非负数字"
+
+    return ""
+
+
+def _normalize_branch(branch) -> dict:
+    """分支动作归一化：非 goto 不带 target，避免脏字段落盘"""
+    if not isinstance(branch, dict):
+        return {"action": "continue"}
+    action = branch.get("action", "continue")
+    if action == "goto":
+        return {"action": "goto", "target": int(branch.get("target", 0))}
+    return {"action": action}
+
+
 def _normalize_steps(steps) -> List[dict]:
     """补全步骤的缺省字段"""
     normalized = []
@@ -306,6 +408,22 @@ def _normalize_steps(steps) -> List[dict]:
                 "count": step.get("count", 1),
             }
             for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream"):
+                if step.get(field) is not None:
+                    item[field] = step.get(field)
+            normalized.append(item)
+            continue
+        # 判断步骤：只保留已校验过的条件与分支字段
+        if step["type"] in CONDITION_STEP_TYPES:
+            item = {
+                "type": "condition",
+                "kind": step.get("kind"),
+                "negate": bool(step.get("negate", False)),
+                "onTrue": _normalize_branch(step.get("onTrue")),
+                "onFalse": _normalize_branch(step.get("onFalse")),
+                "interval": step.get("interval", 1000),
+                "count": 1,
+            }
+            for field in ("packageName", "template", "threshold", "command", "expected", "targetTime", "timeout"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             normalized.append(item)
@@ -508,7 +626,9 @@ def _script_referenced_files(script: dict) -> tuple[List[str], List[str]]:
             apk = str(step.get("apkName", "")).strip()
             if apk and apk not in apk_names:
                 apk_names.append(apk)
-        elif step.get("type") == "waitFor":
+        elif step.get("type") == "waitFor" or (
+            step.get("type") == "condition" and step.get("kind") == "template"
+        ):
             tpl = str(step.get("template", "")).strip()
             if tpl and tpl not in template_names:
                 template_names.append(tpl)
@@ -833,26 +953,13 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
             time.sleep(max(0, int(step.get("interval", 0))) / 1000)
 
 
-def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int, stop_event=None):
-    """
-    执行「等待组件出现」步骤
-
-    模板图按录制时的画面分辨率保存。若回放时设备分辨率不同，
-    需要把模板按比例缩放到当前屏幕尺寸，否则同一组件在不同分辨率下
-    尺寸不匹配会一直等不到（不是点击坐标那种简单平移能解决的）。
-
-    stop_event：停止标志，传入后轮询等待可被停止请求提前打断。
-    """
-    from routes.vision import load_template, wait_for_template, capture_screen
+def _load_scaled_template(device_id: str, step: dict, base_w: int, base_h: int):
+    """读取模板图并按录制分辨率换算到当前画面尺寸，返回 (模板, 画面宽, 画面高)"""
+    from routes.vision import load_template
 
     template_name = str(step.get("template", "")).strip()
-    path = TEMPLATES_DIR / template_name
-    template = load_template(str(path))
+    template = load_template(str(TEMPLATES_DIR / template_name))
 
-    threshold = float(step.get("threshold", 0.85))
-    timeout = float(step.get("timeout", 15))
-
-    # 模板尺寸换算：以录制分辨率为基准，对齐当前屏幕
     try:
         screen_w, screen_h = _current_screen_size(device_id, base_w, base_h)
     except Exception:
@@ -870,6 +977,26 @@ def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int, stop_e
                 f"模板按分辨率换算: 录制 {base_w}x{base_h} -> 当前 {screen_w}x{screen_h}，"
                 f"{tw}x{th} -> {new_w}x{new_h}"
             )
+    return template, screen_w, screen_h
+
+
+def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int, stop_event=None):
+    """
+    执行「等待组件出现」步骤
+
+    模板图按录制时的画面分辨率保存。若回放时设备分辨率不同，
+    需要把模板按比例缩放到当前屏幕尺寸，否则同一组件在不同分辨率下
+    尺寸不匹配会一直等不到（不是点击坐标那种简单平移能解决的）。
+
+    stop_event：停止标志，传入后轮询等待可被停止请求提前打断。
+    """
+    from routes.vision import wait_for_template
+
+    template_name = str(step.get("template", "")).strip()
+    template, screen_w, screen_h = _load_scaled_template(device_id, step, base_w, base_h)
+
+    threshold = float(step.get("threshold", 0.85))
+    timeout = float(step.get("timeout", 15))
 
     found, elapsed, score, attempts = wait_for_template(
         device_id, template, threshold=threshold, timeout=timeout, stop_event=stop_event,
@@ -903,6 +1030,84 @@ def _current_screen_size(device_id: str, base_w: int, base_h: int):
     if not m:
         return 0, 0
     return int(m.group(1)), int(m.group(2))
+
+
+def _eval_condition(device_id: str, step: dict, base_w: int, base_h: int, stop_event=None):
+    """
+    求一次判断条件，返回 (成立?, 说明文字)
+
+    appInstalled / template / shell 都是单次求值；time 会轮询设备本地时钟
+    直到到点或超时（当天目标时刻已过则立即成立，不等明天）。
+    """
+    from routes.vision import wait_for_template
+
+    kind = step.get("kind")
+    negate = bool(step.get("negate", False))
+    ok = False
+    reason = ""
+
+    if kind == "appInstalled":
+        pkg = str(step.get("packageName", "")).strip()
+        ok = _check_package_installed(device_id, pkg)
+        reason = f"应用 {pkg} {'已安装' if ok else '未安装'}"
+    elif kind == "template":
+        template_name = str(step.get("template", "")).strip()
+        template, screen_w, screen_h = _load_scaled_template(device_id, step, base_w, base_h)
+        threshold = float(step.get("threshold", 0.85))
+        # timeout=0 让 wait_for_template 只截一帧、匹配一次（单次判断语义）
+        found, _elapsed, score, _attempts = wait_for_template(
+            device_id, template, threshold=threshold, timeout=0, interval=0,
+            stop_event=stop_event, target_size=(screen_w, screen_h),
+        )
+        if stop_event is not None and stop_event.is_set():
+            raise _ScriptStopped()
+        ok = found
+        reason = f"组件 {template_name} {'出现' if found else '未出现'}（最高分 {score:.3f}，阈值 {threshold}）"
+    elif kind == "shell":
+        cmd = str(step.get("command", "")).strip()
+        expected = str(step.get("expected", ""))
+        result = execute_adb_command(f'adb -s {device_id} shell "{cmd}"', timeout=60)
+        stdout = (result.get("stdout") or "").strip()
+        if not result["success"]:
+            reason = f"Shell 命令执行失败: {(result.get('error') or '').strip()}"
+        else:
+            ok = expected in stdout
+            reason = f"Shell 输出「{stdout[:120]}」{'包含' if ok else '未包含'}「{expected}」"
+    elif kind == "time":
+        target_time = str(step.get("targetTime", "")).strip()
+        target_sec = _parse_clock(target_time)
+        if target_sec is None:
+            return False, f"目标时刻无效: {target_time}"
+        timeout = float(step.get("timeout", 3600))
+        poll = max(0.1, float(step.get("interval", 1000)) / 1000)
+        deadline = time.monotonic() + timeout
+        now_text = "未知"
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                raise _ScriptStopped()
+            clock = execute_adb_command(f'adb -s {device_id} shell date "+%H:%M:%S"', timeout=15)
+            m = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', (clock.get("stdout") or ""))
+            if m and int(m.group(1)) <= 23 and int(m.group(2)) <= 59 and int(m.group(3)) <= 59:
+                now_text = m.group(0)
+                now_sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                if now_sec >= target_sec:
+                    ok = True
+                    reason = f"设备时间 {now_text} 已到 {target_time}"
+                    break
+            if time.monotonic() >= deadline:
+                reason = f"设备时间 {now_text} 未到 {target_time}（等待 {timeout:g}s 超时）"
+                break
+            if stop_event is not None:
+                stop_event.wait(poll)
+            else:
+                time.sleep(poll)
+    else:
+        reason = f"未知判断类型: {kind}"
+
+    if negate:
+        ok = not ok
+        reason += "（已取反）"
+    return ok, reason
 
 
 def _run_script_on_device(device_id: str, script: dict, repeat: int):
@@ -973,10 +1178,13 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
             if stop_event.is_set():
                 break
             logger.info(f"Script run round {round_no}/{repeat} on {device_id}")
-            for idx, step in enumerate(steps):
+            idx = 0
+            jumps = 0
+            while idx < len(steps):
                 if stop_event.is_set():
                     logger.info(f"Script stopped by user on {device_id} at step {idx + 1}")
                     break
+                step = steps[idx]
                 stype = step.get("type")
                 count = max(1, int(step.get("count", 1)))
                 interval = max(0, int(step.get("interval", 0)))
@@ -993,6 +1201,28 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 # 设备动作类步骤走 adb 命令（不依赖 scrcpy 会话），count 在函数内部循环
                 elif stype in ADB_STEP_TYPES:
                     _exec_adb_step(device_id, step, count)
+                # 判断步骤：求一次条件，按真/假分支动作决定下一步
+                elif stype in CONDITION_STEP_TYPES:
+                    base_w = int(script.get("videoWidth") or 0) or w
+                    base_h = int(script.get("videoHeight") or 0) or h
+                    ok, reason = _eval_condition(device_id, step, base_w, base_h, stop_event)
+                    branch = (step.get("onTrue") if ok else step.get("onFalse")) or {}
+                    action = branch.get("action", "continue")
+                    logger.info(f"[{device_id}] 判断步骤 step {idx + 1}: {reason} -> {action}")
+                    if action == "goto":
+                        jumps += 1
+                        if jumps > MAX_SCRIPT_JUMPS:
+                            raise RuntimeError(f"判断步骤跳转次数超过上限 {MAX_SCRIPT_JUMPS}，可能存在死循环")
+                        next_idx = int(branch.get("target", 0)) - 1
+                        if not (idx < next_idx < len(steps)):
+                            raise RuntimeError(f"判断步骤跳转目标无效: 第 {branch.get('target')} 步")
+                        idx = next_idx
+                        continue
+                    if action == "stop":
+                        logger.info(f"[{device_id}] 判断步骤终止脚本 at step {idx + 1}")
+                        return
+                    if action == "fail":
+                        raise RuntimeError(f"判断步骤未通过：{reason}")
                 else:
                     for i in range(count):
                         if stype == "tap":
@@ -1034,7 +1264,8 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         if i < count - 1:
                             _interruptible_sleep(interval, stop_event)
                 # 步与步之间的间隔（interval 单位毫秒）
-                if idx < len(steps) - 1:
+                idx += 1
+                if idx < len(steps):
                     _interruptible_sleep(interval, stop_event)
     finally:
         _script_runs.pop(device_id, None)
