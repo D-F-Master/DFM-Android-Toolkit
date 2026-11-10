@@ -184,7 +184,7 @@ def _root_prefix(device_id: str) -> str:
 
 def _list_serial_ports(device_id: str) -> List[dict]:
     """
-    枚举设备上的串口节点（/dev/ttyS*、/dev/ttyUSB*、/dev/ttyACM*）
+    枚举设备上的串口节点（/dev/ttyS*、/dev/ttyHSL*、/dev/ttyHS*、/dev/ttyGS*、/dev/ttyUSB*、/dev/ttyACM*）
 
     兼容两种 ls 输出：
       字符设备  crw-rw-rw- 1 root root 4, 67 /dev/ttyS3
@@ -192,7 +192,9 @@ def _list_serial_ports(device_id: str) -> List[dict]:
     """
     result = _run_adb(device_id, [
         "shell",
-        "ls", "-l", "/dev/ttyS*", "/dev/ttyUSB*", "/dev/ttyACM*",
+        "ls", "-l",
+        "/dev/ttyS*", "/dev/ttyHSL*", "/dev/ttyHS*", "/dev/ttyGS*",
+        "/dev/ttyUSB*", "/dev/ttyACM*",
     ], timeout=15)
     if not result["stdout"].strip():
         return []
