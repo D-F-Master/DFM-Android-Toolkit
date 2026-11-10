@@ -51,7 +51,8 @@ import zipfile
 
 import cv2
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, UploadFile, HTTPException
+from starlette.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -1284,6 +1285,16 @@ def save_template(request: TemplateUploadBase64Request):
     except Exception as e:
         logger.error(f"保存模板失败: {e}")
         return {"code": 500, "message": f"保存模板失败: {str(e)}", "data": None}
+
+
+@router.get("/device/script/template/{name}")
+def get_template_image(name: str):
+    """返回单张模板图，供等待组件步骤展开时预览已选中的图片"""
+    filename = _safe_name(os.path.splitext(name)[0]) + ".png"
+    path = TEMPLATES_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="模板图不存在")
+    return FileResponse(str(path), media_type="image/png", headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/device/script/list-templates")

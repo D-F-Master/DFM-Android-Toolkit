@@ -776,6 +776,15 @@ const fetchScriptTemplates = async () => {
   }
 }
 
+// 等待组件步骤展开时，预览当前已选中的模板图
+const scriptTemplatePreviewUrl = (name: string) =>
+  `${API_BASE.value}/api/device/script/template/${encodeURIComponent(name || '')}`
+
+const onScriptTemplatePreviewError = (e: Event) => {
+  const img = e.target as HTMLImageElement
+  if (img) img.style.visibility = 'hidden'
+}
+
 // 设备动作步骤的默认参数
 const scriptAdbStepDefaults = (type: string): Record<string, any> => {
   switch (type) {
@@ -6790,6 +6799,20 @@ button.batch-remote-tile-tag:disabled.active {
   margin-bottom: 0;
 }
 
+/* 等待组件步骤：已选模板图预览 */
+.script-template-preview-row {
+  align-items: flex-start;
+}
+
+.script-template-preview {
+  max-width: 68%;
+  max-height: 120px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  background: #fff;
+  object-fit: contain;
+}
+
 .script-config-input {
   width: 90px;
   padding: 4px 8px;
@@ -8643,6 +8666,16 @@ button.batch-remote-tile-tag:disabled.active {
                               <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
                                 <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
                               </el-select>
+                            </div>
+                            <div v-if="step.type === 'waitFor' && step.template" class="script-config-row script-template-preview-row">
+                              <span>模板预览</span>
+                              <img
+                                :key="step.template"
+                                :src="scriptTemplatePreviewUrl(step.template)"
+                                class="script-template-preview"
+                                alt="模板预览"
+                                @error="onScriptTemplatePreviewError"
+                              />
                             </div>
                             <div v-if="step.type === 'waitFor'" class="script-config-row">
                               <span>匹配阈值</span>
