@@ -872,7 +872,8 @@ def _exec_wait_step(device_id: str, step: dict, base_w: int, base_h: int, stop_e
             )
 
     found, elapsed, score, attempts = wait_for_template(
-        device_id, template, threshold=threshold, timeout=timeout, stop_event=stop_event
+        device_id, template, threshold=threshold, timeout=timeout, stop_event=stop_event,
+        target_size=(screen_w, screen_h),
     )
     if not found:
         # 停止请求打断的等待不报"超时"错误，抛一个上层识别的标记
@@ -890,7 +891,11 @@ class _ScriptStopped(Exception):
 
 
 def _current_screen_size(device_id: str, base_w: int, base_h: int):
-    """取当前设备屏幕像素尺寸（wm size 解析），失败返回 (0, 0)"""
+    """取当前画面尺寸：有投屏视频帧时用它（与录制模板同坐标系），否则 wm size"""
+    from routes.vision import video_frame_size
+    size = video_frame_size(device_id)
+    if size:
+        return size
     result = execute_adb_command(f"adb -s {device_id} shell wm size", timeout=15)
     if not result["success"]:
         return 0, 0

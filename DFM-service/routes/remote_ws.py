@@ -28,6 +28,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from config import logger
 from routes.batch_remote import DeviceSession  # noqa: F401 (类型引用)
+from routes.vision import H264Decoder
 
 router = APIRouter()
 
@@ -176,6 +177,7 @@ class RemoteHub:
         连续失败多次时才退出。
         """
         consecutive_fail = 0
+        decoder = H264Decoder(session.device_id)
         while session.running:
             try:
                 frame = session.frame_queue.get(timeout=1.0)
@@ -183,6 +185,9 @@ class RemoteHub:
                 continue
             if frame["kind"] == "closed":
                 break
+            # 每帧（含 config/SPS-PPS 与 delta）都顺序喂给同一个解码器实例，
+            # 解出的最新帧供等待组件直接取用：省掉 adb screencap 的 ~0.65s。
+            decoder.feed(frame["data"])
             with self._lock:
                 if session.device_id not in self.device_order:
                     break
