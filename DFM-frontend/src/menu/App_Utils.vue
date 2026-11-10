@@ -1081,7 +1081,7 @@ const captureVerifyFrame = (p: { x: number; y: number }) => {
   scriptVerifyPending = crop.toDataURL('image/png')
 }
 
-// 上传模板并把等待组件插到对应手势步骤后面；串行执行，保证快速连点时顺序不乱
+// 上传模板并把等待组件插到对应手势步骤前面（先校验画面再点击）；串行执行，保证快速连点时顺序不乱
 const flushScriptVerify = (gesture: any) => {
   const image = scriptVerifyPending
   scriptVerifyPending = null
@@ -1092,7 +1092,7 @@ const flushScriptVerify = (gesture: any) => {
       const response = await axios.post(`${API_BASE.value}/api/device/script/save-template`, { name, image })
       if (response.data.code === 200) {
         const d = response.data.data
-        // 手势步骤若已被删除就不补孤儿步骤；否则插在它后面，保证「手势 → 等待组件」紧邻
+        // 手势步骤若已被删除就不补孤儿步骤；否则插在它前面，保证「等待组件 → 手势」紧邻
         const i = scriptSteps.value.indexOf(gesture)
         if (i < 0) return
         const step = {
@@ -1103,8 +1103,8 @@ const flushScriptVerify = (gesture: any) => {
           interval: 500,
           count: 1,
         }
-        scriptSteps.value.splice(i + 1, 0, step)
-        showNotification(`已记录第 ${i + 2} 步：${scriptStepLabel(step)}`, 'info')
+        scriptSteps.value.splice(i, 0, step)
+        showNotification(`已记录画面校验：${scriptStepLabel(step)}`, 'info')
         fetchScriptTemplates()
       } else {
         showNotification('画面校验模板保存失败: ' + (response.data.message || '未知错误'), 'error')
@@ -1115,7 +1115,7 @@ const flushScriptVerify = (gesture: any) => {
   }).catch(() => {})
 }
 
-// 手势步骤照常记录，随后在它后面补一个画面校验的等待组件步骤
+// 手势步骤照常记录，随后在它前面补一个画面校验的等待组件步骤
 const addRecordedStep = (step: any) => {
   addScriptStep(step)
   flushScriptVerify(scriptSteps.value[scriptSteps.value.length - 1])
