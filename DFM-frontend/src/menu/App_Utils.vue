@@ -3549,6 +3549,8 @@ const importCaCert = async () => {
       resultVariant = 'error'
     } finally {
       hideProgressNotification()
+      // 让 visible 先真正变 false，否则 ModalDialog 的 watch 不会启动 4 秒自动关闭
+      await nextTick()
       if (resultMessage) {
         showNotification(resultMessage, resultVariant)
       }
