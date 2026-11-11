@@ -6988,6 +6988,11 @@ button.batch-remote-tile-tag:disabled.active {
   padding: 12px;
 }
 
+/* 步骤功能区标题栏：复用屏幕预览的标题样式，负边距抵消卡片内边距使其通栏 */
+.script-section .script-screen-header {
+  margin: -12px -12px 12px;
+}
+
 .script-record-btn {
   width: 100%;
   padding: 10px;
@@ -8838,6 +8843,7 @@ button.batch-remote-tile-tag:disabled.active {
                   <div class="script-side-panel" :class="{ 'two-col': scriptSideTwoCol }">
                     <!-- 上：录制控制 + 添加设备动作步骤 -->
                     <div class="script-section">
+                      <div class="script-screen-header"><span>步骤功能</span></div>
                       <div class="script-record-row">
                         <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
                           {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
