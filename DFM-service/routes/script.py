@@ -864,15 +864,17 @@ def _check_package_installed(device_id: str, pkg: str) -> bool:
     return bool(result["success"] and (result.get("stdout") or "").strip())
 
 
-def _resolve_step_text(text: str, seq: int) -> str:
+def _resolve_step_text(text: str, seq: int, round_no: int) -> str:
     """
     展开步骤文本里的变量；脚本里保留占位符，执行时才生成实际值。
 
     {执行次数}   → 当前第几次执行（从 1 递增，seq 由调用方传入）
+    {执行轮数}   → 当前第几轮（从 1 递增，round_no 由调用方传入）
     {6位随机数}  → 6 位随机数字，n 取 1~18，每次调用重新生成，允许前导 0
     其它写法     → 原样保留
     """
     text = text.replace("{执行次数}", str(seq))
+    text = text.replace("{执行轮数}", str(round_no))
 
     def _random_digits(m):
         n = int(m.group(1))
@@ -883,11 +885,12 @@ def _resolve_step_text(text: str, seq: int) -> str:
     return re.sub(r"\{(\d+)位随机数\}", _random_digits, text)
 
 
-def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
+def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: int = 1):
     """
     执行一个设备动作类步骤（走 adb 命令或探针帧，不需要 scrcpy 会话）
 
     count>1 时重复执行；interval 是每次之间的等待毫秒数。
+    round_no 是脚本当前执行到第几轮，供 {执行轮数} 展开。
     失败抛出 RuntimeError，由调用方（流水线/面板）记录。
     """
     stype = step.get("type")
@@ -980,7 +983,7 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
             # TTS 步骤走探针帧协议（0x01），与探针工具页一样复用已安装的探针服务
             from routes.probe import run_probe, CMD_TTS
 
-            text = _resolve_step_text(str(step.get("text", "")), i + 1).strip()
+            text = _resolve_step_text(str(step.get("text", "")), i + 1, round_no).strip()
             if not text:
                 raise RuntimeError("TTS 步骤未填写朗读文本")
             d = run_probe(device_id, False, CMD_TTS, {"text": text})
@@ -1245,7 +1248,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         _exec_wait_step(device_id, step, base_w, base_h, stop_event)
                 # 设备动作类步骤走 adb 命令或探针帧（不依赖 scrcpy 会话），count 在函数内部循环
                 elif stype in ADB_STEP_TYPES:
-                    _exec_adb_step(device_id, step, count)
+                    _exec_adb_step(device_id, step, count, round_no)
                 # 判断步骤：求一次条件，按真/假分支动作决定下一步
                 elif stype in CONDITION_STEP_TYPES:
                     base_w = int(script.get("videoWidth") or 0) or w
@@ -1296,7 +1299,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         elif stype == "input":
                             # 输入文字：注入到设备当前聚焦的输入框
                             # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
-                            text = _resolve_step_text(str(step.get("text") or ""), i + 1)
+                            text = _resolve_step_text(str(step.get("text") or ""), i + 1, round_no)
                             if text:
                                 session.inject_text(text)
                                 # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
