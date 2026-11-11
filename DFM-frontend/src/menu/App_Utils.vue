@@ -3512,6 +3512,8 @@ const importCaCert = async () => {
 
     importingCert.value = true
     showProgressNotification('正在导入证书...')
+    let resultMessage = ''
+    let resultVariant: 'success' | 'error' = 'success'
     try {
       const formData = new FormData()
       formData.append('deviceId', selectedDevice.value)
@@ -3525,7 +3527,7 @@ const importCaCert = async () => {
       if (response.data.code === 200) {
         const data = response.data.data || {}
         if (data.alreadyInstalled) {
-          showNotification('该证书已安装（指纹相同），无需重复导入', 'success')
+          resultMessage = '该证书已安装（指纹相同），无需重复导入'
         } else {
           const lines = [
             `证书已导入：${data.fileName}`,
@@ -3534,16 +3536,21 @@ const importCaCert = async () => {
           if (data.warnings && data.warnings.length) {
             lines.push('注意：' + data.warnings.join('；'))
           }
-          showNotification(lines.join('\n'), 'success')
+          resultMessage = lines.join('\n')
         }
       } else {
-        showNotification('导入证书失败: ' + (response.data.message || '未知错误'), 'error')
+        resultMessage = '导入证书失败: ' + (response.data.message || '未知错误')
+        resultVariant = 'error'
       }
     } catch (error: any) {
       console.error('导入证书失败:', error)
-      showNotification('导入证书失败: ' + error.message, 'error')
+      resultMessage = '导入证书失败: ' + error.message
+      resultVariant = 'error'
     } finally {
       hideProgressNotification()
+      if (resultMessage) {
+        showNotification(resultMessage, resultVariant)
+      }
       importingCert.value = false
     }
   }
