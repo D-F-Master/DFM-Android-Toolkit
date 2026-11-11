@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import concurrent.futures
+import hashlib
 import subprocess
 import os
 import re
@@ -2310,3 +2312,215 @@ def get_device_monitor_top(request: MonitorRateRequest):
         "message": "success",
         "data": {"processes": processes},
     }
+
+
+# ---------------- 导入 CA 证书（用户 CA） ----------------
+# 按 docs/adb-install-android-ca.md 第 4/7 节：把 PEM 公钥证书写入
+# /data/misc/user/0/cacerts-added/<subject_hash_old>.<序号>，
+# 对应「设置 → 信任的凭据 → 用户」，而不是需要私钥的「用户凭据」。
+CERT_USER_DIR = "/data/misc/user/0/cacerts-added"
+CERT_TMP_REMOTE = "/data/local/tmp/user-ca.crt"
+CERT_TRUST_STORE_CHANGED = "android.security.action.TRUST_STORE_CHANGED"
+
+
+def _read_der_tlv(data: bytes, offset: int):
+    """读取 DER 中的一个 TLV，返回 (tag, 内容起点, 内容终点, 该 TLV 终点)"""
+    tag = data[offset]
+    first_len = data[offset + 1]
+    if first_len & 0x80:
+        length_bytes = first_len & 0x7F
+        length = int.from_bytes(data[offset + 2:offset + 2 + length_bytes], "big")
+        header_len = 2 + length_bytes
+    else:
+        length = first_len
+        header_len = 2
+    value_start = offset + header_len
+    value_end = value_start + length
+    return tag, value_start, value_end, value_end
+
+
+def _parse_cert_der(pem_text: str):
+    """从 PEM 文本解析 (整张证书 DER, subject Name 的完整 DER)，解析失败返回 (None, None)"""
+    match = re.search(
+        r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----",
+        pem_text,
+        re.S,
+    )
+    if not match:
+        return None, None
+    try:
+        der = base64.b64decode("".join(match.group(1).split()))
+        _, outer_start, _, _ = _read_der_tlv(der, 0)
+        _, tbs_start, tbs_end, _ = _read_der_tlv(der, outer_start)
+        offset = tbs_start
+        fields = []
+        while offset < tbs_end and len(fields) < 8:
+            tag, _, _, next_offset = _read_der_tlv(der, offset)
+            fields.append((tag, der[offset:next_offset]))
+            offset = next_offset
+        # TBSCertificate: version(可选, 0xA0) / serialNumber / signature / issuer / validity / subject
+        subject_index = 5 if fields[0][0] == 0xA0 else 4
+        return der, fields[subject_index][1]
+    except (IndexError, ValueError, TypeError):
+        return None, None
+
+
+def _cert_hash_old(pem_text: str):
+    """等价于 openssl x509 -subject_hash_old -noout：
+    MD5(subject Name DER) 的前 4 字节按小端读成 32 位整数，再格式化为 8 位小写十六进制"""
+    _, subject_der = _parse_cert_der(pem_text)
+    if subject_der is None:
+        return None
+    digest = hashlib.md5(subject_der).digest()
+    return f"{int.from_bytes(digest[:4], 'little'):08x}"
+
+
+def _cert_fingerprint(pem_text: str):
+    """等价于 openssl x509 -fingerprint -sha256 -noout（去掉冒号）：整张证书 DER 的 SHA256"""
+    der, _ = _parse_cert_der(pem_text)
+    if der is None:
+        return None
+    return hashlib.sha256(der).hexdigest()
+
+
+@router.post("/device/cert/install")
+async def install_ca_cert(
+    deviceId: str = Form(..., description="设备序列号"),
+    file: UploadFile = File(..., description="PEM 格式 CA 证书（.crt/.cer/.pem）"),
+):
+    """导入 CA 证书为「信任的凭据 → 用户」，按 docs/adb-install-android-ca.md 第 4/7 节执行"""
+    if not re.fullmatch(r"[A-Za-z0-9._:\-]+", deviceId or ""):
+        return {"code": 400, "message": "设备序列号不合法", "data": None}
+
+    content = await file.read()
+    if not content:
+        return {"code": 400, "message": "证书文件为空", "data": None}
+    if len(content) > 1024 * 1024:
+        return {"code": 400, "message": "证书文件过大，请确认选择的是 CA 公钥证书（PEM）", "data": None}
+
+    pem_text = content.decode("utf-8", errors="replace")
+    if "-----BEGIN CERTIFICATE-----" not in pem_text:
+        return {"code": 400, "message": "请使用 BEGIN CERTIFICATE 的 PEM 证书，不要用 DER/P12", "data": None}
+
+    cert_hash = _cert_hash_old(pem_text)
+    fingerprint = _cert_fingerprint(pem_text)
+    if not cert_hash or not fingerprint:
+        return {"code": 400, "message": "证书解析失败，请确认是有效的 PEM 证书", "data": None}
+
+    def _install() -> dict:
+        warnings = []
+
+        # 1. 设备在线，且 adb 已 root
+        id_result = execute_adb_command(f"adb -s {deviceId} shell id", timeout=10)
+        if not id_result["success"]:
+            return {
+                "code": 500,
+                "message": f"设备不在线或 adb shell 执行失败：{id_result.get('error', '未知错误')}",
+                "data": None,
+            }
+        if not re.search(r"\buid=0\b", id_result.get("stdout", "")):
+            return {
+                "code": 500,
+                "message": "当前 adb 不是 root，无法写入 /data/misc/user/0/cacerts-added",
+                "data": None,
+            }
+
+        # 2. 同指纹跳过；哈希已被别的证书占用时按 .1/.2 递增，不覆盖
+        file_name = None
+        for index in range(100):
+            candidate = f"{cert_hash}.{index}"
+            cat_result = execute_adb_command(
+                f"adb -s {deviceId} shell cat {CERT_USER_DIR}/{candidate}", timeout=10
+            )
+            if not cat_result["success"] or not cat_result.get("stdout", "").strip():
+                file_name = candidate
+                break
+            if _cert_fingerprint(cat_result.get("stdout", "")) == fingerprint:
+                return {
+                    "code": 200,
+                    "message": "该证书已安装（SHA256 指纹相同），无需重复导入",
+                    "data": {
+                        "alreadyInstalled": True,
+                        "fileName": candidate,
+                        "hash": cert_hash,
+                        "fingerprint": fingerprint,
+                        "warnings": [],
+                    },
+                }
+        if file_name is None:
+            return {"code": 500, "message": "同名证书哈希冲突过多，无法确定文件名", "data": None}
+
+        # 3. 按文档第 4 节写入，并修正属主/权限
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+        try:
+            commands = [
+                (f'adb -s {deviceId} push "{tmp_path}" "{CERT_TMP_REMOTE}"', UPLOAD_TIMEOUT),
+                (f"adb -s {deviceId} shell mkdir -p {CERT_USER_DIR}", 10),
+                (f"adb -s {deviceId} shell cp {CERT_TMP_REMOTE} {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {deviceId} shell chown system:system {CERT_USER_DIR}", 10),
+                (f"adb -s {deviceId} shell chown system:system {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {deviceId} shell chmod 755 {CERT_USER_DIR}", 10),
+                (f"adb -s {deviceId} shell chmod 644 {CERT_USER_DIR}/{file_name}", 10),
+            ]
+            for command, timeout in commands:
+                result = execute_adb_command(command, timeout=timeout)
+                if not result["success"]:
+                    return {
+                        "code": 500,
+                        "message": f"安装失败（{command}）：{result.get('error', '未知错误')}",
+                        "data": None,
+                    }
+
+            # 部分 ROM 没有 restorecon / 不接收该广播，失败只记 warning，不回滚已写入的证书
+            optional_commands = [
+                (f"adb -s {deviceId} shell restorecon -R {CERT_USER_DIR}", "restorecon"),
+                (
+                    f"adb -s {deviceId} shell am broadcast -a {CERT_TRUST_STORE_CHANGED}",
+                    "TRUST_STORE_CHANGED 广播",
+                ),
+            ]
+            for command, label in optional_commands:
+                result = execute_adb_command(command, timeout=10)
+                if not result["success"]:
+                    warnings.append(f"{label} 未成功：{(result.get('error') or '').strip()}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        # 4. ls -lZ 校验：期望 -rw-r--r-- 1 system system
+        ls_result = execute_adb_command(
+            f"adb -s {deviceId} shell ls -lZ {CERT_USER_DIR}", timeout=10
+        )
+        ls_output = ls_result.get("stdout", "") if ls_result["success"] else ""
+        cert_line = next(
+            (line for line in ls_output.splitlines() if file_name in line), ""
+        )
+        if not cert_line:
+            return {
+                "code": 500,
+                "message": f"安装后未找到 {file_name}（ls -lZ 输出：{ls_output.strip() or '空'}）",
+                "data": None,
+            }
+        if "rw-r--r--" not in cert_line or cert_line.count("system") < 2:
+            warnings.append(f"属主/权限与预期（system:system 644）不一致：{cert_line.strip()}")
+
+        return {
+            "code": 200,
+            "message": "证书已导入",
+            "data": {
+                "alreadyInstalled": False,
+                "fileName": file_name,
+                "hash": cert_hash,
+                "fingerprint": fingerprint,
+                "lsOutput": ls_output.strip(),
+                "warnings": warnings,
+            },
+        }
+
+    try:
+        return await asyncio.to_thread(_install)
+    except Exception as e:
+        logger.error(f"Install CA cert failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
