@@ -740,6 +740,14 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'tts', label: 'TTS语音', icon: '🗣️' },
 ]
 
+// 步骤文本变量：保存的是占位符，后端执行时才展开，仅对「输入文字」「TTS 朗读文本」生效
+const SCRIPT_VARIABLE_HELP = `步骤文本中可使用变量（保存的是占位符，执行时才展开）：
+{执行次数} → 该步骤配置的执行次数（固定值，如设为 3 就是 3）
+{6位随机数} → 6 位随机数字；n 取 1~18，把 6 换成需要的位数即可
+每次执行/每次循环重新生成，允许前导 0；位数超范围或写法不符则原样保留
+例：第{执行次数}次，验证码{6位随机数}
+仅对「输入文字」和「TTS 朗读文本」生效，其它字段保持原样`
+
 // 判断步骤：四种条件与分支动作
 const SCRIPT_CONDITION_KINDS: Array<{ kind: string; label: string }> = [
   { kind: 'appInstalled', label: '应用已安装' },
@@ -7188,6 +7196,22 @@ button.batch-remote-tile-tag:disabled.active {
   margin-bottom: 8px;
 }
 
+.script-help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  border: 1px solid #bbb;
+  border-radius: 50%;
+  font-size: 11px;
+  font-style: normal;
+  color: #888;
+  cursor: help;
+  vertical-align: middle;
+}
+
 .script-header-actions {
   display: flex;
   gap: 6px;
@@ -8884,7 +8908,7 @@ button.batch-remote-tile-tag:disabled.active {
                     <!-- 下：脚本列表 + 底部按钮 -->
                     <div class="script-section script-list-section">
                       <div class="script-list-header">
-                        <span>脚本步骤（{{ scriptSteps.length }}）</span>
+                        <span><span class="script-help-icon" :title="SCRIPT_VARIABLE_HELP">i</span>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
                           <button
                             class="script-mini-btn"
