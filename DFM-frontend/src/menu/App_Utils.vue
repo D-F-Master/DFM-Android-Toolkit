@@ -679,6 +679,7 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'keyevent') return `按键 ${scriptKeyName(step.keycode)}`
   if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
   if (step.type === 'reboot') return '重启设备'
+  if (step.type === 'tts') return `语音「${step.text ?? ''}」`
   if (step.type === 'waitFor') return `等待组件 ${step.template || '（未选择模板）'}（阈值${step.threshold ?? 0.85}）`
   if (step.type === 'condition') {
     const prefix = step.negate ? '判断非' : '判断'
@@ -726,7 +727,7 @@ const onScriptKeyPresetChange = (step: any, value: string | number) => {
   step.keycode = value === 'custom' ? '' : Number(value)
 }
 
-// 设备动作类步骤（走 adb，不依赖画面录制）
+// 设备动作类步骤（走 adb 或探针帧，不依赖画面录制）
 const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'installApk', label: '安装APK', icon: '📦' },
   { type: 'deleteFolder', label: '删除文件夹', icon: '🗑️' },
@@ -736,6 +737,7 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'keyevent', label: '模拟按键', icon: '🔘' },
   { type: 'volume', label: '音量控制', icon: '🔊' },
   { type: 'reboot', label: '重启设备', icon: '🔄' },
+  { type: 'tts', label: 'TTS语音', icon: '🗣️' },
 ]
 
 // 判断步骤：四种条件与分支动作
@@ -871,6 +873,7 @@ const scriptAdbStepDefaults = (type: string): Record<string, any> => {
     case 'uninstallApp': return { packageName: '' }
     case 'keyevent': return { keycode: 4 }
     case 'volume': return { action: 'up', stream: 'media' }
+    case 'tts': return { text: '' }
     default: return {}
   }
 }
@@ -9093,6 +9096,10 @@ button.batch-remote-tile-tag:disabled.active {
                                 <el-option value="notification" label="通知" />
                               </el-select>
                             </div>
+                            <div v-if="step.type === 'tts'" class="script-config-row">
+                              <span>朗读文本</span>
+                              <el-input v-model="step.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
+                            </div>
                             <div class="script-config-row">
                               <span>{{ step.type === 'condition' ? '轮询/步间(ms)' : '执行间隔(ms)' }}</span>
                               <el-input-number v-model="step.interval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
@@ -9109,6 +9116,9 @@ button.batch-remote-tile-tag:disabled.active {
                             </div>
                             <div v-else-if="step.type === 'condition'" class="script-config-hint">
                               单次判断后按「成立/不成立」分支；时间条件按上面的间隔轮询设备时钟（当天目标时刻已过则立即成立），跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
+                            </div>
+                            <div v-else-if="step.type === 'tts'" class="script-config-hint">
+                              通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒
                             </div>
                             <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
