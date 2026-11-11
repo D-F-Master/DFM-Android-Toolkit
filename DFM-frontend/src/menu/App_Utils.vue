@@ -1086,13 +1086,25 @@ const scriptMoveMarker = (target: { stepIndex: number; part: 'start' | 'end' }, 
 const scriptCropMode = ref(false)
 // 正在框选的区域（设备坐标）
 const scriptCropRegion = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+// 判断步骤「组件出现」现截图时，保存后回填该步骤；空则沿用「等待组件(框选)」新增步骤的旧行为
+const scriptCropTargetStep = ref<any>(null)
 
 const toggleCropMode = () => {
   scriptCropMode.value = !scriptCropMode.value
   scriptCropRegion.value = null
+  scriptCropTargetStep.value = null
   if (scriptCropMode.value) {
     showNotification('框选模式：在画面上拖出组件所在区域，松开保存为模板', 'info')
   }
+  scriptRedrawMarkers()
+}
+
+// 判断步骤「组件出现」现截图：沿用框选交互，但保存后只回填该步骤的模板，不新增等待步骤
+const startCropForCondition = (step: any) => {
+  scriptCropTargetStep.value = step
+  scriptCropRegion.value = null
+  scriptCropMode.value = true
+  showNotification('框选模式：在画面上拖出组件所在区域，松开保存为模板', 'info')
   scriptRedrawMarkers()
 }
 
@@ -1101,6 +1113,8 @@ const finishCropRegion = async () => {
   const region = scriptCropRegion.value
   scriptCropRegion.value = null
   scriptCropMode.value = false
+  const targetStep = scriptCropTargetStep.value
+  scriptCropTargetStep.value = null
   if (!region || !scriptFrameCanvas) return
 
   const left = Math.min(region.x1, region.x2)
@@ -1110,6 +1124,7 @@ const finishCropRegion = async () => {
   // 太小基本是误触：留在框选模式里让用户重框，不退出
   if (w < 12 || h < 12) {
     scriptCropMode.value = true
+    scriptCropTargetStep.value = targetStep
     showNotification('框选区域太小，请重新框住完整的组件图案', 'error')
     scriptRedrawMarkers()
     return
@@ -1133,15 +1148,20 @@ const finishCropRegion = async () => {
         if (response.data.code === 200) {
           const d = response.data.data
           showNotification(`模板「${d.name}」已保存（${d.width}x${d.height}）`, 'success')
-          // 模板就绪后立即加一个等待组件步骤引用它
-          addScriptStep({
-            type: 'waitFor',
-            template: d.name,
-            threshold: 0.85,
-            timeout: 15,
-            interval: 500,
-            count: 1,
-          })
+          if (targetStep) {
+            // 判断步骤「现截图」：只回填该步骤的模板，不新增等待步骤；步骤已删除则只保存模板
+            if (scriptSteps.value.includes(targetStep)) targetStep.template = d.name
+          } else {
+            // 模板就绪后立即加一个等待组件步骤引用它
+            addScriptStep({
+              type: 'waitFor',
+              template: d.name,
+              threshold: 0.85,
+              timeout: 15,
+              interval: 500,
+              count: 1,
+            })
+          }
           fetchScriptTemplates()
         } else {
           showNotification('保存模板失败: ' + (response.data.message || '未知错误'), 'error')
@@ -8811,6 +8831,12 @@ button.batch-remote-tile-tag:disabled.active {
                                 <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
                                   <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
                                 </el-select>
+                                <button
+                                  class="script-add-btn"
+                                  :disabled="!scriptStreaming || scriptRunning"
+                                  title="在画面上框住组件，保存为模板并设为当前判断步骤的模板"
+                                  @click="startCropForCondition(step)"
+                                >📷 现截图</button>
                               </div>
                               <div v-if="step.kind === 'template'" class="script-config-row">
                                 <span>匹配阈值</span>
