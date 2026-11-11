@@ -3487,6 +3487,70 @@ const rebootToLoader = async () => {
   }, '确认重启')
 }
 
+// 导入 CA 证书到「信任的凭据 → 用户」
+const importingCert = ref(false)
+
+const importCaCert = async () => {
+  if (!selectedDevice.value) {
+    showMessage('请先选择设备')
+    return
+  }
+  if (importingCert.value) return
+
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.crt,.cer,.pem'
+
+  input.onchange = async (e: Event) => {
+    const target = e.target as HTMLInputElement
+    const file = target.files?.[0]
+    if (!file) return
+    if (file.size === 0) {
+      showNotification('证书文件为空', 'error')
+      return
+    }
+
+    importingCert.value = true
+    showProgressNotification('正在导入证书...')
+    try {
+      const formData = new FormData()
+      formData.append('deviceId', selectedDevice.value)
+      formData.append('file', file)
+
+      const response = await axios.post(
+        `${API_BASE.value}/api/device/cert/install`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      )
+      if (response.data.code === 200) {
+        const data = response.data.data || {}
+        if (data.alreadyInstalled) {
+          showNotification('该证书已安装（指纹相同），无需重复导入', 'success')
+        } else {
+          const lines = [
+            `证书已导入：${data.fileName}`,
+            '请到「设置 → 信任的凭据 → 用户」核对，界面可能不显示但系统信任库已生效'
+          ]
+          if (data.warnings && data.warnings.length) {
+            lines.push('注意：' + data.warnings.join('；'))
+          }
+          showNotification(lines.join('\n'), 'success')
+        }
+      } else {
+        showNotification('导入证书失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+    } catch (error: any) {
+      console.error('导入证书失败:', error)
+      showNotification('导入证书失败: ' + error.message, 'error')
+    } finally {
+      hideProgressNotification()
+      importingCert.value = false
+    }
+  }
+
+  input.click()
+}
+
 const connectWireless = async () => {
   if (!wirelessIp.value) {
     wirelessStatus.value = '请输入设备IP地址'
@@ -8182,6 +8246,13 @@ button.batch-remote-tile-tag:disabled.active {
                           <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
                         </svg>
                         <span>{{ cleaningMemory ? '清理中…' : '清理内存' }}</span>
+                      </button>
+                      <button class="feature-btn" :disabled="importingCert" @click="importCaCert">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                          <path d="M9 12l2 2 4-4"/>
+                        </svg>
+                        <span>{{ importingCert ? '导入中…' : '导入证书' }}</span>
                       </button>
                       <button class="feature-btn danger" @click="rebootToLoader">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
