@@ -2,7 +2,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build && node scripts/patch-utools-dist.mjs"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
