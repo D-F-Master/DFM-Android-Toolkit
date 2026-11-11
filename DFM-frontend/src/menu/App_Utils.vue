@@ -29,7 +29,8 @@ const TAB_ITEMS = [
   { key: 'batch',   label: '批量操作' },
   { key: 'script',  label: '模拟脚本' },
   { key: 'serial',  label: '模拟串口' },
-  { key: 'monitor', label: '性能监控' }
+  { key: 'monitor', label: '性能监控' },
+  { key: 'probe',   label: '探针工具' }
 ];
 
 // 按配置过滤后的 Tab（未配置的默认显示）
@@ -9616,6 +9617,11 @@ button.batch-remote-tile-tag:disabled.active {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <!-- 探针工具：页面先留空，后续实现功能 -->
+              <div v-if="activeTab === 'probe'" class="keys-page">
+                <div class="loading-text">功能开发中</div>
               </div>
             </div>
           </div>
