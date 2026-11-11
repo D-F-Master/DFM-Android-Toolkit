@@ -4961,6 +4961,62 @@ const autoInstallNewDevices = () => {
     runProbe(d.deviceId, true);
   }
 };
+
+// 探针工具：远程 TTS 语音播放（0x01）
+const probeTtsText = ref('');
+const probeTtsSending = ref(false);
+const probeTtsMessage = ref('');
+const probeTtsMessageType = ref<'ok' | 'err' | ''>('');
+
+const playProbeTts = async () => {
+  if (probeTtsSending.value) return;
+  const text = probeTtsText.value.trim();
+  if (!selectedDevice.value) {
+    probeTtsMessage.value = '请先在左侧选择设备';
+    probeTtsMessageType.value = 'err';
+    return;
+  }
+  if (!text) {
+    probeTtsMessage.value = '请输入要朗读的文本';
+    probeTtsMessageType.value = 'err';
+    return;
+  }
+  // 单帧数据区上限 65535 字节，留余量给 JSON 信封
+  if (new TextEncoder().encode(text).length > 60000) {
+    probeTtsMessage.value = '文本过长（单帧上限 65535 字节）';
+    probeTtsMessageType.value = 'err';
+    return;
+  }
+  probeTtsSending.value = true;
+  probeTtsMessage.value = '正在请求设备朗读...';
+  probeTtsMessageType.value = '';
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+      deviceId: selectedDevice.value,
+      cmd: 0x01,
+      data: { text }
+    }, { timeout: 200000 });
+    const d = res.data;
+    if (d?.code !== 200 || d?.data?.connected !== true) {
+      probeTtsMessage.value = `播放失败：${d?.message || '通讯失败'}`;
+      probeTtsMessageType.value = 'err';
+      return;
+    }
+    const r = d.data.response || {};
+    if (r.code !== 200) {
+      probeTtsMessage.value = `播放失败：${r.message || '设备返回错误'}`;
+      probeTtsMessageType.value = 'err';
+      return;
+    }
+    probeTtsMessage.value = '朗读完成';
+    probeTtsMessageType.value = 'ok';
+  } catch (e: any) {
+    probeTtsMessage.value = `播放失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeTtsMessageType.value = 'err';
+  } finally {
+    probeTtsSending.value = false;
+  }
+};
 </script>
 <style scoped>
 .sidebar {
@@ -9621,9 +9677,40 @@ button.batch-remote-tile-tag:disabled.active {
                 </div>
               </div>
 
-              <!-- 探针工具：页面先留空，后续实现功能 -->
+              <!-- 探针工具：远程 TTS 语音播放 -->
               <div v-if="activeTab === 'probe'" class="keys-page">
-                <div class="loading-text">功能开发中</div>
+                <div class="scrcpy-card">
+                  <div class="card-header">
+                    <span class="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                        <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/>
+                      </svg>
+                    </span>
+                    <span>远程 TTS 语音播放</span>
+                  </div>
+                  <div class="card-body">
+                    <textarea
+                      v-model="probeTtsText"
+                      class="serial-textarea"
+                      placeholder="输入要让设备朗读的文本"
+                      spellcheck="false"
+                    ></textarea>
+                    <div class="serial-actions">
+                      <button
+                        class="check-button"
+                        @click="playProbeTts"
+                        :disabled="probeTtsSending || !selectedDevice || !probeTtsText.trim()"
+                      >{{ probeTtsSending ? '播放中...' : '播放' }}</button>
+                    </div>
+                    <div v-if="probeTtsMessage" class="serial-msg" :class="probeTtsMessageType">
+                      {{ probeTtsMessage }}
+                    </div>
+                    <div class="serial-hint">
+                      通过探针 0x01 命令让设备端 TTS 引擎朗读上方文本；依赖设备系统 TTS 引擎，初始化与朗读最长约 90 秒，期间请勿重复点击。
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
