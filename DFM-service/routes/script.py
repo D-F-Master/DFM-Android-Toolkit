@@ -49,6 +49,7 @@ import json
 import os
 import re
 import time
+import random
 import asyncio
 import threading
 import zipfile
@@ -863,9 +864,28 @@ def _check_package_installed(device_id: str, pkg: str) -> bool:
     return bool(result["success"] and (result.get("stdout") or "").strip())
 
 
+def _resolve_step_text(text: str, count: int) -> str:
+    """
+    展开步骤文本里的变量；脚本里保留占位符，执行时才生成实际值。
+
+    {执行次数}   → 该步骤配置的执行次数（固定值）
+    {6位随机数}  → 6 位随机数字，n 取 1~18，每次调用重新生成，允许前导 0
+    其它写法     → 原样保留
+    """
+    text = text.replace("{执行次数}", str(count))
+
+    def _random_digits(m):
+        n = int(m.group(1))
+        if not 1 <= n <= 18:
+            return m.group(0)
+        return "".join(str(random.randint(0, 9)) for _ in range(n))
+
+    return re.sub(r"\{(\d+)位随机数\}", _random_digits, text)
+
+
 def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
     """
-    执行一个设备动作类步骤（走 adb 命令，不需要 scrcpy 会话）
+    执行一个设备动作类步骤（走 adb 命令或探针帧，不需要 scrcpy 会话）
 
     count>1 时重复执行；interval 是每次之间的等待毫秒数。
     失败抛出 RuntimeError，由调用方（流水线/面板）记录。
@@ -960,7 +980,7 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
             # TTS 步骤走探针帧协议（0x01），与探针工具页一样复用已安装的探针服务
             from routes.probe import run_probe, CMD_TTS
 
-            text = str(step.get("text", "")).strip()
+            text = _resolve_step_text(str(step.get("text", "")), max(1, repeat_count)).strip()
             if not text:
                 raise RuntimeError("TTS 步骤未填写朗读文本")
             d = run_probe(device_id, False, CMD_TTS, {"text": text})
@@ -1276,7 +1296,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         elif stype == "input":
                             # 输入文字：注入到设备当前聚焦的输入框
                             # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
-                            text = step.get("text") or ""
+                            text = _resolve_step_text(str(step.get("text") or ""), count)
                             if text:
                                 session.inject_text(text)
                                 # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
