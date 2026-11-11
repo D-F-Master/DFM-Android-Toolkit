@@ -2399,8 +2399,11 @@ async def install_ca_cert(
         return {"code": 400, "message": "证书文件过大，请确认选择的是 CA 公钥证书（PEM）", "data": None}
 
     pem_text = content.decode("utf-8", errors="replace")
-    if "-----BEGIN CERTIFICATE-----" not in pem_text:
+    cert_blocks = pem_text.count("-----BEGIN CERTIFICATE-----")
+    if cert_blocks == 0:
         return {"code": 400, "message": "请使用 BEGIN CERTIFICATE 的 PEM 证书，不要用 DER/P12", "data": None}
+    if cert_blocks > 1:
+        return {"code": 400, "message": "请只选择一张 CA 证书（PEM 中检测到多张证书）", "data": None}
 
     cert_hash = _cert_hash_old(pem_text)
     fingerprint = _cert_fingerprint(pem_text)
