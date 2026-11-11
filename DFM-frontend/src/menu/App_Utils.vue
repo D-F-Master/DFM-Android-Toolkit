@@ -7214,6 +7214,13 @@ button.batch-remote-tile-tag:disabled.active {
   vertical-align: middle;
 }
 
+.script-help-content {
+  white-space: pre-line;
+  line-height: 1.6;
+  font-size: 12px;
+  max-width: 340px;
+}
+
 .script-header-actions {
   display: flex;
   gap: 6px;
@@ -8910,7 +8917,13 @@ button.batch-remote-tile-tag:disabled.active {
                     <!-- 下：脚本列表 + 底部按钮 -->
                     <div class="script-section script-list-section">
                       <div class="script-list-header">
-                        <span><span class="script-help-icon" :title="SCRIPT_VARIABLE_HELP">i</span>脚本步骤（{{ scriptSteps.length }}）</span>
+                        <span>
+                          <el-tooltip placement="bottom-start">
+                            <template #content>
+                              <div class="script-help-content">{{ SCRIPT_VARIABLE_HELP }}</div>
+                            </template>
+                            <span class="script-help-icon">i</span>
+                          </el-tooltip>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
                           <button
                             class="script-mini-btn"
