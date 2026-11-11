@@ -28,13 +28,15 @@
     { "type": "keyevent",    "keycode": 4 },
     { "type": "volume",      "action": "up", "stream": "media" },
     { "type": "reboot" },
+    { "type": "tts",         "text": "开始测试" },
     { "type": "condition", "kind": "appInstalled", "packageName": "com.x" }
   ]
 }
 
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
-其余注入类步骤走 scrcpy 会话。判断步骤（condition）求一次条件后按真/假分支动作
-（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，走 adb 或截屏，不占会话。
+TTS 步骤走探针帧协议（0x01）；其余注入类步骤走 scrcpy 会话。判断步骤（condition）
+求一次条件后按真/假分支动作（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，
+走 adb 或截屏，不占会话。
 
 执行（/script/run）：
   临时起一个 scrcpy DeviceSession（复用批量远控的会话实现），
@@ -134,10 +136,10 @@ class ScriptImportZipResult(BaseModel):
 
 # 注入类步骤：走 scrcpy 会话
 INJECT_STEP_TYPES = ("tap", "swipe", "longpress", "input")
-# 设备动作类步骤：走 adb 命令
+# 设备动作类步骤：走 adb 命令或探针帧（不依赖 scrcpy 会话）
 ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
-    "keyevent", "volume", "reboot",
+    "keyevent", "volume", "reboot", "tts",
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
@@ -285,6 +287,14 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
     if step_type == "reboot":
         return ""
 
+    if step_type == "tts":
+        text = step.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return f"第 {idx} 步未填写要朗读的文本"
+        if len(text.encode("utf-8")) > 60000:
+            return f"第 {idx} 步的朗读文本过长（单帧上限 65535 字节）"
+        return ""
+
     return ""
 
 
@@ -407,7 +417,7 @@ def _normalize_steps(steps) -> List[dict]:
                 "interval": step.get("interval", 0),
                 "count": step.get("count", 1),
             }
-            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream"):
+            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             normalized.append(item)
@@ -946,6 +956,21 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1):
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "reboot failed").strip())
 
+        elif stype == "tts":
+            # TTS 步骤走探针帧协议（0x01），与探针工具页一样复用已安装的探针服务
+            from routes.probe import run_probe, CMD_TTS
+
+            text = str(step.get("text", "")).strip()
+            if not text:
+                raise RuntimeError("TTS 步骤未填写朗读文本")
+            d = run_probe(device_id, False, CMD_TTS, {"text": text})
+            if not d.get("connected"):
+                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
+            response = d.get("response") or {}
+            if not isinstance(response, dict) or response.get("code") != 200:
+                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                raise RuntimeError(f"TTS 朗读失败: {message}")
+
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
 
@@ -1198,7 +1223,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         if stop_event.is_set():
                             break
                         _exec_wait_step(device_id, step, base_w, base_h, stop_event)
-                # 设备动作类步骤走 adb 命令（不依赖 scrcpy 会话），count 在函数内部循环
+                # 设备动作类步骤走 adb 命令或探针帧（不依赖 scrcpy 会话），count 在函数内部循环
                 elif stype in ADB_STEP_TYPES:
                     _exec_adb_step(device_id, step, count)
                 # 判断步骤：求一次条件，按真/假分支动作决定下一步
