@@ -774,9 +774,9 @@
 
 ---
 
-## 五、生产流水线接口
+## 五、生产工具接口
 
-生产工具页的流水线编排与多设备执行。数据结构（保存为 `data/pipelines/{name}.json`）：
+生产工具页执行引擎支持的步骤类型（快捷执行复用单步 simulate 流水线）：
 
 ```json
 {
@@ -812,23 +812,8 @@
 - `reboot` / `rebootLoader`：`adb reboot` / `adb reboot bootloader`（⚠️ loader 模式 adb 不可达，需数据线重插或工具恢复）
 - `cleanMemory`：杀后台缓存进程（`am kill-all`）+ 尝试释放页缓存（root，失败不阻塞）
 - 通用字段：`screenshot`/`deleteFolder`/`keyevent`/`reboot`/`rebootLoader`/`cleanMemory` 支持 `delayAfter`（秒，0-∞，执行成功后等待再进入下一步；停止请求可中断等待）
-- 前端「添加步骤」行展示最近使用的 5 个步骤类型（localStorage 持久化），「⋯ 更多」弹窗按分类（基础/应用管理/设备控制/系统维护）展示全部；投屏、文件管理、日志窗口等查看型功能不作为流水线步骤
 
-### 32. 保存流水线
-**接口**: `POST /api/device/pipeline/save`  
-**请求体**: `{"name": "流水线名", "steps": [ ... ]}`（结构见上）  
-**响应**: `{"code": 200, "data": {"name": "...", "path": "..."}}`；步骤校验失败返回 code 400
-
-### 33. 流水线列表 / 加载 / 删除
-**接口**: `POST /api/device/pipeline/list`（无参数）/ `load`（`{"name"}`）/ `delete`（`{"name"}`）  
-**list 响应**: `[{"name": "...", "stepCount": 2}]`；load 返回完整 JSON；不存在返回 code 404
-
-### 34. 导入流水线
-**接口**: `POST /api/device/pipeline/import`  
-**请求体**: `{"content": "流水线JSON原文", "name": "可选，不传用内容里的name"}`  
-**说明**: 与模拟脚本导入同套路——先校验再落盘，同名覆盖并在 data.overwritten 标记
-
-### 35. 上传 / 列出 / 删除 APK 素材
+### 32. 上传 / 列出 / 删除 APK 素材
 **接口**:
 - `POST /api/device/pipeline/upload-apk`（multipart/form-data，字段 `apk`）
 - `POST /api/device/pipeline/list-apks`（无参数）
@@ -836,31 +821,13 @@
 
 **说明**: 素材存放于 `data/apk/`，文件名经安全过滤（中英文数字下划线连字符）
 
-### 36. 执行流水线
-**接口**: `POST /api/device/pipeline/run`  
-**请求体**:
-```json
-{
-  "name": "流水线名（须先保存）",
-  "deviceIds": ["192.168.0.110:5555"],
-  "mode": "parallel"
-}
-```
-**参数说明**:
-- `mode=parallel`：按步骤推进，每步所有在线设备并发执行，全部完成进入下一步
-- `mode=serial`：每台设备依次跑完整条流水线，再轮到下一台
-- 某设备某步失败后该设备退出本次执行，不影响其他设备
-
-**响应**: `{"code": 200, "data": {"runId": "...", "online": [...], "offline": [...], "stepCount": n, "mode": "..."}}`  
-**说明**: 后台线程执行，立即返回 runId；全部设备不在线返回 code 400
-
-### 37. 拉取执行日志
+### 33. 拉取执行日志
 **接口**: `POST /api/device/pipeline/logs`  
 **请求体**: `{"runId": "...", "cursor": 0}`（cursor 传上次返回的 total）  
 **响应**: `{"code": 200, "data": {"logs": [{"time","deviceId","step","level","message"}], "total": n, "running": bool}}`  
 **说明**: 增量拉取，前端建议 1 秒轮询；`running=false` 表示执行结束；运行记录仅保留最近 20 次
 
-### 38. 停止执行
+### 34. 停止执行
 **接口**: `POST /api/device/pipeline/stop`  
 **请求体**: `{"name": "<runId>"}`（runId 通过 name 字段传入）  
 **说明**: 发送停止请求，当前步骤完成后生效
