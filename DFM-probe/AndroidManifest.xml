@@ -7,6 +7,7 @@
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="30" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Android 11 (targetSdk 30) 包可见性限制：不声明就 bind 不上系统 TTS 引擎服务，
          TextToSpeech 构造会立刻回调 onInit(ERROR) -->
@@ -27,6 +28,8 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="com.dfm.probe.START" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="com.dfm.probe.WATCHDOG" />
             </intent-filter>
         </receiver>
 

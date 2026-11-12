@@ -84,12 +84,13 @@ public class ProbeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // 启动广播每次请求都会重发，只有尚未监听时才起线程，避免重复 bind 端口
+        // START / BOOT_COMPLETED / 看门狗广播都会重发，只有尚未监听时才起线程，避免重复 bind 端口
         if (!running) {
             running = true;
             new Thread(new ListenTask(), "dfm-probe-listener").start();
         }
-        return START_NOT_STICKY;
+        // 系统回收进程后自动重建服务；重建时 intent 可能为 null，本服务不读 intent
+        return START_STICKY;
     }
 
     @Override
