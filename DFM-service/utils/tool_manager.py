@@ -255,7 +255,8 @@ def verify_tools() -> dict:
             {
                 'adb': {'available': bool, 'path': str},
                 'scrcpy': {'available': bool, 'path': str},
-                'aapt': {'available': bool, 'path': str}
+                'aapt': {'available': bool, 'path': str},
+                'probe_apk': {'available': bool, 'path': str}
             }
     """
     tools = {}
@@ -280,6 +281,15 @@ def verify_tools() -> dict:
         tools['aapt'] = {'available': True, 'path': aapt_path}
     except FileNotFoundError as e:
         tools['aapt'] = {'available': False, 'path': None, 'error': str(e)}
+    
+    # 检查 probe apk
+    try:
+        apk_path = get_probe_apk_path()
+        if not apk_path.is_file():
+            raise FileNotFoundError(f"未找到 DFMProbe.apk: {apk_path}")
+        tools['probe_apk'] = {'available': True, 'path': str(apk_path)}
+    except FileNotFoundError as e:
+        tools['probe_apk'] = {'available': False, 'path': None, 'error': str(e)}
     
     return tools
 
