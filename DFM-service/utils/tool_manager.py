@@ -185,6 +185,16 @@ def get_aapt_path() -> str:
     )
 
 
+def get_probe_apk_path() -> Path:
+    """
+    获取 DFMProbe 探针 APK 的完整路径
+
+    Returns:
+        Path: data/apk/DFMProbe.apk 路径对象
+    """
+    return get_data_path() / "apk" / "DFMProbe.apk"
+
+
 def get_adb_dependencies() -> list:
     """
     获取 ADB 依赖的 DLL 文件列表

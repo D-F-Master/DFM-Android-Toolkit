@@ -3,13 +3,12 @@ import socket
 import subprocess
 import threading
 import time
-from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from config import logger
-from utils.tool_manager import get_adb_path
+from utils.tool_manager import get_adb_path, get_probe_apk_path
 
 router = APIRouter(
     prefix="/api",
@@ -34,8 +33,6 @@ MAX_RETRY = 3
 RESPONSE_TIMEOUT = 120.0
 CONNECT_TIMEOUT = 5.0
 INSTALL_TIMEOUT = 180
-# routes/probe.py -> routes/ -> DFM-service/ -> DFM-Android-Toolkit/
-APK_PATH = Path(__file__).resolve().parents[2] / "DFM-probe" / "DFMProbe.apk"
 
 _locks_lock = threading.Lock()
 _device_locks = {}
@@ -242,10 +239,11 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
             return {"connected": False, "reason": f"数据区超过 65535 字节: {len(payload)}"}
 
         if install:
-            if not APK_PATH.is_file():
-                return {"connected": False, "reason": f"找不到 APK: {APK_PATH}"}
+            apk_path = get_probe_apk_path()
+            if not apk_path.is_file():
+                return {"connected": False, "reason": f"找不到 APK: {apk_path}"}
             rc, out, err = _adb(
-                device_id, "install", "-r", str(APK_PATH), timeout=INSTALL_TIMEOUT
+                device_id, "install", "-r", str(apk_path), timeout=INSTALL_TIMEOUT
             )
             if rc != 0 or "Success" not in out:
                 return {"connected": False, "reason": f"安装失败: {err or out}"}
