@@ -13,7 +13,7 @@ APK 作为 TCP 服务端监听设备本机 `0.0.0.0:21104`，PC 作为客户端�
 DFM-probe/
 ├── AndroidManifest.xml          # 权限、receiver、前台服务声明
 ├── java/com/dfm/probe/
-│   ├── StartReceiver.java       # 接收 START 广播，拉起 ProbeService
+│   ├── StartReceiver.java       # 接收 START/开机/看门狗广播，拉起 ProbeService
 │   └── ProbeService.java        # 前台服务：监听 21104 + 帧协议收发
 ├── res/                         # app_name / 通知栏小图标
 ├── build.ps1                    # 不用 Gradle，直接调 SDK build-tools 打包签名
@@ -59,6 +59,18 @@ PC                                      设备 (com.dfm.probe)
 adb 只做三件事：安装、发 START 广播启动服务、USB 设备做 `adb forward` 端口映射；
 **adb 命令不承载任何业务数据**，业务数据全部走 21104 上的帧协议。
 网络设备不需要 forward，APK 启动后直接连 `<设备IP>:21104`。
+
+## 自启动与后台保活
+
+- 清单声明 `RECEIVE_BOOT_COMPLETED`，`StartReceiver` 同时过滤 `com.dfm.probe.START`、
+  `android.intent.action.BOOT_COMPLETED` 和 `com.dfm.probe.WATCHDOG`：设备重启后自动拉起服务，
+  不需要 PC 再发广播。
+- 服务返回 `START_STICKY`：进程被系统回收后自动重建并重新监听 21104。
+- 每次广播都用 `AlarmManager.setRepeating(ELAPSED_REALTIME_WAKEUP, 60s)` 注册/续期看门狗广播，
+  兜住 `START_STICKY` 未生效的回收场景；启动前台服务被系统拒绝时记日志，下一轮重试。
+- `force-stop` 会同时清掉 alarm 与所有广播，只能由 PC 重新发 START 广播恢复；
+  Doze 白名单需部署时执行 `adb shell dumpsys deviceidle whitelist +com.dfm.probe`。
+  以上开机自启与看门狗效果尚未实机验证。
 
 ## 协议
 
@@ -224,7 +236,8 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 
 ## 已知边界
 
-- 服务返回 `START_NOT_STICKY`：进程被系统杀掉后不会自行恢复，需要重新发 START 广播。
+- 服务返回 `START_STICKY` + 开机自启 + 60 秒看门狗：设备重启与系统回收后能自行恢复；
+  但 force-stop 会清掉 alarm 与所有广播，只能由 PC 重新发 START 广播恢复，Doze 白名单也需自行设置。
 - 每连接一个工作线程、连接内串行（窗口 1）；TTS 朗读期间会占用该连接线程（同步等
   `onDone`，最长 60 秒），期间不处理该连接上的其它请求，但 `accept` 循环不受影响。
 - 单帧数据区最多 65535 字节（长度字段 2 字节、低字节在前），超长判失败不截断；当前工程不做拆帧。

@@ -16,8 +16,8 @@
 
 | 组件 | 文件 | 提供的能力 |
 | --- | --- | --- |
-| 组件声明 | `AndroidManifest.xml` | 权限、`START` 广播接收器、前台服务、TTS 包可见性声明 |
-| 启动入口 | `java/com/dfm/probe/StartReceiver.java` | 接收 `com.dfm.probe.START` 广播并拉起服务 |
+| 组件声明 | `AndroidManifest.xml` | 权限、`START` / 开机 / 看门狗广播接收器、前台服务、TTS 包可见性声明 |
+| 启动入口 | `java/com/dfm/probe/StartReceiver.java` | 接收 `com.dfm.probe.START` / `BOOT_COMPLETED` / 看门狗广播并拉起服务，注册 AlarmManager 定时自检 |
 | 设备端主体 | `java/com/dfm/probe/ProbeService.java` | 前台常驻、TCP 监听、帧协议收发、3 个业务命令、系统 TTS、设备信息采集 |
 | 资源 | `res/` | 应用名 `DFM Probe`、通知栏小图标 |
 | 构建脚本 | `build.ps1` | 不用 Gradle，直接调 SDK build-tools 打包并签名 |
@@ -32,13 +32,20 @@
 
 - **无桌面图标、无 Activity**，靠显式广播 `com.dfm.probe.START`（`-n com.dfm.probe/.StartReceiver` + `--include-stopped-packages`）启动；
   这样能拉起刚安装、仍处于 stopped 状态的应用，规避 Android 11 安装后无法直接起前台服务的限制。
-- Android 8+ 走 `startForegroundService`，更低版本走 `startService`。
+- **开机自启**：清单声明 `RECEIVE_BOOT_COMPLETED`，`StartReceiver` 过滤 `android.intent.action.BOOT_COMPLETED`，
+  设备重启后自动走同一路径拉起服务，并重新注册看门狗（重启会清空 AlarmManager 的 alarm）。
+- **看门狗**：每次收到广播都用 `AlarmManager.setRepeating(ELAPSED_REALTIME_WAKEUP, 60s)` 注册/续期一条
+  显式 `com.dfm.probe.WATCHDOG` 广播，定时自检重新拉起服务，兜住 `START_STICKY` 未生效的回收场景；
+  `FLAG_UPDATE_CURRENT` 保证不会堆出多条 alarm。
+- Android 8+ 走 `startForegroundService`，更低版本走 `startService`；启动被系统拒绝时记日志，下一轮看门狗重试。
 - **前台服务 + 常驻通知**：标题 `DFM Probe`、内容「监听 21104 端口」、`setOngoing(true)`；
   Android 8+ 自动创建低重要性通知渠道 `dfm_probe`。
-- START 广播**可重复、幂等**：`running` 标志保证只有尚未监听时才起监听线程，不会重复 bind 端口。
-- 服务返回 `START_NOT_STICKY`；`onDestroy` 会关闭 `ServerSocket` 并释放 TTS 引擎。
-- 清单：`minSdk 23` / `targetSdk 30`，权限 `INTERNET` + `FOREGROUND_SERVICE`，`allowBackup=false`，
-  服务 `exported=false`，接收器 `exported=true` 且只过滤 `com.dfm.probe.START`。
+- 广播**可重复、幂等**：`running` 标志保证只有尚未监听时才起监听线程，不会重复 bind 端口。
+- 服务返回 `START_STICKY`：进程被系统回收后自动重建（`onStartCommand` 收 `intent=null`，本服务不读 intent），
+  重建时重新 bind 21104；`onDestroy` 会关闭 `ServerSocket` 并释放 TTS 引擎。
+- 清单：`minSdk 23` / `targetSdk 30`，权限 `INTERNET` + `FOREGROUND_SERVICE` + `RECEIVE_BOOT_COMPLETED`，
+  `allowBackup=false`，服务 `exported=false`，接收器 `exported=true` 且过滤
+  `com.dfm.probe.START` / `android.intent.action.BOOT_COMPLETED` / `com.dfm.probe.WATCHDOG`。
 
 ## 3. 设备端 APK：网络服务
 
@@ -243,7 +250,11 @@ START 广播是异步的，脚本用 10 次 × 0.3 秒的连接重试等待服�
 - **不做拆帧**：单帧数据区最多 65535 字节（长度字段 2 字节、低字节在前），超长判失败不截断，不支持自动分片。
 - **不做多帧并发**：连接内串行（窗口 1）；TTS 朗读期间同步等待 `onDone`，最长占用该连接线程 60 秒，
   期间不处理该连接上的其它请求（其它连接与 `accept` 不受影响）。
-- **不自动恢复**：`START_NOT_STICKY`，进程被系统杀掉后不会自启，需重新发 START 广播；也没有开机自启。
+- **force-stop 后无法自动恢复**：开机自启 + `START_STICKY` + 看门狗能覆盖设备重启与系统回收，
+  但 force-stop 会同时清掉 AlarmManager 的 alarm 与所有广播，只能由 PC 重新发 START 广播恢复；
+  这是 Android 系统限制。Doze / 电池优化白名单需部署时用
+  `adb shell dumpsys deviceidle whitelist +com.dfm.probe` 设置，部分 ROM 的自启动管理也可能拦截开机广播。
+  以上开机自启与看门狗效果尚未实机验证。
 - **不做端口自适应**：21104 被占用即 bind 失败；不做鉴权、加密、多客户端排队等。
 - **帧序去重只记最近一帧**：`lastSeq` 为每连接最近一次受理的帧序，不是全历史去重表。
 - **网络直连尚未实机验证**：只有 USB 设备 `202600298120` 完成实机验证；`192.168.0.59:5555` 曾反复
