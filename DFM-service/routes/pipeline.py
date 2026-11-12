@@ -1,32 +1,18 @@
 """
-生产流水线 - 步骤编排 CRUD 与多设备执行
+生产工具接口 - APK 素材库、设备画面快照、快捷执行脚本与执行日志
 
-流水线数据结构（保存为 data/pipelines/{name}.json）：
-{
-  "name": "流水线名",
-  "steps": [
-    { "type": "installApk", "apkName": "demo.apk" },
-    { "type": "simulate",   "scriptName": "脚本名", "repeat": 1 },
-    { "type": "screenshot", "saveDir": "" },          # 空 = D:\\log\\{设备SN}\\
-    { "type": "deleteFolder", "path": "/sdcard/xxx" }
-  ]
-}
-
-执行（/device/pipeline/run）：
-  - mode=parallel：按步骤推进，每步所有在线设备并发执行，全部完成进入下一步；
-  - mode=serial：每台设备依次跑完整条流水线，再轮到下一台。
-  - 某设备某步失败后该设备退出本次执行，不影响其他设备。
-  - 全程产生带设备号/步骤/级别的日志，内存缓存，前端按游标增量拉取。
+快捷执行（/device/pipeline/run-script）把单个模拟脚本包装成单步流水线，
+复用 _run_pipeline 执行引擎：按设备并发执行，全程产生带设备号/步骤/级别的日志，
+内存缓存，前端按游标增量拉取。
 """
 import json
 import re
-import time
 import uuid
 import threading
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Optional, List
+from typing import List
 
 from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel
@@ -61,8 +47,6 @@ STEP_LABELS = {
     "cleanMemory": "清理内存",
 }
 
-VALID_STEP_TYPES = tuple(STEP_LABELS.keys())
-
 
 def _ensure_dirs():
     PIPELINES_DIR.mkdir(parents=True, exist_ok=True)
@@ -80,200 +64,8 @@ def _safe_device_tag(device_id: str) -> str:
     return re.sub(r'[^\w-]', '_', device_id)
 
 
-def _validate_steps(steps) -> str:
-    """校验步骤列表，返回空串表示通过，否则返回错误信息"""
-    if not isinstance(steps, list) or not steps:
-        return "流水线 steps 必须是非空数组"
-
-    for i, step in enumerate(steps):
-        if not isinstance(step, dict):
-            return f"第 {i + 1} 步不是对象"
-        step_type = step.get("type")
-        if step_type not in VALID_STEP_TYPES:
-            return f"第 {i + 1} 步的 type 无效: {step_type}（应为 {'/'.join(VALID_STEP_TYPES)}）"
-
-        if step_type == "shell":
-            cmd = str(step.get("command", "")).strip()
-            if not cmd:
-                return f"第 {i + 1} 步的 shell 命令不能为空"
-            # 命令直接进 adb shell 执行，拆掉首尾的 adb shell 包装防套娃
-            lowered = cmd.lower()
-            if lowered.startswith("adb ") or lowered.startswith("adb.exe "):
-                return f"第 {i + 1} 步不要带 adb 前缀，命令会在设备 shell 中执行"
-
-        if step_type == "installApk" and not str(step.get("apkName", "")).strip():
-            return f"第 {i + 1} 步未选择 APK 文件"
-        if step_type == "simulate" and not str(step.get("scriptName", "")).strip():
-            return f"第 {i + 1} 步未选择模拟脚本"
-        if step_type == "deleteFolder":
-            path = str(step.get("path", "")).strip()
-            if not path:
-                return f"第 {i + 1} 步未填写要删除的文件夹路径"
-            # rm -rf 的目标必须限定在用户区，防止误删系统目录
-            if not (path.startswith("/sdcard/") or path.startswith("/storage/")):
-                return f"第 {i + 1} 步的删除路径仅允许 /sdcard/ 或 /storage/ 开头"
-
-        if step_type in ("startApp", "stopApp", "uninstallApp"):
-            pkg = str(step.get("packageName", "")).strip()
-            if not pkg:
-                return f"第 {i + 1} 步未填写应用包名"
-            if re.search(r'[\s"\'&|;$<>`\\]', pkg):
-                return f"第 {i + 1} 步的包名不能包含空格或特殊字符"
-            if step_type == "startApp" and step.get("activity"):
-                activity = str(step.get("activity", "")).strip()
-                if re.search(r'[\s"\'&|;$<>`\\]', activity):
-                    return f"第 {i + 1} 步的 Activity 名不能包含空格或特殊字符"
-
-        if step_type == "keyevent":
-            try:
-                keycode = int(step.get("keycode"))
-            except (TypeError, ValueError):
-                return f"第 {i + 1} 步未填写有效的按键键值（数字）"
-            if not (0 <= keycode <= 65535):
-                return f"第 {i + 1} 步的键值超出范围 0-65535"
-            repeat = step.get("repeat", 1)
-            try:
-                if int(repeat) < 1 or int(repeat) > 20:
-                    return f"第 {i + 1} 步的按键次数必须在 1-20 之间"
-            except (TypeError, ValueError):
-                return f"第 {i + 1} 步的按键次数无效"
-
-        if step_type == "volume" and str(step.get("action", "")).strip() not in ("up", "down", "mute"):
-            return f"第 {i + 1} 步的音量动作仅支持 up/down/mute"
-
-        if step_type in ("screenshot", "deleteFolder", "keyevent", "reboot", "rebootLoader", "cleanMemory") and step.get("delayAfter") is not None:
-            try:
-                if int(step.get("delayAfter")) < 0:
-                    return f"第 {i + 1} 步的步骤间隔不能为负数"
-            except (TypeError, ValueError):
-                return f"第 {i + 1} 步的步骤间隔无效"
-
-    return ""
-
-
-# ========== 流水线 CRUD ==========
-
-class PipelineSaveRequest(BaseModel):
-    name: str
-    steps: List[dict]
-
-
 class PipelineNameRequest(BaseModel):
     name: str
-
-
-class PipelineImportRequest(BaseModel):
-    content: str
-    name: Optional[str] = None
-
-
-@router.post("/device/pipeline/save")
-def save_pipeline(request: PipelineSaveRequest):
-    """保存流水线到 data/pipelines/{name}.json"""
-    try:
-        _ensure_dirs()
-        error = _validate_steps(request.steps)
-        if error:
-            return {"code": 400, "message": error, "data": None}
-        name = _safe_name(request.name)
-        data = {"name": name, "steps": request.steps}
-        path = PIPELINES_DIR / f"{name}.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        logger.info(f"Pipeline saved: {path}")
-        return {"code": 200, "message": "success", "data": {"name": name, "path": str(path)}}
-    except Exception as e:
-        return {"code": 500, "message": f"保存流水线失败: {str(e)}", "data": None}
-
-
-@router.post("/device/pipeline/list")
-def list_pipelines():
-    """列出所有流水线（名称 + 步骤数）"""
-    try:
-        _ensure_dirs()
-        items = []
-        for f in sorted(PIPELINES_DIR.glob("*.json")):
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                items.append({
-                    "name": data.get("name", f.stem),
-                    "stepCount": len(data.get("steps", [])),
-                })
-            except Exception:
-                continue
-        return {"code": 200, "message": "success", "data": items}
-    except Exception as e:
-        return {"code": 500, "message": f"获取流水线列表失败: {str(e)}", "data": None}
-
-
-@router.post("/device/pipeline/load")
-def load_pipeline(request: PipelineNameRequest):
-    """读取单条流水线完整内容"""
-    try:
-        _ensure_dirs()
-        name = _safe_name(request.name)
-        path = PIPELINES_DIR / f"{name}.json"
-        if not path.exists():
-            return {"code": 404, "message": f"流水线 {name} 不存在", "data": None}
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return {"code": 200, "message": "success", "data": data}
-    except Exception as e:
-        return {"code": 500, "message": f"读取流水线失败: {str(e)}", "data": None}
-
-
-@router.post("/device/pipeline/delete")
-def delete_pipeline(request: PipelineNameRequest):
-    """删除流水线文件"""
-    try:
-        _ensure_dirs()
-        name = _safe_name(request.name)
-        path = PIPELINES_DIR / f"{name}.json"
-        if path.exists():
-            path.unlink()
-            logger.info(f"Pipeline deleted: {path}")
-        return {"code": 200, "message": "success", "data": None}
-    except Exception as e:
-        return {"code": 500, "message": f"删除流水线失败: {str(e)}", "data": None}
-
-
-@router.post("/device/pipeline/import")
-def import_pipeline(request: PipelineImportRequest):
-    """导入流水线：解析 JSON 原文，校验后落盘（与模拟脚本导入同套路）"""
-    try:
-        content = (request.content or "").strip()
-        if not content:
-            return {"code": 400, "message": "流水线内容为空", "data": None}
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError as e:
-            return {"code": 400, "message": f"JSON 解析失败: {str(e)}", "data": None}
-        if not isinstance(data, dict):
-            return {"code": 400, "message": "流水线根节点必须是对象", "data": None}
-
-        error = _validate_steps(data.get("steps"))
-        if error:
-            return {"code": 400, "message": f"流水线校验失败: {error}", "data": None}
-
-        raw_name = request.name or data.get("name") or f"imported_{int(time.time() * 1000)}"
-        name = _safe_name(str(raw_name))
-
-        _ensure_dirs()
-        target = PIPELINES_DIR / f"{name}.json"
-        existed = target.exists()
-        with open(target, "w", encoding="utf-8") as f:
-            json.dump({"name": name, "steps": data["steps"]}, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"Pipeline imported: {target}")
-        return {
-            "code": 200,
-            "message": "success",
-            "data": {"name": name, "path": str(target), "stepCount": len(data["steps"]), "overwritten": existed},
-        }
-    except Exception as e:
-        logger.error(f"导入流水线失败: {e}")
-        return {"code": 500, "message": f"导入流水线失败: {str(e)}", "data": None}
 
 
 # ========== APK 素材库 ==========
@@ -477,12 +269,6 @@ def _start_quick_run(script_name: str, device_ids: List[str]):
 
 
 # ========== 执行引擎 ==========
-
-class PipelineRunRequest(BaseModel):
-    name: str
-    deviceIds: List[str]
-    mode: str = "parallel"  # parallel | serial
-
 
 class PipelineLogRequest(BaseModel):
     runId: str
@@ -758,82 +544,6 @@ def _check_devices_online(device_ids: List[str]):
     online = [d for d in device_ids if d in online_set]
     offline = [d for d in device_ids if d not in online_set]
     return online, offline
-
-
-@router.post("/device/pipeline/run")
-def run_pipeline(request: PipelineRunRequest):
-    """启动流水线（后台线程执行，立即返回 runId 供日志轮询）"""
-    try:
-        if not request.deviceIds:
-            return {"code": 400, "message": "请至少选择一台设备", "data": None}
-        if request.mode not in ("parallel", "serial"):
-            return {"code": 400, "message": "mode 仅支持 parallel / serial", "data": None}
-
-        _ensure_dirs()
-        name = _safe_name(request.name)
-        path = PIPELINES_DIR / f"{name}.json"
-        if not path.exists():
-            return {"code": 404, "message": f"流水线 {name} 不存在，请先保存", "data": None}
-        with open(path, "r", encoding="utf-8") as f:
-            pipeline = json.load(f)
-        error = _validate_steps(pipeline.get("steps"))
-        if error:
-            return {"code": 400, "message": f"流水线校验失败: {error}", "data": None}
-
-        online, offline = _check_devices_online(request.deviceIds)
-        if not online:
-            return {"code": 400, "message": "所选设备均不在线", "data": None}
-
-        run_id = uuid.uuid4().hex[:12]
-
-        # 日志目录：D:\log\{流水线名}_{日期_时间}\，整个执行过程写入单个 run.log
-        log_dir = os.path.join(PIPELINE_LOG_ROOT, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, "run.log")
-        file_handle = open(log_path, "a", encoding="utf-8")
-
-        run = {
-            "logs": [],
-            "lock": threading.Lock(),
-            "stop": threading.Event(),
-            "running": True,
-            "file_handle": file_handle,
-        }
-        # 起始行（写文件+内存，标记本次运行基本信息）
-        file_handle.write(f"===== 流水线 [{name}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
-                          f"mode={request.mode} 设备={','.join(online)} =====\n")
-        file_handle.flush()
-
-        with _runs_lock:
-            # 只保留最近 20 次运行的日志，防止内存无限增长
-            while len(_pipeline_runs) >= 20:
-                oldest = next(iter(_pipeline_runs))
-                del _pipeline_runs[oldest]
-            _pipeline_runs[run_id] = run
-
-        t = threading.Thread(
-            target=_run_pipeline,
-            args=(run_id, pipeline, online, request.mode),
-            name=f"pipeline-{run_id}",
-            daemon=True,
-        )
-        t.start()
-
-        logger.info(f"Pipeline {name} started: runId={run_id}, devices={online}, mode={request.mode}")
-        return {
-            "code": 200,
-            "message": "success",
-            "data": {
-                "runId": run_id,
-                "online": online,
-                "offline": offline,
-                "stepCount": len(pipeline.get("steps", [])),
-                "mode": request.mode,
-                "logDir": log_dir,
-            },
-        }
-    except Exception as e:
-        return {"code": 500, "message": f"启动流水线失败: {str(e)}", "data": None}
 
 
 @router.post("/device/pipeline/logs")
