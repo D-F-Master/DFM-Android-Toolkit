@@ -4,7 +4,7 @@ const emit = defineEmits(['back']);
 
 <template>
   <div class="app">
-    <button class="back-button" @click="emit('back')">←</button>
+    <button class="back-button" @click="emit('back')">&lt;</button>
     <div class="container">
       <div class="content">
         <!-- TODO: MCP 服务管理功能待加入 -->
