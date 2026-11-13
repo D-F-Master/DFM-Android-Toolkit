@@ -7,6 +7,10 @@ export default defineConfig({
   base: './',
   server: {
     port: 5175,
+    // uTools 开发插件以 http://localhost:5175 加载；Node 24 下默认只绑定 ::1，
+    // Chromium 解析到 127.0.0.1 时连不上会白屏。host: true 让 Node 监听 :: 双栈，
+    // 同时覆盖 127.0.0.1 与 ::1。
+    host: true,
   },
   resolve: {
     dedupe: [
