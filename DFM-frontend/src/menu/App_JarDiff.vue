@@ -5,7 +5,8 @@ const emit = defineEmits(['back']);
 
 // ===== Tab 注册表（后续 jar 包相关工具加在这里） =====
 const TAB_ITEMS = [
-  { key: 'diff', label: 'jar包对比' }
+  { key: 'diff', label: 'jar包对比' },
+  { key: 'codeEdit', label: 'jar代码修改' }
 ];
 
 const activeTab = ref('diff');
@@ -289,6 +290,188 @@ const exportMd = async () => {
   }
 };
 
+// ==================== jar 代码修改 ====================
+// 流程：上传 jar → 左侧树选 class → CFR 反编译源码 → 编辑 → javac 编译替换 → 下载新 jar
+// 后端处理 BOOT-INF 前缀与匿名类 $N 的替换；这里只做展示与编辑
+
+const jarId = ref('');
+const jarName = ref('');
+const jarFat = ref(false);
+const jarEntries = ref<string[]>([]);
+const editUploading = ref(false);
+const editDragging = ref(false);
+const editError = ref('');
+const editMessage = ref('');
+const editInput = ref<HTMLInputElement | null>(null);
+
+// 树：目录展开状态
+const expandedDirs = ref(new Set<string>());
+const selectedClass = ref('');
+const classSource = ref('');
+const sourceLoading = ref(false);
+const compiling = ref(false);
+const newJarFile = ref('');
+
+interface TreeRow {
+  depth: number;
+  name: string;
+  path: string;
+  isDir: boolean;
+}
+
+const visibleTreeRows = computed<TreeRow[]>(() => {
+  const rows: TreeRow[] = [];
+  // 由 entries 构建目录树：com/demo/Calc.class → com → demo → Calc.class
+  const root = new Map<string, any>();
+  for (const p of jarEntries.value) {
+    const parts = p.split('/');
+    let level = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!level.has(parts[i])) level.set(parts[i], new Map<string, any>());
+      level = level.get(parts[i]);
+    }
+    if (!level.has('__files__')) level.set('__files__', []);
+    (level.get('__files__') as string[]).push(parts[parts.length - 1]);
+  }
+  const walk = (level: Map<string, any>, depth: number, prefix: string) => {
+    const dirs = [...level.keys()].filter((k) => k !== '__files__').sort();
+    for (const name of dirs) {
+      const path = prefix ? `${prefix}/${name}` : name;
+      rows.push({ depth, name, path, isDir: true });
+      if (expandedDirs.value.has(path)) walk(level.get(name), depth + 1, path);
+    }
+    for (const f of (level.get('__files__') || []).sort()) {
+      const path = prefix ? `${prefix}/${f}` : f;
+      rows.push({ depth, name: f, path, isDir: false });
+    }
+  };
+  walk(root, 0, '');
+  return rows;
+});
+
+const toggleTreeDir = (row: TreeRow) => {
+  const next = new Set(expandedDirs.value);
+  if (next.has(row.path)) next.delete(row.path);
+  else next.add(row.path);
+  expandedDirs.value = next;
+};
+
+const validateEditDropped = (files: FileList): File | null => {
+  const acceptTypes = ['.jar', '.war'];
+  const hit = Array.from(files).find((f) => acceptTypes.some((ext) => f.name.toLowerCase().endsWith(ext)));
+  if (!hit) {
+    editError.value = `仅支持 ${acceptTypes.join(' / ')} 文件，已忽略：${Array.from(files).map((f) => f.name).join('、')}`;
+    return null;
+  }
+  return hit;
+};
+
+const onEditDrop = (ev: DragEvent) => {
+  editDragging.value = false;
+  const file = validateEditDropped(ev.dataTransfer!.files);
+  if (file) uploadEditJar(file);
+};
+
+const uploadEditJar = async (file: File) => {
+  editUploading.value = true;
+  editError.value = '';
+  editMessage.value = '';
+  newJarFile.value = '';
+  selectedClass.value = '';
+  classSource.value = '';
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await fetch(`${API_BASE.value}/api/jaredit/upload`, { method: 'POST', body: form });
+    const json = await response.json();
+    if (json.code === 200) {
+      jarId.value = json.data.id;
+      jarName.value = json.data.name;
+      jarFat.value = json.data.fat;
+      jarEntries.value = json.data.entries || [];
+      expandedDirs.value = new Set();
+      // 默认展开第一层目录
+      const first = new Set<string>();
+      for (const p of jarEntries.value) first.add(p.split('/')[0]);
+      expandedDirs.value = first;
+    } else {
+      editError.value = json.message || '上传失败';
+    }
+  } catch (error) {
+    editError.value = `无法连接到服务器 ${API_BASE.value}`;
+  } finally {
+    editUploading.value = false;
+  }
+};
+
+const onEditFileChosen = (ev: Event) => {
+  const input = ev.target as HTMLInputElement;
+  if (input.files && input.files.length > 0) uploadEditJar(input.files[0]);
+  input.value = '';
+};
+
+const loadClassSource = async (path: string) => {
+  selectedClass.value = path;
+  sourceLoading.value = true;
+  editError.value = '';
+  editMessage.value = '';
+  try {
+    const response = await fetch(`${API_BASE.value}/api/jaredit/source/${jarId.value}?path=${encodeURIComponent(path)}`);
+    const json = await response.json();
+    if (json.code === 200) {
+      classSource.value = json.data.source;
+    } else {
+      editError.value = json.message || '反编译失败';
+      classSource.value = '';
+    }
+  } catch (error) {
+    editError.value = `无法连接到服务器 ${API_BASE.value}`;
+  } finally {
+    sourceLoading.value = false;
+  }
+};
+
+// 编译并替换：成功后合并 replaced 条目进树（新增的 $N 匿名类），并准备下载
+const compileAndReplace = async () => {
+  if (!selectedClass.value || compiling.value) return;
+  compiling.value = true;
+  editError.value = '';
+  editMessage.value = '';
+  try {
+    const form = new FormData();
+    form.append('sid', jarId.value);
+    form.append('path', selectedClass.value);
+    form.append('source', classSource.value);
+    const response = await fetch(`${API_BASE.value}/api/jaredit/save`, { method: 'POST', body: form });
+    const json = await response.json();
+    if (json.code === 200) {
+      newJarFile.value = json.data.file;
+      editMessage.value = `编译成功，已替换 ${json.data.replaced.length} 个文件：${json.data.replaced.join('、')}`;
+      // 新生成的 $N 匿名类不在原条目列表里，合并进树
+      const known = new Set(jarEntries.value);
+      for (const full of json.data.replaced as string[]) {
+        const rel = jarFat.value ? full.replace(/^BOOT-INF\/classes\//, '') : full;
+        if (rel.endsWith('.class') && !known.has(rel)) jarEntries.value.push(rel);
+      }
+      jarEntries.value.sort();
+    } else {
+      editError.value = json.message || '编译失败';
+    }
+  } catch (error) {
+    editError.value = `无法连接到服务器 ${API_BASE.value}`;
+  } finally {
+    compiling.value = false;
+  }
+};
+
+const downloadNewJar = () => {
+  if (!newJarFile.value) return;
+  const a = document.createElement('a');
+  a.href = `${API_BASE.value}/api/jaredit/download/${jarId.value}`;
+  a.download = newJarFile.value;
+  a.click();
+};
+
 onMounted(async () => {
   await loadConfig();
   loadBackend();
@@ -455,6 +638,83 @@ onUnmounted(() => {
               </section>
             </div>
           </template>
+          </div>
+
+          <!-- jar 代码修改 -->
+          <div v-if="activeTab === 'codeEdit'">
+            <!-- 上传区（未上传或重新上传时显示） -->
+            <div class="card">
+              <div class="card-header">
+                <span class="card-icon">✏️</span>
+                jar 代码修改
+              </div>
+              <div class="card-body">
+                <div class="file-row">
+                  <div
+                    class="file-pick"
+                    :class="{ dragging: editDragging }"
+                    @click="editInput?.click()"
+                    @dragover.prevent
+                    @dragenter.prevent="editDragging = true"
+                    @dragleave="editDragging = false"
+                    @drop.prevent="onEditDrop"
+                  >
+                    <span class="pick-label new">jar 包</span>
+                    <span class="pick-name" :class="{ placeholder: !jarName }">
+                      {{ jarName ? `${jarName}（${jarEntries.length} 个 class${jarFat ? '，Spring Boot 结构' : ''}）` : '点击选择或拖入 jar / war 文件' }}
+                    </span>
+                  </div>
+                  <input ref="editInput" type="file" accept=".jar,.war" style="display: none" @change="onEditFileChosen" />
+                </div>
+                <div v-if="editUploading" class="progress-msg">正在上传解包…</div>
+                <div v-if="editError" class="error-message edit-error">{{ editError }}</div>
+                <div v-if="editMessage" class="edit-success">{{ editMessage }}</div>
+                <div v-if="newJarFile" class="actions">
+                  <button class="check-button" @click="downloadNewJar">⬇ 下载 {{ newJarFile }}</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 左树右编辑器 -->
+            <div v-if="jarId" class="jaredit-layout">
+              <aside class="card jaredit-tree">
+                <div class="card-header">class 结构</div>
+                <div class="tree-items">
+                  <div
+                    v-for="row in visibleTreeRows"
+                    :key="row.path"
+                    class="tree-row"
+                    :class="{ selected: !row.isDir && selectedClass === row.path }"
+                    :style="{ paddingLeft: 8 + row.depth * 14 + 'px' }"
+                    @click="row.isDir ? toggleTreeDir(row) : loadClassSource(row.path)"
+                  >
+                    <span class="tree-icon">{{ row.isDir ? (expandedDirs.has(row.path) ? '📂' : '📁') : '📄' }}</span>
+                    <span class="tree-name">{{ row.name }}</span>
+                  </div>
+                </div>
+              </aside>
+              <section class="card jaredit-editor">
+                <div class="card-header editor-header">
+                  <span class="editor-path">{{ selectedClass || '选择左侧 class 文件' }}</span>
+                  <button
+                    class="check-button editor-save"
+                    :disabled="!selectedClass || sourceLoading || compiling"
+                    @click="compileAndReplace"
+                  >{{ compiling ? '编译中…' : '💾 编译并替换' }}</button>
+                </div>
+                <div class="editor-body">
+                  <div v-if="sourceLoading" class="diff-hint">反编译中…</div>
+                  <textarea
+                    v-else
+                    v-model="classSource"
+                    class="code-editor"
+                    spellcheck="false"
+                    :disabled="!selectedClass"
+                    placeholder="反编译出的 java 源码会显示在这里，可直接修改后点「编译并替换」"
+                  ></textarea>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </div>
@@ -985,5 +1245,145 @@ onUnmounted(() => {
 .diff-row.k-added .diff-cell.right .line-text {
   background: #e8f5e9;
   color: #2e7d32;
+}
+
+/* ===== jar 代码修改 ===== */
+.jaredit-layout {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.jaredit-tree {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.jaredit-tree .card-header {
+  flex-shrink: 0;
+}
+
+.tree-items {
+  flex: 1;
+  overflow: auto;
+  max-height: 480px;
+  padding: 6px 0;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.tree-row:hover {
+  background: #f5f5f5;
+}
+
+.tree-row.selected {
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.tree-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jaredit-editor {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.editor-save {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 16px;
+  font-size: 13px;
+}
+
+.editor-body {
+  flex: 1;
+  padding: 12px 16px;
+}
+
+.code-editor {
+  width: 100%;
+  min-height: 440px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #333;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.code-editor:focus {
+  border-color: #4caf50;
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+}
+
+.code-editor:disabled {
+  background: #fafafa;
+  color: #999;
+}
+
+.edit-success {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #c8e6c9;
+  border-radius: 8px;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.edit-error {
+  margin-top: 12px;
+  white-space: pre-wrap;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.progress-msg {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #666;
 }
 </style>

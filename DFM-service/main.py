@@ -29,6 +29,7 @@ from routes.serial import router as serial_router
 from routes.pipeline import router as pipeline_router
 from routes.probe import router as probe_router
 from routes.jar_diff import router as jar_diff_router
+from routes.jar_edit import router as jar_edit_router
 from routes.sqlite_utils import router as sqlite_router
 
 app.include_router(adb_router)
@@ -37,6 +38,8 @@ app.include_router(common_router)
 app.include_router(ip_router)
 app.include_router(test_router)
 app.include_router(jar_diff_router)
+# jar_edit 需注册在 html_config 之前，否则会被其 /{full_path:path} 兜底路由拦截
+app.include_router(jar_edit_router)
 app.include_router(sqlite_router)
 
 
