@@ -4,6 +4,7 @@ import { onMounted, onUnmounted, onBeforeUnmount, ref, computed, nextTick, watch
 import ModalDialog from '../components/ModalDialog.vue';
 import FileEditorDialog from '../components/FileEditorDialog.vue';
 import FileImageViewer from '../components/FileImageViewer.vue';
+import SqliteDbViewer from '../components/SqliteDbViewer.vue';
 import * as echarts from 'echarts/core';
 import { LineChart, BarChart, GaugeChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
@@ -165,6 +166,8 @@ const appLoading = ref(false)
 const files = ref<FileInfo[]>([])
 const fileLoading = ref(false)
 const currentPath = ref('/sdcard')
+// SQLite 数据库查看：当前正在查看的设备文件（null = 文件列表模式）
+const dbViewerFile = ref<{ path: string; name: string } | null>(null)
 const route = ref('')
 const wirelessIp = ref('192.168.0.')
 const wirelessStatus = ref('')
@@ -2578,6 +2581,18 @@ const exportFile = async (file: { path: string; name: string; isDirectory: boole
     console.error('导出异常:', error)
     showMessage('导出失败: ' + error.message)
   }
+}
+
+// SQLite 数据库文件判断（.db / .db3 / .sqlite / .sqlite3）
+const isSqliteFile = (file: { name: string; isDirectory: boolean }) =>
+  !file.isDirectory && /\.(db|db3|sqlite|sqlite3)$/i.test(file.name)
+
+const openSqliteViewer = (file: { path: string; name: string }) => {
+  if (!selectedDevice.value) {
+    showMessage('请先选择设备')
+    return
+  }
+  dbViewerFile.value = { path: file.path, name: file.name }
 }
 
 const importFile = async () => {
@@ -8487,7 +8502,15 @@ button.batch-remote-tile-tag:disabled.active {
               </div>
               
               <div v-if="activeTab === 'files'" class="keys-page">
-                <div class="scrcpy-card">
+                <!-- SQLite 数据库查看模式：整体替换文件列表 -->
+                <SqliteDbViewer
+                  v-if="dbViewerFile"
+                  :device-id="selectedDevice"
+                  :remote-path="dbViewerFile.path"
+                  :file-name="dbViewerFile.name"
+                  @close="dbViewerFile = null"
+                />
+                <div v-else class="scrcpy-card">
                   <div class="card-header">
                     <span class="card-icon">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
@@ -8603,6 +8626,13 @@ button.batch-remote-tile-tag:disabled.active {
                           <button v-else-if="!file.isDirectory" class="file-act-btn export" disabled :title="editDisabledReason(file)" style="opacity:0.35;">
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                               <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                            </svg>
+                          </button>
+                          <button v-if="isSqliteFile(file)" class="file-act-btn export" @click.stop="openSqliteViewer(file)" title="查看数据库">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
                             </svg>
                           </button>
                           <button class="file-act-btn export" @click.stop="renameFile(file)" title="重命名/移动">
