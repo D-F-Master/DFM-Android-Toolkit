@@ -28,6 +28,7 @@ from routes.script import router as script_router
 from routes.serial import router as serial_router
 from routes.pipeline import router as pipeline_router
 from routes.probe import router as probe_router
+from routes.jar_diff import router as jar_diff_router
 
 app.include_router(adb_router)
 app.include_router(port_router)
@@ -40,6 +41,7 @@ app.include_router(script_router)
 app.include_router(serial_router)
 app.include_router(pipeline_router)
 app.include_router(probe_router)
+app.include_router(jar_diff_router)
 
 # ========== 获取配置 ==========
 CONF = get_conf()
