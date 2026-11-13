@@ -5,12 +5,14 @@ APK 作为 TCP 服务端监听设备本机 `0.0.0.0:21104`，PC 作为客户端�
 按二进制帧协议收发数据。用于验证「纯 ADB 不够用、改用设备端常驻程序」这条路线是否走得通。
 
 **`DFM-probe/` 是独立工程，不依赖 `DFM-service` 运行；页面探针由后端路由调用本目录的 APK。**
+程序支持的功能清单见 [FEATURES.md](FEATURES.md)；
 帧格式、命令字、CRC 与 ACK 规则见仓库根目录 `probe与service通讯协议.md`。
 
 ## 目录
 
 ```
 DFM-probe/
+├── FEATURES.md                  # 程序支持的功能清单
 ├── AndroidManifest.xml          # 权限、receiver、前台服务声明
 ├── java/com/dfm/probe/
 │   ├── StartReceiver.java       # 接收 START/开机/看门狗广播，拉起 ProbeService

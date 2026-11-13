@@ -1,4 +1,22 @@
 {
   "apiBase": "http://localhost:3000",
-  "version": "V2.0.0"
+  "version": "V2.0.2",
+  "edition": "full",
+  "defaultPage": "home",
+  "features": {
+    "utils": true,
+    "portTool": true,
+    "production": true,
+    "settings": true,
+    "utilsTabs": {
+      "info": true,
+      "apps": true,
+      "files": true,
+      "keys": true,
+      "batch": true,
+      "script": true,
+      "serial": true,
+      "monitor": true
+    }
+  }
 }
