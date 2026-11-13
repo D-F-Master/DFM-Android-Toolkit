@@ -29,6 +29,7 @@ from routes.serial import router as serial_router
 from routes.pipeline import router as pipeline_router
 from routes.probe import router as probe_router
 from routes.jar_diff import router as jar_diff_router
+from routes.sqlite_utils import router as sqlite_router
 
 app.include_router(adb_router)
 app.include_router(port_router)
@@ -36,6 +37,7 @@ app.include_router(common_router)
 app.include_router(ip_router)
 app.include_router(test_router)
 app.include_router(jar_diff_router)
+app.include_router(sqlite_router)
 
 
 app.include_router(remote_ws_router)
