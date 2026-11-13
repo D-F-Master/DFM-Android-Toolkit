@@ -74,6 +74,23 @@ adb 只做三件事：安装、发 START 广播启动服务、USB 设备做 `adb
   Doze 白名单需部署时执行 `adb shell dumpsys deviceidle whitelist +com.dfm.probe`。
   以上开机自启与看门狗效果尚未实机验证。
 
+## 通知栏隐藏（多层兜底）
+
+前台服务按系统要求必须持有通知对象，但显示可以被多层手段抑制，从内到外：
+
+1. **APK 内（默认生效）**：通知渠道 `dfm_probe_none`，重要性 `IMPORTANCE_NONE`——
+   AOSP `NotificationManagerService` 对该重要性的通知直接抑制渲染；
+   部分 ROM/系统版本（如 Android 13+ FGS 任务管理器行为）不服从，需要 2/3 层兜底。
+2. **appops 全局关通知**（等价于设置里手动关闭应用的「显示通知」开关）：
+   `adb shell appops set com.dfm.probe POST_NOTIFICATION ignore`
+3. **撤销 Android 13+ 通知运行时权限**（FGS 通知不进通知栏，仅 FGS 任务管理器可见）：
+   `adb shell pm revoke com.dfm.probe android.permission.POST_NOTIFICATIONS`
+   （Android 12 及以下无此权限，命令报错可忽略）
+
+自动化：`/api/probe/connect` 安装成功后自动执行 2/3 两层；已安装设备可随时调
+`POST /api/probe/hide-notification {"deviceId":"..."}` 手动补打，幂等、单条失败不影响另一条。
+查看服务是否在跑改用 `adb shell netstat -tln | grep 21104`（通知不再可见）。
+
 ## 协议
 
 帧格式：`AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)`。
@@ -197,14 +214,15 @@ ACK 停等 1~4 次丢包、帧序 0~255 回绕、三端点注册、非法入参 
 
 ## 页面探针（DFM-frontend）
 
-后端 `DFM-service/routes/probe.py` 三个端点，统一返回
+后端 `DFM-service/routes/probe.py` 四个端点，统一返回
 `{"code":200,"message":...,"data":{"connected":true|false,...}}`：
 
 | 端点 | 请求体 | 行为 |
 | --- | --- | --- |
 | `POST /api/probe/check` | `{"deviceId":"..."}` | 只发一帧 `CMD_HEARTBEAT (0x00)` 探测并取回程序版本，不装 APK |
-| `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r` 再发 `CMD_HEARTBEAT (0x00)` |
+| `POST /api/probe/connect` | `{"deviceId":"..."}` | 先 `install -r`，装完自动执行隐藏通知兜底（见「通知栏隐藏」节），再发 `CMD_HEARTBEAT (0x00)` |
 | `POST /api/probe/message` | `{"deviceId":"...","cmd":0,"data":{}}` | 按命令字发一帧，`data` 作数据区；应答在 `data.response`，发送帧 hex 在 `data.frame`，三段真实帧 hex 在 `data.frames`（`tx` / `ack` / `rx`） |
+| `POST /api/probe/hide-notification` | `{"deviceId":"..."}` | 手动执行隐藏通知兜底（appops + Android 13+ 权限撤销），幂等，返回每条命令的 rc 与输出 |
 
 - `/api/probe/message` 的 `cmd` 接受 `0`~`255`（`0x00`~`0xFF`）任意整数，越界回 422；
   已登记的 `0` / `1` / `2` / `3` / `4` / `5` / `7` 返回业务应答

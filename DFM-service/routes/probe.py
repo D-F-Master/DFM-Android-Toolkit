@@ -215,6 +215,30 @@ def _connect_with_retry(host: str, port: int, attempts: int = 10, interval: floa
     raise RuntimeError(f"连接 {host}:{port} 失败: {last}")
 
 
+def _suppress_notification(device_id: str) -> list:
+    """设备侧隐藏探针通知的多层兜底，幂等，单条失败不影响其余命令。
+
+    APK 内部已用 IMPORTANCE_NONE 渠道抑制显示；部分 ROM/系统版本不服从渠道抑制，
+    这里再叠加两层：
+    - appops POST_NOTIFICATION ignore：等价于在设置里手动关闭应用的「显示通知」开关；
+    - pm revoke POST_NOTIFICATIONS：撤销 Android 13+ 的通知运行时权限，
+      FGS 通知不再进通知栏（仅在 FGS 任务管理器可见）。
+    """
+    argv_list = [
+        ("appops", "set", PACKAGE, "POST_NOTIFICATION", "ignore"),
+        ("pm", "revoke", PACKAGE, "android.permission.POST_NOTIFICATIONS"),
+    ]
+    results = []
+    for argv in argv_list:
+        rc, out, err = _adb(device_id, "shell", *argv)
+        detail = (out or err or "").strip()
+        results.append(f"adb shell {' '.join(argv)} -> rc={rc} {detail}")
+        logger.info(
+            f"probe suppress-notification device={device_id} cmd={' '.join(argv)} rc={rc} {detail}"
+        )
+    return results
+
+
 def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
     """对指定设备发一帧业务帧并取回响应。
 
@@ -247,6 +271,8 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
             )
             if rc != 0 or "Success" not in out:
                 return {"connected": False, "reason": f"安装失败: {err or out}"}
+            # 部署后自动叠加设备侧隐藏通知兜底（IMPORTANCE_NONE 渠道之外的第二、三层）
+            _suppress_notification(device_id)
 
         # 每次都发幂等启动广播；服务已在监听时 onStartCommand 不会重复 bind
         rc, out, err = _adb(
@@ -348,6 +374,16 @@ def probe_check(req: ProbeRequest):
 def probe_connect(req: ProbeRequest):
     """安装/覆盖安装 APK 后再做一次探测，供页面点击「安装通讯」使用。"""
     return _result(req.deviceId, True)
+
+
+@router.post("/probe/hide-notification")
+def probe_hide_notification(req: ProbeRequest):
+    """手动对已安装设备执行隐藏通知兜底（appops + Android 13+ 权限撤销），幂等。"""
+    device_id = (req.deviceId or "").strip()
+    if not device_id:
+        return {"code": 400, "message": "deviceId 不能为空", "data": {"results": []}}
+    results = _suppress_notification(device_id)
+    return {"code": 200, "message": "已执行隐藏通知兜底命令", "data": {"results": results}}
 
 
 @router.post("/probe/message")
