@@ -50,7 +50,8 @@ import java.util.concurrent.TimeUnit;
  */
 public class ProbeService extends Service {
     private static final String TAG = "DFMProbe";
-    private static final String CHANNEL_ID = "dfm_probe";
+    private static final String CHANNEL_ID = "dfm_probe_min"; // 换 ID 才能降级：已创建渠道的重要性系统不允许再改
+    private static final String OLD_CHANNEL_ID = "dfm_probe";
     private static final int NOTIFY_ID = 1;
     private static final int DEVICE_PORT = 21104;
     private static final int MAX_DATA = 65535;
@@ -116,11 +117,12 @@ public class ProbeService extends Service {
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID, "DFM Probe", NotificationManager.IMPORTANCE_LOW);
+                    CHANNEL_ID, "DFM Probe", NotificationManager.IMPORTANCE_MIN);
             NotificationManager manager =
                     (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {
                 manager.createNotificationChannel(channel);
+                manager.deleteNotificationChannel(OLD_CHANNEL_ID);
             }
         }
     }

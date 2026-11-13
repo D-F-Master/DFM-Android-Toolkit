@@ -39,7 +39,8 @@
   `FLAG_UPDATE_CURRENT` 保证不会堆出多条 alarm。
 - Android 8+ 走 `startForegroundService`，更低版本走 `startService`；启动被系统拒绝时记日志，下一轮看门狗重试。
 - **前台服务 + 常驻通知**：标题 `DFM Probe`、内容「监听 21104 端口」、`setOngoing(true)`；
-  Android 8+ 自动创建低重要性通知渠道 `dfm_probe`。
+  Android 8+ 自动创建最低重要性（`IMPORTANCE_MIN`）通知渠道 `dfm_probe_min`：状态栏无图标、锁屏不显示，
+  仅在下拉通知栏底部「静默通知」折叠区保留一条（前台服务的系统要求，无法完全去除）；创建时删除旧渠道 `dfm_probe`。
 - 广播**可重复、幂等**：`running` 标志保证只有尚未监听时才起监听线程，不会重复 bind 端口。
 - 服务返回 `START_STICKY`：进程被系统回收后自动重建（`onStartCommand` 收 `intent=null`，本服务不读 intent），
   重建时重新 bind 21104；`onDestroy` 会关闭 `ServerSocket` 并释放 TTS 引擎。
