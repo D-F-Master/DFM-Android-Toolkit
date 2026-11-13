@@ -3,6 +3,13 @@ import { computed, nextTick, onMounted, ref, onUnmounted } from 'vue';
 
 const emit = defineEmits(['back']);
 
+// ===== Tab 注册表（后续 jar 包相关工具加在这里） =====
+const TAB_ITEMS = [
+  { key: 'diff', label: 'jar包对比' }
+];
+
+const activeTab = ref('diff');
+
 const API_BASE = ref('http://localhost:3000');
 const backendText = ref('');
 
@@ -300,6 +307,18 @@ onUnmounted(() => {
     <main>
       <div class="container">
         <div class="content">
+          <div class="tabs">
+            <button
+              v-for="tab in TAB_ITEMS"
+              :key="tab.key"
+              class="tab-button"
+              :class="{ active: activeTab === tab.key }"
+              @click="activeTab = tab.key"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+          <div v-if="activeTab === 'diff'">
           <!-- 文件选择与操作 -->
           <div class="card">
             <div class="card-header">
@@ -436,6 +455,7 @@ onUnmounted(() => {
               </section>
             </div>
           </template>
+          </div>
         </div>
       </div>
     </main>
