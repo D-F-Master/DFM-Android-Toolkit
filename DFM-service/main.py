@@ -35,14 +35,16 @@ app.include_router(port_router)
 app.include_router(common_router)
 app.include_router(ip_router)
 app.include_router(test_router)
-# jar_diff 需注册在 html_config 之前，否则会被其 /{full_path:path} 兜底路由拦截
 app.include_router(jar_diff_router)
-app.include_router(html_config)
+
+
 app.include_router(remote_ws_router)
 app.include_router(script_router)
 app.include_router(serial_router)
 app.include_router(pipeline_router)
 app.include_router(probe_router)
+
+app.include_router(html_config)
 
 # ========== 获取配置 ==========
 CONF = get_conf()

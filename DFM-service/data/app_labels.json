@@ -79,5 +79,7 @@
   "org.autojs.autoxjs.v6": "Autox.js v6",
   "com.dfm.probe": "DFM Probe",
   "com.common.demo": "Demo_SDK_AS",
-  "com.yqsh.myweb": "MyWeb"
+  "com.yqsh.myweb": "MyWeb",
+  "com.yqsh.appstore": "一起生活应用商店",
+  "com.example.usbmulticam": "USB 多路摄像头"
 }
