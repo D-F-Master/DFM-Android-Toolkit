@@ -740,6 +740,14 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'tts', label: 'TTS语音', icon: '🗣️' },
 ]
 
+// 手势类步骤（手动添加：坐标默认屏幕中心，开启「显示步骤」后在画面上拖动标记调整）
+const SCRIPT_GESTURE_STEPS: Array<{ type: string; label: string; icon: string }> = [
+  { type: 'tap', label: '点击', icon: '👆' },
+  { type: 'longpress', label: '长按', icon: '✊' },
+  { type: 'swipe', label: '滑动', icon: '↔️' },
+  { type: 'input', label: '输入文本', icon: '⌨️' },
+]
+
 // 步骤文本变量：保存的是占位符，后端执行时才展开，仅对「输入文字」「TTS 朗读文本」生效
 const SCRIPT_VARIABLE_HELP = `输入框支持的关键字：
 {执行次数} → 当前第几次执行
@@ -1790,6 +1798,55 @@ const addScriptAdbStep = (type: string) => {
     count: 1,
   })
 }
+
+// 手动添加手势步骤（点击/长按/滑动/输入文本）：字段与录制生成的步骤一致
+const addScriptGestureStep = (type: string) => {
+  const cx = Math.round(scriptMeta.width / 2)
+  const cy = Math.round(scriptMeta.height / 2)
+  const base = { interval: 500, count: 1 }
+  const step =
+    type === 'tap' ? { type, x1: cx, y1: cy, ...base }
+    : type === 'longpress' ? { type, x1: cx, y1: cy, duration: 1000, ...base }
+    : type === 'swipe' ? { type, x1: cx, y1: cy, x2: cx, y2: Math.min(scriptMeta.height - 1, cy + 300), ...base }
+    : { type, x1: 0, y1: 0, text: '', ...base }
+  addScriptStep(step)
+}
+
+// 等待组件（选图）：直接新增等待步骤并展开参数，模板从已有模板图列表手动选择
+const addScriptWaitStep = () => {
+  fetchScriptTemplates()
+  addScriptStep({
+    type: 'waitFor',
+    template: '',
+    threshold: 0.85,
+    timeout: 15,
+    interval: 500,
+    count: 1,
+  })
+  scriptEditingStep.value = scriptSteps.value.length - 1
+}
+
+// 步骤按类别分组显示；序号仍是全局执行顺序，分组只影响展示
+const SCRIPT_STEP_GROUPS: Array<{ key: string; label: string; types: string[] }> = [
+  { key: 'gesture', label: '手势操作', types: ['tap', 'longpress', 'swipe', 'input'] },
+  { key: 'wait', label: '等待与判断', types: ['waitFor', 'condition'] },
+  { key: 'device', label: '设备动作', types: SCRIPT_ADB_STEPS.map(a => a.type) },
+]
+const scriptStepGroups = computed(() => {
+  const groups = SCRIPT_STEP_GROUPS.map(g => ({
+    ...g,
+    items: scriptSteps.value
+      .map((step, idx) => ({ step, idx }))
+      .filter(it => g.types.includes(it.step.type as string)),
+  })).filter(g => g.items.length > 0)
+  // 未知类型步骤（如导入脚本带新类型）不落任何组会从界面消失，兜底放进「其他」
+  const known = new Set(SCRIPT_STEP_GROUPS.flatMap(g => g.types))
+  const others = scriptSteps.value
+    .map((step, idx) => ({ step, idx }))
+    .filter(it => !known.has(it.step.type as string))
+  if (others.length > 0) groups.push({ key: 'other', label: '其他', types: [], items: others })
+  return groups
+})
 
 // 添加判断步骤（单次求值 + 真/假分支）
 const addScriptConditionStep = () => {
@@ -7267,6 +7324,14 @@ button.batch-remote-tile-tag:disabled.active {
   font-size: 12px;
 }
 
+/* 步骤分组标题：只影响展示，序号仍是全局执行顺序 */
+.script-step-group-header {
+  padding: 6px 4px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #909399;
+}
+
 .script-step-item {
   display: flex;
   align-items: center;
@@ -7395,6 +7460,10 @@ button.batch-remote-tile-tag:disabled.active {
 
 /* 模拟脚本页 暗色模式 */
 @media (prefers-color-scheme: dark) {
+  .script-step-group-header {
+    color: #6b7079;
+  }
+
   .script-step-item:hover {
     background: #33363e;
   }
@@ -8888,12 +8957,25 @@ button.batch-remote-tile-tag:disabled.active {
                       <div class="script-add-steps">
                         <span class="script-add-label">添加步骤</span>
                         <button
+                          v-for="a in SCRIPT_GESTURE_STEPS"
+                          :key="a.type"
+                          class="script-add-btn"
+                          :disabled="scriptRunning"
+                          @click="addScriptGestureStep(a.type)"
+                        >{{ a.icon }} {{ a.label }}</button>
+                        <button
                           v-for="a in SCRIPT_ADB_STEPS"
                           :key="a.type"
                           class="script-add-btn"
                           :disabled="scriptRunning"
                           @click="addScriptAdbStep(a.type)"
                         >{{ a.icon }} {{ a.label }}</button>
+                        <button
+                          class="script-add-btn"
+                          :disabled="scriptRunning"
+                          title="新增等待组件步骤，在步骤参数里从已有模板图中手动选择"
+                          @click="addScriptWaitStep"
+                        >🖼 等待组件(选图)</button>
                         <button
                           class="script-add-btn"
                           :class="{ cropping: scriptCropMode }"
@@ -8939,10 +9021,12 @@ button.batch-remote-tile-tag:disabled.active {
                         <div v-if="scriptSteps.length === 0" class="script-empty">
                           录制模式下在左侧屏幕上操作即可记录步骤
                         </div>
-                        <div
-                          v-for="(step, idx) in scriptSteps"
-                          :key="idx"
-                          class="script-step-item"
+                        <template v-for="group in scriptStepGroups" :key="group.key">
+                          <div class="script-step-group-header">{{ group.label }}（{{ group.items.length }}）</div>
+                          <div
+                            v-for="{ step, idx } in group.items"
+                            :key="idx"
+                            class="script-step-item"
                           :class="{
                             selected: scriptEditingStep === idx,
                             'drag-over': scriptStepDragOver === idx && scriptStepDragFrom !== idx,
@@ -9162,7 +9246,8 @@ button.batch-remote-tile-tag:disabled.active {
                               开启「显示步骤」后可在画面上拖动该步骤的位置
                             </div>
                           </div>
-                        </div>
+                          </div>
+                        </template>
                       </div>
                       <div class="script-actions">
                         <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
