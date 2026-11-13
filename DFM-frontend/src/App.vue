@@ -4,6 +4,7 @@ import App_Utils from './menu/App_Utils.vue';
 import App_PortTool from './menu/App_PortTool.vue';
 import App_Settings from './menu/App_Settings.vue';
 import App_Production from './menu/App_Production.vue';
+import App_JarDiff from './menu/App_JarDiff.vue';
 import { useAppConfig } from './composables/useAppConfig';
 
 const currentPage = ref('home');
@@ -26,6 +27,11 @@ const MENU_ITEMS = [
     key: 'production',
     label: '生产工具',
     icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" transform="translate(-1 -1) scale(0.92)"/></svg>'
+  },
+  {
+    key: 'jarDiff',
+    label: 'jar包对比工具',
+    icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M2 3a1 1 0 00-1 1v1a1 1 0 001 1h16a1 1 0 001-1V4a1 1 0 00-1-1H2z"/><path fill-rule="evenodd" d="M2 7.5h16l-.86 9.02A2 2 0 0115.15 18.5H4.85a2 2 0 01-1.99-1.98L2 7.5zM8 10a1 1 0 011 1v1a1 1 0 001 1h.5a1 1 0 110 2H10a3 3 0 01-3-3v-1a1 1 0 011-1z" clip-rule="evenodd"/></svg>'
   }
 ];
 
@@ -123,6 +129,7 @@ const goBack = () => {
   <App_PortTool v-else-if="currentPage === 'portTool'" @back="goBack" />
   <App_Settings v-else-if="currentPage === 'settings'" @back="goBack" />
   <App_Production v-else-if="currentPage === 'production'" @back="goBack" />
+  <App_JarDiff v-else-if="currentPage === 'jarDiff'" @back="goBack" />
 </template>
 
 <style scoped>
