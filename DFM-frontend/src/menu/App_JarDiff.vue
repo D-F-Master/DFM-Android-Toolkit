@@ -106,6 +106,36 @@ const clearDetail = () => {
 const pickA = () => fileInputA.value?.click();
 const pickB = () => fileInputB.value?.click();
 
+const acceptTypes = ['.jar', '.war', '.zip'];
+
+const validateDropped = (file: File | undefined | null): string | null => {
+  if (!file) return null;
+  const lower = file.name.toLowerCase();
+  if (!acceptTypes.some((ext) => lower.endsWith(ext))) {
+    return `仅支持 ${acceptTypes.join(' / ')} 文件，已忽略：${file.name}`;
+  }
+  return null;
+};
+
+const draggingA = ref(false);
+const draggingB = ref(false);
+
+const onDropA = (event: DragEvent) => {
+  draggingA.value = false;
+  const file = event.dataTransfer?.files && event.dataTransfer.files.length > 0 ? event.dataTransfer.files[0] : null;
+  const err = validateDropped(file);
+  if (err) { errorText.value = err; return; }
+  if (file) fileA.value = file;
+};
+
+const onDropB = (event: DragEvent) => {
+  draggingB.value = false;
+  const file = event.dataTransfer?.files && event.dataTransfer.files.length > 0 ? event.dataTransfer.files[0] : null;
+  const err = validateDropped(file);
+  if (err) { errorText.value = err; return; }
+  if (file) fileB.value = file;
+};
+
 const handleFileA = (event: Event) => {
   const target = event.target as HTMLInputElement;
   fileA.value = target.files && target.files.length > 0 ? target.files[0] : null;
@@ -278,17 +308,33 @@ onUnmounted(() => {
             </div>
             <div class="card-body">
               <div class="file-row">
-                <div class="file-pick" @click="pickA">
+                <div
+                  class="file-pick"
+                  :class="{ dragging: draggingA }"
+                  @click="pickA"
+                  @dragover.prevent
+                  @dragenter.prevent="draggingA = true"
+                  @dragleave="draggingA = false"
+                  @drop.prevent="onDropA"
+                >
                   <span class="pick-label old">旧版本</span>
                   <span class="pick-name" :class="{ placeholder: !fileA }">
-                    {{ fileA ? fileA.name : '点击选择 jar / war / zip 文件' }}
+                    {{ fileA ? fileA.name : '点击选择或拖入 jar / war / zip 文件' }}
                   </span>
                 </div>
                 <input ref="fileInputA" type="file" accept=".jar,.war,.zip" style="display: none" @change="handleFileA" />
-                <div class="file-pick" @click="pickB">
+                <div
+                  class="file-pick"
+                  :class="{ dragging: draggingB }"
+                  @click="pickB"
+                  @dragover.prevent
+                  @dragenter.prevent="draggingB = true"
+                  @dragleave="draggingB = false"
+                  @drop.prevent="onDropB"
+                >
                   <span class="pick-label new">新版本</span>
                   <span class="pick-name" :class="{ placeholder: !fileB }">
-                    {{ fileB ? fileB.name : '点击选择 jar / war / zip 文件' }}
+                    {{ fileB ? fileB.name : '点击选择或拖入 jar / war / zip 文件' }}
                   </span>
                 </div>
                 <input ref="fileInputB" type="file" accept=".jar,.war,.zip" style="display: none" @change="handleFileB" />
@@ -498,6 +544,12 @@ onUnmounted(() => {
 .file-pick:hover {
   border-color: #4caf50;
   background: #f6fbf6;
+}
+
+.file-pick.dragging {
+  border-color: #4caf50;
+  background: #e8f5e9;
+  border-style: solid;
 }
 
 .pick-label {
