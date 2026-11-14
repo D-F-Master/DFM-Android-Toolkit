@@ -234,15 +234,26 @@ const showCreateTemplateDialog = () => {
       deferModal(() => showMessage('项目名称不能为空', '提示'));
       return;
     }
-    deferModal(() => {
-      showPrompt('请输入目标目录（绝对路径，将在其下创建同名项目文件夹）', '例如 D:\\projects', (path: string) => {
-        if (!path || !path.trim()) {
-          deferModal(() => showMessage('目标目录不能为空', '提示'));
-          return;
-        }
-        createTemplate(name.trim(), path.trim());
-      });
-    });
+    deferModal(() => chooseTargetDir(name.trim()));
+  });
+};
+
+// 第二步：选择目标目录。uTools 环境用系统目录选择框；浏览器开发环境退回手动输入
+const chooseTargetDir = (name: string) => {
+  if (window.utools && window.utools.showOpenDialog) {
+    // 返回所选目录路径数组，取消返回 undefined
+    const selected = window.utools.showOpenDialog({ title: '选择目标目录', properties: ['openDirectory'] });
+    if (selected && selected.length > 0) {
+      createTemplate(name, selected[0]);
+    }
+    return;
+  }
+  showPrompt('请输入目标目录（绝对路径，将在其下创建同名项目文件夹）', '例如 D:\\projects', (path: string) => {
+    if (!path || !path.trim()) {
+      deferModal(() => showMessage('目标目录不能为空', '提示'));
+      return;
+    }
+    createTemplate(name, path.trim());
   });
 };
 
