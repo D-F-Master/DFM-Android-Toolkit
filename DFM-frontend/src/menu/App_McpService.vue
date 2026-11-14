@@ -65,6 +65,15 @@ const showConfirm = (message: string, callback: Function, title: string = '确�
   modalCallback.value = callback;
 };
 
+const showPrompt = (message: string, placeholder: string, callback: Function, title: string = '输入') => {
+  modalType.value = 'prompt';
+  modalTitle.value = title;
+  modalMessage.value = message;
+  modalPlaceholder.value = placeholder;
+  modalVisible.value = true;
+  modalCallback.value = callback;
+};
+
 const handleModalConfirm = (value?: string) => {
   if (modalCallback.value) {
     modalCallback.value(value);
@@ -191,21 +200,9 @@ const closeLogs = () => {
 };
 
 // ==================== 创建模板项目 ====================
-const tplName = ref('');
-const tplPath = ref('');
 const creating = ref(false);
 
-const createTemplate = async () => {
-  const name = tplName.value.trim();
-  const path = tplPath.value.trim();
-  if (!name) {
-    showMessage('请输入项目名称', '提示');
-    return;
-  }
-  if (!path) {
-    showMessage('请输入目标目录（绝对路径）', '提示');
-    return;
-  }
+const createTemplate = async (name: string, path: string) => {
   creating.value = true;
   try {
     const response = await fetch(`${API_BASE.value}/api/mcp/create-template`, {
@@ -216,7 +213,6 @@ const createTemplate = async () => {
     const data = await response.json();
     if (data.code === 200) {
       showMessage(`模板项目已生成: ${data.data.path}`, '创建成功');
-      tplName.value = '';
     } else {
       showMessage(data.message || '创建失败', '创建失败');
     }
@@ -227,25 +223,46 @@ const createTemplate = async () => {
   }
 };
 
+// 两步弹窗输入：项目名称 → 目标目录
+const showCreateTemplateDialog = () => {
+  showPrompt('请输入项目名称（字母、数字、下划线、中划线）', '例如 demo-server', (name: string) => {
+    if (!name || !name.trim()) {
+      showMessage('项目名称不能为空', '提示');
+      return;
+    }
+    showPrompt('请输入目标目录（绝对路径，将在其下创建同名项目文件夹）', '例如 D:\\projects', (path: string) => {
+      if (!path || !path.trim()) {
+        showMessage('目标目录不能为空', '提示');
+        return;
+      }
+      createTemplate(name.trim(), path.trim());
+    });
+  });
+};
+
 // ==================== 上传安装 ====================
 const fileInput = ref<HTMLInputElement | null>(null);
-const selectedFile = ref<File | null>(null);
 const uploading = ref(false);
+
+const triggerFileSelect = () => {
+  if (fileInput.value) {
+    fileInput.value.click();
+  }
+};
 
 const onFileChange = (event: Event) => {
   const target = event.target as HTMLInputElement;
-  selectedFile.value = target.files && target.files.length > 0 ? target.files[0] : null;
+  const file = target.files && target.files.length > 0 ? target.files[0] : null;
+  if (file) {
+    uploadPackage(file);
+  }
 };
 
-const uploadPackage = async () => {
-  if (!selectedFile.value) {
-    showMessage('请先选择 .zip 安装包', '提示');
-    return;
-  }
+const uploadPackage = async (file: File) => {
   uploading.value = true;
   try {
     const formData = new FormData();
-    formData.append('package', selectedFile.value);
+    formData.append('package', file);
     const response = await fetch(`${API_BASE.value}/api/mcp/upload`, {
       method: 'POST',
       body: formData
@@ -253,7 +270,6 @@ const uploadPackage = async () => {
     const data = await response.json();
     if (data.code === 200) {
       showMessage(`服务 ${data.data.name} 已开始安装，依赖安装完成后即可启动`, '上传成功');
-      selectedFile.value = null;
       if (fileInput.value) {
         fileInput.value.value = '';
       }
@@ -315,80 +331,6 @@ const openEndpoint = (endpoint: string) => {
     <button class="back-button" @click="emit('back')">&lt;</button>
     <div class="container">
       <div class="content">
-        <!-- 创建模板项目 -->
-        <div class="card">
-          <div class="card-header">
-            <span class="card-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
-                <line x1="12" y1="18" x2="12" y2="12"/>
-                <line x1="9" y1="15" x2="15" y2="15"/>
-              </svg>
-            </span>
-            <span>创建模板项目</span>
-          </div>
-          <div class="card-body">
-            <div class="tpl-form">
-              <input
-                type="text"
-                v-model="tplName"
-                class="tpl-input"
-                placeholder="项目名称（字母、数字、下划线、中划线）"
-              >
-              <input
-                type="text"
-                v-model="tplPath"
-                class="tpl-input"
-                placeholder="目标目录（绝对路径，例如 D:\projects）"
-              >
-              <button
-                class="primary-button"
-                @click="createTemplate"
-                :disabled="creating"
-              >
-                <span v-if="creating" class="loading"></span>
-                <span v-else>创建模板</span>
-              </button>
-            </div>
-            <div class="form-hint">在目标目录下生成 manifest.json + server.py + requirements.txt 的模板项目，开发完成后打包为 zip 上传安装</div>
-          </div>
-        </div>
-
-        <!-- 上传安装 -->
-        <div class="card">
-          <div class="card-header">
-            <span class="card-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-            </span>
-            <span>上传安装包</span>
-          </div>
-          <div class="card-body">
-            <div class="tpl-form">
-              <input
-                ref="fileInput"
-                type="file"
-                class="file-input"
-                accept=".zip"
-                @change="onFileChange"
-              >
-              <button
-                class="primary-button"
-                @click="uploadPackage"
-                :disabled="uploading"
-              >
-                <span v-if="uploading" class="loading"></span>
-                <span v-else>上传安装</span>
-              </button>
-            </div>
-            <div class="form-hint">上传包含 manifest.json 的 zip 包，安装时为该服务创建独立 venv 并安装依赖</div>
-          </div>
-        </div>
-
         <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
 
         <!-- MCP 服务列表 -->
@@ -407,6 +349,18 @@ const openEndpoint = (endpoint: string) => {
                 共 {{ servers.length }} 个服务
               </span>
               <button class="refresh-button" @click="loadServers">刷新</button>
+              <button class="create-button" @click="showCreateTemplateDialog" :disabled="creating">创建模板项目</button>
+              <button class="upload-button" @click="triggerFileSelect" :disabled="uploading">
+                <span v-if="uploading" class="loading"></span>
+                <span v-else>上传安装包</span>
+              </button>
+              <input
+                ref="fileInput"
+                type="file"
+                accept=".zip"
+                style="display: none"
+                @change="onFileChange"
+              >
             </div>
           </div>
 
@@ -572,107 +526,75 @@ const openEndpoint = (endpoint: string) => {
   margin-bottom: 12px;
 }
 
-.card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
-  border-bottom: 1px solid #f0f0f0;
-  background: #fafafa;
-}
-
 .card-icon {
   display: flex;
   align-items: center;
   color: #4caf50;
 }
 
-.card-body {
-  padding: 16px;
-}
-
-/* ===== 表单行 ===== */
-.tpl-form {
-  display: flex;
-  gap: 10px;
-}
-
-.tpl-input,
-.file-input {
-  height: 40px;
-  padding: 0 14px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 14px;
-  font-family: inherit;
-  transition: border-color 0.25s ease, box-shadow 0.25s ease;
-  background: #fff;
-  color: #333;
-}
-
-.tpl-input {
-  flex: 1;
-}
-
-.tpl-input:focus,
-.file-input:focus {
-  outline: none;
-  border-color: #4caf50;
-  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.12);
-}
-
-.form-hint {
-  margin-top: 10px;
-  font-size: 12px;
-  color: #999;
-}
-
 /* ===== 主操作按钮（绿色） ===== */
-.primary-button,
-.refresh-button {
-  height: 40px;
-  padding: 0 22px;
+.refresh-button,
+.upload-button {
+  height: 32px;
+  padding: 0 14px;
   background: #4caf50;
   color: #fff;
   border: none;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   font-family: inherit;
-  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.25s ease;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   white-space: nowrap;
-  box-shadow: 0 4px 14px -4px rgba(76, 175, 80, 0.3);
 }
 
-.refresh-button {
+/* 辅助按钮（蓝色） */
+.create-button {
   height: 32px;
   padding: 0 14px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
   font-size: 12px;
   font-weight: 500;
+  font-family: inherit;
+  transition: all 0.25s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
-.primary-button:hover,
-.refresh-button:hover {
+.create-button:hover {
+  background: #1976d2;
+  transform: translateY(-1px);
+}
+
+.create-button:disabled {
+  background: #bdbdbd;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.refresh-button:hover,
+.upload-button:hover {
   background: #43a047;
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px -4px rgba(76, 175, 80, 0.4);
 }
 
-.primary-button:active,
-.refresh-button:active {
+.refresh-button:active,
+.upload-button:active {
   transform: translateY(0);
 }
 
-.primary-button:disabled {
+.upload-button:disabled {
   background: #bdbdbd;
-  box-shadow: none;
   cursor: not-allowed;
   transform: none;
 }
