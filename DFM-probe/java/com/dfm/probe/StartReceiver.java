@@ -10,7 +10,8 @@ import android.os.SystemClock;
 import android.util.Log;
 
 /**
- * 接收 PC 的启动广播、设备开机广播与看门狗定时广播，拉起常驻前台服务（服务自己监听 21104 端口）。
+ * 接收 PC 的启动广播、设备开机广播与看门狗定时广播，拉起常驻服务（服务自己监听 21104 端口；
+ * 优先普通 startService 静默拉起，被后台限制拒绝时才回退前台服务）。
  *
  * 触发方式（PC 端）：
  *   adb shell am broadcast --include-stopped-packages \
@@ -33,15 +34,30 @@ public class StartReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         Log.i(TAG, "broadcast received: " + (intent == null ? null : intent.getAction()));
         scheduleWatchdog(context);
+        // 已在监听就不再 startForegroundService：每次 startForegroundService 都会重新
+        // 挂出前台服务通知（虽然服务随即 stopForeground 移除，但会让看门狗每 60 秒闪现一次）
+        if (ProbeService.isListening()) {
+            Log.i(TAG, "probe already listening on " + ProbeService.DEVICE_PORT + ", skip start");
+            return;
+        }
         try {
             Intent service = new Intent(context, ProbeService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(service);
+                try {
+                    // 静默路径：普通 startService 不挂前台服务通知（零通知）。
+                    // alarm/广播会把本 app 临时加入 allowlist，后台 startService 通常被放行。
+                    context.startService(service);
+                } catch (IllegalStateException e) {
+                    // 后台限制拒绝时回退前台服务：通知只闪现一次，服务 5 秒内 startForeground
+                    // 即 stopForeground，不崩溃
+                    ProbeService.sWantForeground = true;
+                    context.startForegroundService(service);
+                }
             } else {
                 context.startService(service);
             }
         } catch (Exception e) {
-            // 后台启动前台服务可能被系统拒绝；alarm 仍在，下一轮看门狗会重试
+            // 后台启动服务可能被系统拒绝；alarm 仍在，下一轮看门狗会重试
             Log.w(TAG, "start service failed: " + e);
         }
     }

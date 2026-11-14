@@ -40,7 +40,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 常驻前台服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
+ * 常驻服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
  *
  * 二进制帧协议详见 probe与service通讯协议.md：
  *   AA 55 | 帧序(1B) | 长度(2B，低字节在前) | 命令字(1B) | 数据区 | CRC16(低字节在前)
@@ -53,7 +53,7 @@ public class ProbeService extends Service {
     private static final String CHANNEL_ID = "dfm_probe_none"; // IMPORTANCE_NONE：通知不渲染进通知栏（前台服务要求的通知仍存在，服务不崩）；换 ID 才能降级
     private static final String[] OLD_CHANNEL_IDS = {"dfm_probe", "dfm_probe_min"};
     private static final int NOTIFY_ID = 1;
-    private static final int DEVICE_PORT = 21104;
+    static final int DEVICE_PORT = 21104;
     private static final int MAX_DATA = 65535;
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
@@ -70,17 +70,20 @@ public class ProbeService extends Service {
     /** 串口会话读缓冲上限，超出时丢弃最旧的字节，避免长时间无人读取撑爆内存。 */
     private static final int MAX_SERIAL_BUFFER = 65536;
 
-    private volatile boolean running = false;
-    private volatile ServerSocket serverSocket;
+    /** 监听状态必须 static：系统每 60 秒把后台服务按 app idle 停掉（ onDestroy ），但进程仍存活；
+     *  监听线程挂在 static 字段上即可跨服务生命周期继续 accept，端口不中断。 */
+    private static volatile boolean running = false;
+    private static volatile ServerSocket serverSocket;
     private volatile TextToSpeech tts;
     /** 设备端只保持一个串口会话，OPEN 会先关闭旧会话。 */
     private volatile SerialSession serialSession;
+    /** 仅当本次经 startForegroundService 拉起（系统要求 5 秒内 startForeground）时置 true。 */
+    static volatile boolean sWantForeground = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createChannel();
-        startForeground(NOTIFY_ID, buildNotification());
     }
 
     @Override
@@ -90,28 +93,48 @@ public class ProbeService extends Service {
             running = true;
             new Thread(new ListenTask(), "dfm-probe-listener").start();
         }
+        // startForegroundService 要求 5 秒内调用 startForeground 否则崩溃；但系统会把前台服务
+        // 通知的渠道强制提升到 LOW（实测 IMPORTANCE_NONE 渠道 mOriginalImp=0 仍被提升为 2），
+        // appops/权限撤销在 Android 11 也不被通知系统采纳，渠道层无法隐藏。
+        // 因此只有经 startForegroundService 拉起时才 startForeground 并立即 stopForeground
+        // （通知只闪现毫秒级）；看门狗/广播的静默路径走普通 startService，全程零通知。
+        if (sWantForeground) {
+            startForeground(NOTIFY_ID, buildNotification());
+            stopForeground(true);
+            sWantForeground = false;
+        }
         // 系统回收进程后自动重建服务；重建时 intent 可能为 null，本服务不读 intent
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
-        running = false;
-        ServerSocket s = serverSocket;
-        if (s != null) {
-            try {
-                s.close();
-            } catch (Exception ignored) {
-            }
-        }
-        shutdownTts();
-        shutdownSerialSession();
+        // 系统按 app idle 停掉服务时（约每 60 秒一次）只回收 ServiceRecord，进程仍存活；
+        // 不关闭监听线程/端口，服务被停后 21104 继续监听。进程被真正杀死时一切自然回收，
+        // 看门狗广播会重新拉起服务与监听线程。
+        Log.i(TAG, "service destroyed, listener keeps running on " + DEVICE_PORT);
         super.onDestroy();
     }
 
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    /** 探测本机 21104 是否已在监听；StartReceiver 用来跳过重复拉起，避免通知闪现。 */
+    static boolean isListening() {
+        Socket probe = new Socket();
+        try {
+            probe.connect(new InetSocketAddress("127.0.0.1", DEVICE_PORT), 200);
+            return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            try {
+                probe.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void createChannel() {
@@ -161,7 +184,10 @@ public class ProbeService extends Service {
                 Log.e(TAG, "listen failed on port " + DEVICE_PORT + ": " + e);
                 running = false;
             } finally {
-                serverSocket = null;
+                // 只清理自己 bind 的 socket：bind 失败时不能抹掉旧监听线程仍持有的 serverSocket
+                if (serverSocket == server) {
+                    serverSocket = null;
+                }
                 if (server != null) {
                     try {
                         server.close();
