@@ -1,5 +1,6 @@
 {
   "VERSION": "2.0.0",
   "HOST": "0.0.0.0",
-  "PORT": "3000"
+  "PORT": "3000",
+  "MCP_PYTHON_PATH": "C:\\Users\\YQSH\\AppData\\Roaming\\uv\\python\\cpython-3.10-windows-x86_64-none\\python.exe"
 }
