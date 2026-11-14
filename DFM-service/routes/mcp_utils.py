@@ -70,6 +70,11 @@ class ServerNameRequest(BaseModel):
     name: str
 
 
+class SetPortRequest(BaseModel):
+    name: str
+    port: int
+
+
 class McpLogRequest(BaseModel):
     name: str
     lines: int = 200
@@ -177,22 +182,24 @@ def _venv_python(server_dir: Path) -> Path:
     return server_dir / "venv" / "Scripts" / "python.exe"
 
 
-def _allocate_port() -> Optional[int]:
-    """分配一个空闲端口：跳过本服务已占用的端口，用 socket 试绑验证"""
-    with _state_lock:
-        used = {info["port"] for info in _processes.values()}
-    for port in range(MCP_PORT_MIN, MCP_PORT_MAX + 1):
-        if port in used:
-            continue
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.bind(("127.0.0.1", port))
-            return port
-        except OSError:
-            continue
-        finally:
-            sock.close()
-    return None
+def _port_free(port: int) -> bool:
+    """用 socket 试绑验证端口是否空闲（未被任何程序占用）"""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _manifest_port(manifest: dict) -> Optional[int]:
+    """读取 manifest 里配置的固定端口，非法/未配置返回 None"""
+    port = manifest.get("port")
+    if isinstance(port, bool) or not isinstance(port, int):
+        return None
+    return port
 
 
 def _is_running(name: str) -> bool:
@@ -324,6 +331,7 @@ _TEMPLATE_MANIFEST = """{
   "description": "基于模板创建的 MCP server",
   "entry": "server:mcp",
   "requirements": "requirements.txt",
+  "port": 3010,
   "tools": [
     { "name": "echo", "description": "回显输入文本" }
   ]
@@ -554,7 +562,8 @@ def list_servers():
             running = _is_running(name) or _heartbeat_online(name)
             proc_info = _processes.get(name)
             hb = _heartbeats.get(name) or {}
-            port = (proc_info or {}).get("port") or hb.get("port")
+            # 固定端口（manifest 配置）优先，回退运行时端口（心跳可覆盖未配置场景）
+            port = _manifest_port(manifest) or (proc_info or {}).get("port") or hb.get("port")
             result.append({
                 "name": name,
                 "version": manifest.get("version"),
@@ -576,7 +585,7 @@ def list_servers():
 
 @router.post("/mcp/start")
 def start_server(request: ServerNameRequest):
-    """启动指定 server：分配空闲端口，以独立 venv 的 python 子进程运行"""
+    """启动指定 server：以 manifest 配置的固定端口、独立 venv 的 python 子进程运行"""
     name = request.name.strip()
     server_dir = _server_dir(name)
     if not server_dir.is_dir():
@@ -604,9 +613,22 @@ def start_server(request: ServerNameRequest):
     if manifest is None:
         return {"code": 400, "message": "manifest.json 缺失或非法", "data": None}
 
-    port = _allocate_port()
-    if port is None:
-        return {"code": 500, "message": f"无可用端口（{MCP_PORT_MIN}~{MCP_PORT_MAX} 已占满）", "data": None}
+    # 固定端口：由用户在 manifest.json 的 port 字段配置（服务列表「端口」按钮可改）
+    port = _manifest_port(manifest)
+    if port is None or not (MCP_PORT_MIN <= port <= MCP_PORT_MAX):
+        return {
+            "code": 400,
+            "message": f"manifest.json 未配置有效固定端口（{MCP_PORT_MIN}~{MCP_PORT_MAX}），请先在服务列表设置端口",
+            "data": None,
+        }
+    # 与其他运行中的 MCP 服务冲突
+    with _state_lock:
+        used = {info["port"] for n, info in _processes.items() if n != name}
+    if port in used:
+        return {"code": 400, "message": f"端口 {port} 已被其他运行中的 MCP 服务占用", "data": None}
+    # 被系统中其他程序占用
+    if not _port_free(port):
+        return {"code": 400, "message": f"端口 {port} 已被其他程序占用，请更换端口", "data": None}
 
     logs_dir = server_dir / "logs"
     logs_dir.mkdir(exist_ok=True)
@@ -653,6 +675,43 @@ def stop_server(request: ServerNameRequest):
     _stop_process(name)
     logger.info(f"MCP server {name} 已停止")
     return {"code": 200, "message": "success", "data": {"name": name}}
+
+
+@router.post("/mcp/set-port")
+def set_server_port(request: SetPortRequest):
+    """设置 server 的固定端口（写入 manifest.json 的 port 字段），重复/占用/运行中则拒绝"""
+    name = request.name.strip()
+    port = request.port
+    server_dir = _server_dir(name)
+    if not server_dir.is_dir():
+        return {"code": 404, "message": f"未安装的 server: {name}", "data": None}
+    manifest = _read_manifest(server_dir)
+    if manifest is None:
+        return {"code": 400, "message": "manifest.json 缺失或非法", "data": None}
+    if _is_running(name) or _heartbeat_online(name):
+        return {"code": 400, "message": "服务运行中，请先停止再修改端口", "data": None}
+    if not (MCP_PORT_MIN <= port <= MCP_PORT_MAX):
+        return {"code": 400, "message": f"端口超出允许范围（{MCP_PORT_MIN}~{MCP_PORT_MAX}）", "data": None}
+    # 端口重复检测：与其他已安装 server 的固定端口
+    for entry in _servers_root().iterdir():
+        if not entry.is_dir():
+            continue
+        other = _read_manifest(entry)
+        other_name = other.get("name") if other else None
+        if other_name and other_name != name and _manifest_port(other) == port:
+            return {"code": 400, "message": f"端口 {port} 已被服务 {other_name} 使用", "data": None}
+    # 端口占用检测：被系统中其他程序占用
+    if not _port_free(port):
+        return {"code": 400, "message": f"端口 {port} 已被其他程序占用，请更换端口", "data": None}
+    manifest["port"] = port
+    try:
+        with open(server_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"MCP server {name} 写入端口失败: {e}")
+        return {"code": 500, "message": f"写入端口失败: {str(e)}", "data": None}
+    logger.info(f"MCP server {name} 固定端口已设置为 {port}")
+    return {"code": 200, "message": "success", "data": {"name": name, "port": port}}
 
 
 @router.post("/mcp/uninstall")
