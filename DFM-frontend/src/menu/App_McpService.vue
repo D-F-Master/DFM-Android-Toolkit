@@ -145,6 +145,41 @@ const stopServer = async (item: McpServer) => {
   }
 };
 
+// 设置固定端口（写入 manifest.json，重复/占用由后端拒绝）
+const setPort = (item: McpServer) => {
+  showPrompt(
+    `请输入固定端口（当前: ${item.port || '未设置'}，范围 3010~3050，运行中需先停止）`,
+    '例如 3010',
+    (portText: string) => {
+      const port = parseInt(portText, 10);
+      if (!portText || isNaN(port) || port < 3010 || port > 3050) {
+        deferModal(() => showMessage('端口无效，需为 3010~3050 的整数', '提示'));
+        return;
+      }
+      applyPort(item.name, port);
+    }
+  );
+};
+
+const applyPort = async (name: string, port: number) => {
+  try {
+    const response = await fetch(`${API_BASE.value}/api/mcp/set-port`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, port })
+    });
+    const data = await response.json();
+    if (data.code === 200) {
+      showMessage(`服务 ${name} 固定端口已设为 ${port}`, '设置成功');
+    } else {
+      showMessage(data.message || '设置失败', '设置失败');
+    }
+    await loadServers();
+  } catch (error: any) {
+    showMessage(`设置失败: ${error.message}`, '设置失败');
+  }
+};
+
 // 卸载服务
 const uninstallServer = (item: McpServer) => {
   showConfirm(`确定卸载 MCP 服务「${item.name}」吗？该服务的所有文件和依赖将被删除。`, async () => {
@@ -386,6 +421,7 @@ const openEndpoint = (endpoint: string) => {
               <thead>
                 <tr>
                   <th class="col-name">名称</th>
+                  <th class="col-version">端口</th>
                   <th class="col-version">版本</th>
                   <th class="col-version">MCP SDK</th>
                   <th class="col-status">安装状态</th>
@@ -398,6 +434,7 @@ const openEndpoint = (endpoint: string) => {
               <tbody>
                 <tr v-for="item in servers" :key="item.name" class="mcp-row">
                   <td class="col-name" :title="item.description">{{ item.name }}</td>
+                  <td class="col-version">{{ item.port || '-' }}</td>
                   <td class="col-version">{{ item.version || '-' }}</td>
                   <td class="col-version">{{ item.mcpVersion || '-' }}</td>
                   <td class="col-status">
@@ -439,6 +476,7 @@ const openEndpoint = (endpoint: string) => {
                     >
                       停止
                     </button>
+                    <button class="log-button" @click="setPort(item)">端口</button>
                     <button class="log-button" @click="viewLogs(item, 'server')">运行日志</button>
                     <button class="log-button" @click="viewLogs(item, 'install')">安装日志</button>
                     <button
