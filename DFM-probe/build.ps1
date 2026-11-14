@@ -101,4 +101,11 @@ if ($LASTEXITCODE -ne 0) { throw 'apksigner failed' }
 & $apksigner verify --verbose $OutApk
 if ($LASTEXITCODE -ne 0) { throw 'apksigner verify failed' }
 
+# Copy the APK to the service install path (get_probe_apk_path), overwrite if exists
+$dataDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'DFM-service\data\apk'
+New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+$serviceApk = Join-Path $dataDir 'DFMProbe.apk'
+Copy-Item -Force -Path $OutApk -Destination $serviceApk
+Write-Host "Copied to: $serviceApk"
+
 Write-Host "Build finished: $OutApk"
