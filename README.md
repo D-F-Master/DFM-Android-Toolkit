@@ -80,7 +80,7 @@ DFM-Android-Toolkit/
 
 ### DFM-probe — Android 探针 APK
 
-- 无界面常驻 agent：前台服务监听设备 `0.0.0.0:21104`，PC 通过 `adb forward` 或局域网直连，用 `AA 55` 二进制帧协议（CRC16-Modbus + ACK 停等重传）做远程验证
+- 无界面常驻 agent：普通服务 + 静态监听线程监听设备 `0.0.0.0:21104`（通知栏不显示；服务被系统回收/进程被杀后由 60s 看门狗自动拉起），PC 通过 `adb forward` 或局域网直连，用 `AA 55` 二进制帧协议（CRC16-Modbus + ACK 停等重传）做远程验证
 - 能力：TTS 语音朗读、设备详细信息采集（串口节点/摄像头/外设）、串口透传会话（打开/取增量/单次与循环发送/关闭，需 root）
 - 激活：`adb shell am broadcast -n com.dfm.probe/.StartReceiver --include-stopped-packages`（另有开机自启 + 60s 看门狗保活）
 - 服务端对应接口见 `DFM-service/routes/probe.py`（安装 APK / forward / 转发消息），APK 位于 `DFM-service/data/apk/DFMProbe.apk`

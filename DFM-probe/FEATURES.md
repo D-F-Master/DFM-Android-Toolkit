@@ -37,13 +37,17 @@
 - **看门狗**：每次收到广播都用 `AlarmManager.setRepeating(ELAPSED_REALTIME_WAKEUP, 60s)` 注册/续期一条
   显式 `com.dfm.probe.WATCHDOG` 广播，定时自检重新拉起服务，兜住 `START_STICKY` 未生效的回收场景；
   `FLAG_UPDATE_CURRENT` 保证不会堆出多条 alarm。
-- Android 8+ 走 `startForegroundService`，更低版本走 `startService`；启动被系统拒绝时记日志，下一轮看门狗重试。
-- **前台服务 + 常驻通知（不可见）**：标题 `DFM Probe`、内容「监听 21104 端口」、`setOngoing(true)`；
-  Android 8+ 自动创建 `IMPORTANCE_NONE` 通知渠道 `dfm_probe_none`：通知对象存在（满足前台服务系统要求）但
-  系统在渲染层直接抑制，状态栏/通知栏/锁屏完全无显示；创建时删除旧渠道 `dfm_probe`、`dfm_probe_min`。
-- 广播**可重复、幂等**：`running` 标志保证只有尚未监听时才起监听线程，不会重复 bind 端口。
-- 服务返回 `START_STICKY`：进程被系统回收后自动重建（`onStartCommand` 收 `intent=null`，本服务不读 intent），
-  重建时重新 bind 21104；`onDestroy` 会关闭 `ServerSocket` 并释放 TTS 引擎。
+- Android 8+ **优先普通 `startService` 静默拉起**（alarm/广播的临时白名单放行，全程零通知）；
+  被系统后台限制拒绝（`IllegalStateException`）时才回退 `startForegroundService`，更低版本直接 `startService`；
+  启动仍被拒绝时记日志，下一轮看门狗重试。
+- **通知彻底不显示**：静默路径完全不挂前台服务；仅 FGS 回退路径会在启动瞬间 `startForeground` +
+  立即 `stopForeground`（通知只闪现毫秒级，且渠道为 `IMPORTANCE_NONE` 的 `dfm_probe_none`，
+  创建时删除旧渠道 `dfm_probe`、`dfm_probe_min`）。实测真机（Android 11 rockchip）通知栏全程无记录。
+- 广播**可重复、幂等**：`running`（static）标志保证只有尚未监听时才起监听线程，不会重复 bind 端口。
+- 服务返回 `START_STICKY`：进程被系统回收后自动重建（`onStartCommand` 收 `intent=null`，本服务不读 intent）。
+- **监听线程跨服务生命周期存活**：系统约每 60 秒按 "app idle" 停掉后台服务（只回收 ServiceRecord，进程不死），
+  `running` / `serverSocket` 为 static、`onDestroy` 不关端口，监听线程继续 accept，端口不中断；
+  进程被真正杀死时看门狗广播会拉起新进程与监听线程（实测 `am kill` 后 ≤60s 自愈）。
 - 清单：`minSdk 23` / `targetSdk 30`，权限 `INTERNET` + `FOREGROUND_SERVICE` + `RECEIVE_BOOT_COMPLETED`，
   `allowBackup=false`，服务 `exported=false`，接收器 `exported=true` 且过滤
   `com.dfm.probe.START` / `android.intent.action.BOOT_COMPLETED` / `com.dfm.probe.WATCHDOG`。
