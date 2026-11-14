@@ -224,18 +224,24 @@ const createTemplate = async (name: string, path: string) => {
 };
 
 // 两步弹窗输入：项目名称 → 目标目录
+// ModalDialog 确认后会自己触发 close 并把 visible 置 false，同步在回调里再开
+// 新弹窗会被这个 close 覆盖掉，因此链式弹窗/提示必须推迟到确认流程结束后
+const deferModal = (fn: Function) => setTimeout(fn, 0);
+
 const showCreateTemplateDialog = () => {
   showPrompt('请输入项目名称（字母、数字、下划线、中划线）', '例如 demo-server', (name: string) => {
     if (!name || !name.trim()) {
-      showMessage('项目名称不能为空', '提示');
+      deferModal(() => showMessage('项目名称不能为空', '提示'));
       return;
     }
-    showPrompt('请输入目标目录（绝对路径，将在其下创建同名项目文件夹）', '例如 D:\\projects', (path: string) => {
-      if (!path || !path.trim()) {
-        showMessage('目标目录不能为空', '提示');
-        return;
-      }
-      createTemplate(name.trim(), path.trim());
+    deferModal(() => {
+      showPrompt('请输入目标目录（绝对路径，将在其下创建同名项目文件夹）', '例如 D:\\projects', (path: string) => {
+        if (!path || !path.trim()) {
+          deferModal(() => showMessage('目标目录不能为空', '提示'));
+          return;
+        }
+        createTemplate(name.trim(), path.trim());
+      });
     });
   });
 };
