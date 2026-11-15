@@ -5043,201 +5043,145 @@ const autoInstallNewDevices = () => {
   }
 };
 
-// 探针工具：远程 TTS 语音播放（0x01）
-const probeTtsText = ref('');
-const probeTtsSending = ref(false);
-const probeTtsMessage = ref('');
-const probeTtsMessageType = ref<'ok' | 'err' | ''>('');
+// 探针工具：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A
+const probeBusy = ref('');
+const probeResult = ref('');
+const probeShellRoot = ref(false);
+const probeDisabled = computed(() => probeBusy.value !== '' || !selectedDevice.value);
 
-const playProbeTts = async () => {
-  if (probeTtsSending.value) return;
-  const text = probeTtsText.value.trim();
+const probeReady = () => {
+  if (probeBusy.value) return false;
   if (!selectedDevice.value) {
-    probeTtsMessage.value = '请先在左侧选择设备';
-    probeTtsMessageType.value = 'err';
-    return;
+    showMessage('请先在左侧选择设备', '探针工具');
+    return false;
   }
-  if (!text) {
-    probeTtsMessage.value = '请输入要朗读的文本';
-    probeTtsMessageType.value = 'err';
-    return;
+  return true;
+};
+
+const probePost = async (path: string, payload: any, timeout = 200000) => {
+  const res = await axios.post(`${API_BASE.value}${path}`, payload, { timeout });
+  const d = res.data;
+  if (d?.code !== 200 || d?.data?.connected !== true) {
+    throw new Error(d?.message || '通讯失败');
   }
-  // 单帧数据区上限 65535 字节，留余量给 JSON 信封
-  if (new TextEncoder().encode(text).length > 60000) {
-    probeTtsMessage.value = '文本过长（单帧上限 65535 字节）';
-    probeTtsMessageType.value = 'err';
-    return;
+  const r = d.data.response || {};
+  if (r.code !== 200) {
+    throw new Error(r.message || '设备返回错误');
   }
-  probeTtsSending.value = true;
-  probeTtsMessage.value = '正在请求设备朗读...';
-  probeTtsMessageType.value = '';
-  try {
-    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
-      deviceId: selectedDevice.value,
-      cmd: 0x01,
-      data: { text }
-    }, { timeout: 200000 });
-    const d = res.data;
-    if (d?.code !== 200 || d?.data?.connected !== true) {
-      probeTtsMessage.value = `播放失败：${d?.message || '通讯失败'}`;
-      probeTtsMessageType.value = 'err';
+  return r.data || {};
+};
+
+const playProbeTts = () => {
+  if (!probeReady()) return;
+  showPrompt('输入要让设备朗读的文本', (text: string) => {
+    const t = (text || '').trim();
+    if (!t || new TextEncoder().encode(t).length > 60000) {
+      nextTick(() => showMessage(!t ? '文本不能为空' : '文本过长（单帧上限 65535 字节）', '远程 TTS 语音播放'));
       return;
     }
-    const r = d.data.response || {};
-    if (r.code !== 200) {
-      probeTtsMessage.value = `播放失败：${r.message || '设备返回错误'}`;
-      probeTtsMessageType.value = 'err';
-      return;
-    }
-    probeTtsMessage.value = '朗读完成';
-    probeTtsMessageType.value = 'ok';
-  } catch (e: any) {
-    probeTtsMessage.value = `播放失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
-    probeTtsMessageType.value = 'err';
-  } finally {
-    probeTtsSending.value = false;
-  }
+    probeBusy.value = 'tts';
+    probeResult.value = '正在请求设备朗读...';
+    probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x01, data: { text: t } })
+      .then(() => {
+        probeResult.value = '朗读完成';
+        showMessage('朗读完成', '远程 TTS 语音播放');
+      })
+      .catch((e: any) => {
+        const text = `播放失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+        probeResult.value = text;
+        showMessage(text, '远程 TTS 语音播放');
+      })
+      .finally(() => { probeBusy.value = ''; });
+  }, '输入要朗读的文本', '远程 TTS 语音播放');
 };
 
 // 探针工具：心跳（0x00），结果用弹窗提示
-const probeHeartSending = ref(false);
-
 const sendProbeHeartbeat = async () => {
-  if (probeHeartSending.value) return;
-  if (!selectedDevice.value) {
-    showMessage('请先在左侧选择设备', '探针心跳');
-    return;
-  }
-  probeHeartSending.value = true;
+  if (!probeReady()) return;
+  probeBusy.value = 'heartbeat';
+  probeResult.value = '正在检测设备探针...';
   try {
-    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
-      deviceId: selectedDevice.value,
-      cmd: 0x00,
-      data: {}
-    }, { timeout: 60000 });
-    const d = res.data;
-    if (d?.code !== 200 || d?.data?.connected !== true) {
-      showMessage(`心跳失败：${d?.message || '通讯失败'}`, '探针心跳');
-      return;
-    }
-    const r = d.data.response || {};
-    if (r.code !== 200) {
-      showMessage(`心跳失败：${r.message || '设备返回错误'}`, '探针心跳');
-      return;
-    }
-    showMessage(`设备在线，探针版本 ${r.data?.version || '未知'}`, '探针心跳');
+    const info = await probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x00, data: {} }, 60000);
+    probeResult.value = `设备在线，探针版本 ${info.version || '未知'}`;
+    showMessage(probeResult.value, '探针心跳');
   } catch (e: any) {
-    showMessage(`心跳失败：${e?.response?.data?.message || e?.message || '请求异常'}`, '探针心跳');
+    const text = `心跳失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '探针心跳');
   } finally {
-    probeHeartSending.value = false;
+    probeBusy.value = '';
   }
 };
 
-// 探针工具：shell 命令执行（0x08）
-const probeShellCmd = ref('');
-const probeShellRoot = ref(false);
-const probeShellSending = ref(false);
-const probeShellOutput = ref('');
-const probeShellMessage = ref('');
-const probeShellMessageType = ref<'ok' | 'err' | ''>('');
-
-const runProbeShell = async () => {
-  if (probeShellSending.value) return;
-  if (!selectedDevice.value) {
-    probeShellMessage.value = '请先在左侧选择设备';
-    probeShellMessageType.value = 'err';
-    return;
-  }
-  const command = probeShellCmd.value.trim();
-  if (!command) {
-    probeShellMessage.value = '请输入要执行的命令';
-    probeShellMessageType.value = 'err';
-    return;
-  }
-  probeShellSending.value = true;
-  probeShellMessage.value = '正在执行...';
-  probeShellMessageType.value = '';
-  try {
-    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+// 探针工具：shell 命令执行（0x08），文本由弹窗输入
+const runProbeShell = () => {
+  if (!probeReady()) return;
+  showPrompt('输入要在设备上执行的 shell 命令', (command: string) => {
+    const cmd = (command || '').trim();
+    if (!cmd) {
+      nextTick(() => showMessage('命令不能为空', 'Shell 命令执行'));
+      return;
+    }
+    probeBusy.value = 'shell';
+    probeResult.value = `$ ${cmd}${probeShellRoot.value ? '  (root)' : ''}\n正在执行...`;
+    probePost('/api/probe/message', {
       deviceId: selectedDevice.value,
       cmd: 0x08,
-      data: { command, root: probeShellRoot.value, timeout: 60 }
-    }, { timeout: 200000 });
-    const d = res.data;
-    if (d?.code !== 200 || d?.data?.connected !== true) {
-      probeShellMessage.value = `执行失败：${d?.message || '通讯失败'}`;
-      probeShellMessageType.value = 'err';
-      return;
-    }
-    const r = d.data.response || {};
-    if (r.code !== 200) {
-      probeShellMessage.value = `执行失败：${r.message || '设备返回错误'}`;
-      probeShellMessageType.value = 'err';
-      return;
-    }
-    const info = r.data || {};
-    const parts: string[] = [`$ ${command}${probeShellRoot.value ? '  (root)' : ''}`];
-    if (info.stdout) parts.push(info.stdout);
-    if (info.stderr) parts.push(`[stderr]\n${info.stderr}`);
-    parts.push(`[exit ${info.exit}]${info.truncated ? '（输出过长已截断）' : ''}`);
-    probeShellOutput.value = parts.join('\n');
-    probeShellMessage.value = '执行完成';
-    probeShellMessageType.value = 'ok';
-  } catch (e: any) {
-    probeShellMessage.value = `执行失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
-    probeShellMessageType.value = 'err';
-  } finally {
-    probeShellSending.value = false;
-  }
+      data: { command: cmd, root: probeShellRoot.value, timeout: 60 }
+    })
+      .then((info: any) => {
+        const parts: string[] = [`$ ${cmd}${probeShellRoot.value ? '  (root)' : ''}`];
+        if (info.stdout) parts.push(info.stdout);
+        if (info.stderr) parts.push(`[stderr]\n${info.stderr}`);
+        parts.push(`[exit ${info.exit}]${info.truncated ? '（输出过长已截断）' : ''}`);
+        probeResult.value = parts.join('\n');
+      })
+      .catch((e: any) => {
+        const text = `执行失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+        probeResult.value = text;
+        showMessage(text, 'Shell 命令执行');
+      })
+      .finally(() => { probeBusy.value = ''; });
+  }, '例：ls /sdcard', 'Shell 命令执行');
 };
 
-// 探针工具：截图（0x09）/ 拍照（0x0A），文件存设备端，再拉 base64 弹窗预览
-const probeShotSending = ref(false);
-const probeShotMessage = ref('');
-const probeShotMessageType = ref<'ok' | 'err' | ''>('');
-const probePhotoSending = ref(false);
-const probePhotoMessage = ref('');
-const probePhotoMessageType = ref<'ok' | 'err' | ''>('');
+// 探针工具：截图（0x09）/ 拍照（0x0A），拍照先取摄像头列表选择
+const probeFacing = (facing: string) => {
+  if (facing === 'front') return '前置';
+  if (facing === 'back') return '后置';
+  if (facing === 'external') return '外接';
+  return '未知';
+};
 
-const probeCapture = async (kind: 'screenshot' | 'photo') => {
-  const sending = kind === 'screenshot' ? probeShotSending : probePhotoSending;
-  const msg = kind === 'screenshot' ? probeShotMessage : probePhotoMessage;
-  const msgType = kind === 'screenshot' ? probeShotMessageType : probePhotoMessageType;
+const doProbeCapture = async (kind: 'screenshot' | 'photo', cameraId = '') => {
+  if (!probeReady()) return;
+  probeBusy.value = kind;
   const label = kind === 'screenshot' ? '截屏' : '拍照';
-  if (sending.value) return;
-  if (!selectedDevice.value) {
-    msg.value = '请先在左侧选择设备';
-    msgType.value = 'err';
-    return;
-  }
-  sending.value = true;
-  msg.value = `正在${label}...`;
-  msgType.value = '';
+  probeResult.value = `正在${label}...`;
   try {
-    const res = await axios.post(`${API_BASE.value}/api/probe/capture`, {
-      deviceId: selectedDevice.value,
-      kind
-    }, { timeout: 200000 });
+    const payload: any = { deviceId: selectedDevice.value, kind };
+    if (cameraId) payload.cameraId = cameraId;
+    // capture 响应 data.response.data：screenshot 带 path；photo 额外带 base64 与 deleted
+    const res = await axios.post(`${API_BASE.value}/api/probe/capture`, payload, { timeout: 200000 });
     const d = res.data;
     if (d?.code !== 200 || d?.data?.connected !== true) {
-      msg.value = `${label}失败：${d?.message || '通讯失败'}`;
-      msgType.value = 'err';
-      return;
+      throw new Error(d?.message || '通讯失败');
     }
     const r = d.data.response || {};
-    if (r.code !== 200) {
-      msg.value = `${label}失败：${r.message || '设备返回错误'}`;
-      msgType.value = 'err';
-      return;
-    }
+    if (r.code !== 200) throw new Error(r.message || '设备返回错误');
     const info = r.data || {};
     const name = (info.path || '').split('/').pop() || (kind === 'screenshot' ? 'screenshot.png' : 'photo.jpg');
-    const resp = await axios.post(`${API_BASE.value}/api/device/files/base64`, {
-      deviceId: selectedDevice.value,
-      remotePath: info.path
-    });
-    if (resp.data.code !== 200 || !resp.data.data?.base64) {
-      throw new Error(resp.data.message || `已生成 ${name}，但读取预览失败`);
+    let b64 = info.base64;
+    if (!b64) {
+      if (info.readError) throw new Error(info.readError);
+      const resp = await axios.post(`${API_BASE.value}/api/device/files/base64`, {
+        deviceId: selectedDevice.value,
+        remotePath: info.path
+      });
+      if (resp.data.code !== 200 || !resp.data.data?.base64) {
+        throw new Error(resp.data.message || `已生成 ${name}，但读取预览失败`);
+      }
+      b64 = resp.data.data.base64;
     }
     const mime = name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
     imageViewerList.value = [];
@@ -5248,15 +5192,46 @@ const probeCapture = async (kind: 'screenshot' | 'photo') => {
     imageViewerSize.value = Number(info.size) || 0;
     imageViewerLoading.value = true;
     imageViewerVisible.value = true;
-    imageViewerSrc.value = `data:${mime};base64,${resp.data.data.base64}`;
+    imageViewerSrc.value = `data:${mime};base64,${b64}`;
     imageViewerLoading.value = false;
-    msg.value = `${label}完成（${name}）`;
-    msgType.value = 'ok';
+    probeResult.value = `${label}完成（${name}）${info.deleted ? '，设备端文件已删除' : ''}`;
   } catch (e: any) {
-    msg.value = `${label}失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
-    msgType.value = 'err';
+    const text = `${label}失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, kind === 'screenshot' ? '屏幕截图' : '摄像头拍照');
   } finally {
-    sending.value = false;
+    probeBusy.value = '';
+  }
+};
+
+const onProbePhoto = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'photo';
+  probeResult.value = '正在获取摄像头列表...';
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/cameras`, {
+      deviceId: selectedDevice.value
+    }, { timeout: 60000 });
+    const cameras = res.data?.data?.cameras || [];
+    if (res.data?.code !== 200 || cameras.length === 0) {
+      throw new Error(res.data?.message || '未检测到摄像头');
+    }
+    if (cameras.length === 1) {
+      await doProbeCapture('photo', String(cameras[0].id));
+      return;
+    }
+    probeBusy.value = '';
+    const items = cameras.map((c: any) => ({
+      value: String(c.id),
+      label: `摄像头 ${c.id} · ${probeFacing(c.facing)}`,
+      desc: c.resolution || ''
+    }));
+    showList(items, (id: string) => { doProbeCapture('photo', id); }, '选择摄像头', '未检测到摄像头', '拍照');
+  } catch (e: any) {
+    const text = `拍照失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '摄像头拍照');
+    probeBusy.value = '';
   }
 };
 </script>
@@ -7984,6 +7959,13 @@ button.batch-remote-tile-tag:disabled.active {
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
 }
 
+.probe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
 .probe-shell-out {
   margin-bottom: 10px;
   padding: 10px 12px;
@@ -10009,41 +9991,8 @@ button.batch-remote-tile-tag:disabled.active {
                 </div>
               </div>
 
-              <!-- 探针工具：远程 TTS 语音播放 -->
+              <!-- 探针工具：心跳 / TTS / Shell / 截图 / 拍照 合并为一个功能区 -->
               <div v-if="activeTab === 'probe'" class="keys-page">
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                        <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/>
-                      </svg>
-                    </span>
-                    <span>远程 TTS 语音播放</span>
-                  </div>
-                  <div class="card-body">
-                    <textarea
-                      v-model="probeTtsText"
-                      class="serial-textarea"
-                      placeholder="输入要让设备朗读的文本"
-                      spellcheck="false"
-                    ></textarea>
-                    <div class="serial-actions">
-                      <button
-                        class="check-button"
-                        @click="playProbeTts"
-                        :disabled="probeTtsSending || !selectedDevice || !probeTtsText.trim()"
-                      >{{ probeTtsSending ? '播放中...' : '播放' }}</button>
-                    </div>
-                    <div v-if="probeTtsMessage" class="serial-msg" :class="probeTtsMessageType">
-                      {{ probeTtsMessage }}
-                    </div>
-                    <div class="serial-hint">
-                      通过探针 0x01 命令让设备端 TTS 引擎朗读上方文本；依赖设备系统 TTS 引擎，初始化与朗读最长约 90 秒，期间请勿重复点击。
-                    </div>
-                  </div>
-                </div>
-
                 <div class="scrcpy-card">
                   <div class="card-header">
                     <span class="card-icon">
@@ -10051,112 +10000,45 @@ button.batch-remote-tile-tag:disabled.active {
                         <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
                       </svg>
                     </span>
-                    <span>探针心跳</span>
+                    <span>探针工具</span>
                   </div>
                   <div class="card-body">
-                    <div class="serial-actions">
+                    <div class="probe-actions">
                       <button
                         class="check-button"
                         @click="sendProbeHeartbeat"
-                        :disabled="probeHeartSending || !selectedDevice"
-                      >{{ probeHeartSending ? '检测中...' : '发送心跳' }}</button>
-                    </div>
-                    <div class="serial-hint">
-                      通过探针 0x00 命令检测设备端探针是否在线，结果以弹窗提示。
-                    </div>
-                  </div>
-                </div>
-
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polyline points="4 17 10 11 4 5"/>
-                        <line x1="12" y1="19" x2="20" y2="19"/>
-                      </svg>
-                    </span>
-                    <span>Shell 命令执行</span>
-                  </div>
-                  <div class="card-body">
-                    <textarea
-                      v-model="probeShellCmd"
-                      class="serial-textarea"
-                      placeholder="输入要在设备上执行的 shell 命令，例：ls /sdcard"
-                      spellcheck="false"
-                    ></textarea>
-                    <div class="serial-row">
-                      <label class="serial-check">
-                        <input type="checkbox" v-model="probeShellRoot" />
-                        <span>以 root 执行（su 0，需设备已 root）</span>
-                      </label>
-                    </div>
-                    <div class="serial-actions">
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'heartbeat' ? '检测中...' : '探针心跳' }}</button>
+                      <button
+                        class="check-button"
+                        @click="playProbeTts"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'tts' ? '朗读中...' : '远程 TTS' }}</button>
                       <button
                         class="check-button"
                         @click="runProbeShell"
-                        :disabled="probeShellSending || !selectedDevice || !probeShellCmd.trim()"
-                      >{{ probeShellSending ? '执行中...' : '执行' }}</button>
-                    </div>
-                    <pre v-if="probeShellOutput" class="probe-shell-out">{{ probeShellOutput }}</pre>
-                    <div v-if="probeShellMessage" class="serial-msg" :class="probeShellMessageType">
-                      {{ probeShellMessage }}
-                    </div>
-                    <div class="serial-hint">
-                      通过探针 0x08 命令在设备端执行 shell 并回传输出；超时 60 秒，stdout/stderr 各截断至 10000 字节。
-                    </div>
-                  </div>
-                </div>
-
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="2" y="6" width="20" height="13" rx="2"/>
-                        <circle cx="12" cy="12.5" r="3.5"/>
-                      </svg>
-                    </span>
-                    <span>屏幕截图</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="serial-actions">
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'shell' ? '执行中...' : 'Shell 命令' }}</button>
                       <button
                         class="check-button"
-                        @click="probeCapture('screenshot')"
-                        :disabled="probeShotSending || !selectedDevice"
-                      >{{ probeShotSending ? '截屏中...' : '截图并预览' }}</button>
-                    </div>
-                    <div v-if="probeShotMessage" class="serial-msg" :class="probeShotMessageType">
-                      {{ probeShotMessage }}
-                    </div>
-                    <div class="serial-hint">
-                      通过探针 0x09 命令调用设备端 screencap 截屏（直连被拒时自动回退 su），截图存设备端并弹窗预览。
-                    </div>
-                  </div>
-                </div>
-
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
-                        <circle cx="12" cy="13" r="4"/>
-                      </svg>
-                    </span>
-                    <span>摄像头拍照</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="serial-actions">
+                        @click="doProbeCapture('screenshot')"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'screenshot' ? '截屏中...' : '屏幕截图' }}</button>
                       <button
                         class="check-button"
-                        @click="probeCapture('photo')"
-                        :disabled="probePhotoSending || !selectedDevice"
-                      >{{ probePhotoSending ? '拍照中...' : '拍照并预览' }}</button>
+                        @click="onProbePhoto"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'photo' ? '拍照中...' : '摄像头拍照' }}</button>
                     </div>
-                    <div v-if="probePhotoMessage" class="serial-msg" :class="probePhotoMessageType">
-                      {{ probePhotoMessage }}
+                    <div class="serial-row">
+                      <label class="serial-check">
+                        <input type="checkbox" v-model="probeShellRoot" />
+                        <span>Shell 以 root 执行（su 0，需设备已 root）</span>
+                      </label>
                     </div>
+                    <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      通过探针 0x0A 命令调用 camera2 无预览拍照（默认后置摄像头），照片存设备端并弹窗预览；首次使用会自动授予 CAMERA 权限。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除。
                     </div>
                   </div>
                 </div>
