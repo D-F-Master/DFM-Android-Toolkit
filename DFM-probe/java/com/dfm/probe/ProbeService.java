@@ -6,12 +6,23 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CameraMetadata;
+import android.hardware.camera2.CaptureFailure;
+import android.hardware.camera2.CaptureRequest;
+import android.graphics.ImageFormat;
 import android.hardware.input.InputManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
+import android.media.Image;
+import android.media.ImageReader;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
@@ -26,6 +37,8 @@ import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -33,11 +46,17 @@ import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 常驻服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
@@ -64,11 +83,17 @@ public class ProbeService extends Service {
     private static final int CMD_SERIAL_OPEN = 0x04;
     private static final int CMD_SERIAL_SEND = 0x05;
     private static final int CMD_SERIAL_CLOSE = 0x07;
+    private static final int CMD_SHELL = 0x08;
+    private static final int CMD_SCREENSHOT = 0x09;
+    private static final int CMD_CAMERA = 0x0A;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
     /** 串口会话读缓冲上限，超出时丢弃最旧的字节，避免长时间无人读取撑爆内存。 */
     private static final int MAX_SERIAL_BUFFER = 65536;
+
+    /** shell 输出（stdout / stderr 各自）按字节截断的上限，防止响应 JSON 超出单帧 65535。 */
+    private static final int MAX_SHELL_OUTPUT = 10000;
 
     /** 监听状态必须 static：系统每 60 秒把后台服务按 app idle 停掉（ onDestroy ），但进程仍存活；
      *  监听线程挂在 static 字段上即可跨服务生命周期继续 accept，端口不中断。 */
@@ -311,7 +336,8 @@ public class ProbeService extends Service {
             boolean unknown = cmd != CMD_HEARTBEAT && cmd != CMD_TTS
                     && cmd != CMD_DEVICE_INFO && cmd != CMD_SERIAL_READ
                     && cmd != CMD_SERIAL_OPEN && cmd != CMD_SERIAL_SEND
-                    && cmd != CMD_SERIAL_CLOSE;
+                    && cmd != CMD_SERIAL_CLOSE
+                    && cmd != CMD_SHELL && cmd != CMD_SCREENSHOT && cmd != CMD_CAMERA;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -386,6 +412,25 @@ public class ProbeService extends Service {
             } catch (Exception e) {
                 Log.w(TAG, "serial cmd failed: " + e);
                 return fail(500, "serial cmd failed: " + e);
+            }
+        }
+        if (cmd == CMD_SHELL || cmd == CMD_SCREENSHOT || cmd == CMD_CAMERA) {
+            try {
+                JSONObject data;
+                if (cmd == CMD_SHELL) {
+                    data = shellExec(req);
+                } else if (cmd == CMD_SCREENSHOT) {
+                    data = takeScreenshot();
+                } else {
+                    data = takePhoto(req);
+                }
+                return ok(data);
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "cmd param error: " + e);
+                return fail(400, e.getMessage());
+            } catch (Exception e) {
+                Log.w(TAG, "cmd 0x" + Integer.toHexString(cmd) + " failed: " + e);
+                return fail(500, "cmd failed: " + e);
             }
         }
         return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
@@ -664,6 +709,335 @@ public class ProbeService extends Service {
             sb.append(String.format("%02X", bytes[i]));
         }
         return sb.toString();
+    }
+
+    // ===== shell 执行 / 截屏 / 拍照（0x08 / 0x09 / 0x0A）=====
+
+    /** CMD_SHELL (0x08)：PC 下发 shell 命令，设备端执行并回传输出。root=true 时经 su 以 root 运行。 */
+    private JSONObject shellExec(JSONObject req) throws Exception {
+        String command = req.optString("command", null);
+        if (command == null || command.trim().isEmpty()) {
+            throw new IllegalArgumentException("command is required");
+        }
+        int timeoutSec = req.optInt("timeout", 30);
+        if (timeoutSec < 1 || timeoutSec > 120) {
+            throw new IllegalArgumentException("timeout must be 1..120 seconds");
+        }
+        boolean root = req.optBoolean("root", false);
+        // 本设备的 su 不支持 -c，root 模式固定用 "su 0 sh -c <command>" 形式
+        ProcessBuilder pb = root
+                ? new ProcessBuilder("su", "0", "sh", "-c", command)
+                : new ProcessBuilder("sh", "-c", command);
+        pb.redirectErrorStream(false);
+        Process proc = pb.start();
+        boolean[] outTrunc = new boolean[1];
+        boolean[] errTrunc = new boolean[1];
+        AtomicReference<byte[]> outRef = new AtomicReference<>(new byte[0]);
+        AtomicReference<byte[]> errRef = new AtomicReference<>(new byte[0]);
+        Thread outThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    outRef.set(drainStream(proc.getInputStream(), outTrunc));
+                } catch (Exception ignored) {
+                }
+            }
+        }, "dfm-probe-shell-out");
+        Thread errThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    errRef.set(drainStream(proc.getErrorStream(), errTrunc));
+                } catch (Exception ignored) {
+                }
+            }
+        }, "dfm-probe-shell-err");
+        outThread.start();
+        errThread.start();
+        int exit = -1;
+        if (proc.waitFor(timeoutSec, TimeUnit.SECONDS)) {
+            outThread.join();
+            errThread.join();
+            exit = proc.exitValue();
+        } else {
+            // 超时强杀，exit 保留 -1 表示未正常退出
+            proc.destroyForcibly();
+            outThread.join(2000);
+            errThread.join(2000);
+        }
+        JSONObject data = new JSONObject();
+        data.put("stdout", new String(outRef.get(), UTF8));
+        data.put("stderr", new String(errRef.get(), UTF8));
+        data.put("exit", exit);
+        data.put("truncated", outTrunc[0] || errTrunc[0]);
+        return data;
+    }
+
+    /** 读完整个流并按字节截断；无效 UTF-8 由 String 解码兜底替换。 */
+    private static byte[] drainStream(InputStream is, boolean[] truncated) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) >= 0) {
+            if (bos.size() < MAX_SHELL_OUTPUT) {
+                bos.write(buf, 0, Math.min(n, MAX_SHELL_OUTPUT - bos.size()));
+            } else {
+                truncated[0] = true;
+            }
+        }
+        return bos.toByteArray();
+    }
+
+    /** CMD_SCREENSHOT (0x09)：screencap 截屏存应用外部目录。app 直连被拒时回退 su（设备已 root）。 */
+    private JSONObject takeScreenshot() throws Exception {
+        File dir = ensureFilesDir();
+        File out = new File(dir, "shot_"
+                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".png");
+        String path = out.getAbsolutePath();
+        String via;
+        if (runCapture(new String[]{"screencap", "-p", path}, 20000) && out.length() > 0) {
+            via = "direct";
+        } else if (runCapture(new String[]{"su", "0", "screencap", "-p", path}, 20000) && out.length() > 0) {
+            via = "su";
+        } else {
+            out.delete();
+            throw new Exception("screencap failed (direct and su)");
+        }
+        JSONObject data = new JSONObject();
+        data.put("path", path);
+        data.put("size", out.length());
+        data.put("via", via);
+        return data;
+    }
+
+    /** 启动截屏进程，静默排干输出防管道堵塞，超时强杀；退出码非 0 视为失败。 */
+    private static boolean runCapture(String[] cmd, long timeoutMs) {
+        try {
+            Process proc = new ProcessBuilder(cmd).start();
+            Thread out = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        drainToNothing(proc.getInputStream());
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            Thread err = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        drainToNothing(proc.getErrorStream());
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            out.start();
+            err.start();
+            if (!proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                proc.destroyForcibly();
+                return false;
+            }
+            out.join(1000);
+            err.join(1000);
+            return proc.exitValue() == 0;
+        } catch (Exception e) {
+            Log.w(TAG, "capture failed: " + cmd[0] + ": " + e);
+            return false;
+        }
+    }
+
+    private static void drainToNothing(InputStream is) throws IOException {
+        byte[] buf = new byte[4096];
+        while (is.read(buf) >= 0) {
+        }
+    }
+
+    /** CMD_CAMERA (0x0A)：camera2 无预览拍照（JPEG）。CAMERA 权限由 PC 端 pm grant 预先授予。 */
+    private JSONObject takePhoto(JSONObject req) throws Exception {
+        CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+        if (checkSelfPermission(android.Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+            return fail(500, "camera permission not granted (PC: pm grant com.dfm.probe android.permission.CAMERA)");
+        }
+        String cameraId = pickCamera(cm, req.optString("cameraId", null));
+        Size[] sizes = cm.getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                .getOutputSizes(ImageFormat.JPEG);
+        Size best = sizes[0];
+        for (Size s : sizes) {
+            if ((long) s.getWidth() * s.getHeight() > (long) best.getWidth() * best.getHeight()) {
+                best = s;
+            }
+        }
+        HandlerThread thread = new HandlerThread("dfm-probe-camera");
+        thread.start();
+        Handler handler = new Handler(thread.getLooper());
+        ImageReader reader = ImageReader.newInstance(
+                best.getWidth(), best.getHeight(), ImageFormat.JPEG, 1);
+        CameraDevice device = null;
+        CameraCaptureSession session = null;
+        try {
+            AtomicReference<CameraDevice> opened = new AtomicReference<>();
+            AtomicReference<String> openErr = new AtomicReference<>();
+            CountDownLatch openLatch = new CountDownLatch(1);
+            cm.openCamera(cameraId, new CameraDevice.StateCallback() {
+                @Override
+                public void onOpened(CameraDevice camera) {
+                    opened.set(camera);
+                    openLatch.countDown();
+                }
+
+                @Override
+                public void onDisconnected(CameraDevice camera) {
+                    openErr.compareAndSet(null, "camera disconnected");
+                    openLatch.countDown();
+                    camera.close();
+                }
+
+                @Override
+                public void onError(CameraDevice camera, int error) {
+                    openErr.compareAndSet(null, "camera open error " + error);
+                    openLatch.countDown();
+                    camera.close();
+                }
+            }, handler);
+            if (!openLatch.await(5, TimeUnit.SECONDS) || opened.get() == null) {
+                throw new Exception(openErr.get() != null ? openErr.get() : "camera open timeout");
+            }
+            device = opened.get();
+
+            AtomicReference<CameraCaptureSession> conf = new AtomicReference<>();
+            AtomicReference<String> confErr = new AtomicReference<>();
+            CountDownLatch confLatch = new CountDownLatch(1);
+            device.createCaptureSession(Collections.singletonList(reader.getSurface()),
+                    new CameraCaptureSession.StateCallback() {
+                        @Override
+                        public void onConfigured(CameraCaptureSession s) {
+                            conf.set(s);
+                            confLatch.countDown();
+                        }
+
+                        @Override
+                        public void onConfigureFailed(CameraCaptureSession s) {
+                            confErr.compareAndSet(null, "capture session configure failed");
+                            confLatch.countDown();
+                        }
+                    }, handler);
+            if (!confLatch.await(5, TimeUnit.SECONDS) || conf.get() == null) {
+                throw new Exception(confErr.get() != null ? confErr.get() : "capture session timeout");
+            }
+            session = conf.get();
+
+            AtomicReference<Image> imageRef = new AtomicReference<>();
+            AtomicReference<String> imgErr = new AtomicReference<>();
+            CountDownLatch imgLatch = new CountDownLatch(1);
+            reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                @Override
+                public void onImageAvailable(ImageReader r) {
+                    try {
+                        imageRef.compareAndSet(null, r.acquireLatestImage());
+                    } catch (Exception e) {
+                        imgErr.compareAndSet(null, "acquire image failed: " + e);
+                    }
+                    imgLatch.countDown();
+                }
+            }, handler);
+            CaptureRequest.Builder rb = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            rb.addTarget(reader.getSurface());
+            rb.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+            rb.set(CaptureRequest.JPEG_QUALITY, (byte) 95);
+            session.capture(rb.build(), new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureFailed(CameraCaptureSession s, CaptureRequest r, CaptureFailure f) {
+                    imgErr.compareAndSet(null, "capture failed, reason " + f.getReason());
+                    imgLatch.countDown();
+                }
+            }, handler);
+            if (!imgLatch.await(15, TimeUnit.SECONDS) || imageRef.get() == null) {
+                throw new Exception(imgErr.get() != null ? imgErr.get() : "capture timeout");
+            }
+
+            Image image = imageRef.get();
+            int width = image.getWidth();
+            int height = image.getHeight();
+            ByteBuffer buf = image.getPlanes()[0].getBuffer();
+            byte[] jpeg = new byte[buf.remaining()];
+            buf.get(jpeg);
+            image.close();
+            imageRef.set(null);
+
+            File dir = ensureFilesDir();
+            File out = new File(dir, "photo_"
+                    + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg");
+            FileOutputStream fos = new FileOutputStream(out);
+            try {
+                fos.write(jpeg);
+            } finally {
+                fos.close();
+            }
+            JSONObject data = new JSONObject();
+            data.put("path", out.getAbsolutePath());
+            data.put("size", jpeg.length);
+            data.put("cameraId", cameraId);
+            data.put("width", width);
+            data.put("height", height);
+            return data;
+        } finally {
+            try {
+                if (session != null) {
+                    session.close();
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                if (device != null) {
+                    device.close();
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                reader.close();
+            } catch (Exception ignored) {
+            }
+            thread.quitSafely();
+        }
+    }
+
+    /** 选摄像头：指定 cameraId 必须存在；未指定时默认后置，否则第一个。 */
+    private String pickCamera(CameraManager cm, String cameraId) throws Exception {
+        String[] ids = cm.getCameraIdList();
+        if (ids.length == 0) {
+            throw new IllegalStateException("no camera on device");
+        }
+        if (cameraId != null && !cameraId.trim().isEmpty()) {
+            cameraId = cameraId.trim();
+            for (String id : ids) {
+                if (id.equals(cameraId)) {
+                    return id;
+                }
+            }
+            throw new IllegalArgumentException("camera not found: " + cameraId);
+        }
+        for (String id : ids) {
+            Integer facing = cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING);
+            if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                return id;
+            }
+        }
+        return ids[0];
+    }
+
+    /** 截图 / 照片统一存应用外部私有目录（/sdcard/Android/data/com.dfm.probe/files），PC 端 adb 可读。 */
+    private File ensureFilesDir() throws Exception {
+        File dir = getExternalFilesDir(null);
+        if (dir == null) {
+            throw new Exception("external files dir unavailable");
+        }
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw new Exception("cannot create files dir: " + dir);
+        }
+        return dir;
     }
 
     /** 设备端只保持一个串口会话：OPEN 后常驻，直到 CLOSE 或服务销毁。 */
