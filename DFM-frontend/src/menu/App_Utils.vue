@@ -5174,6 +5174,8 @@ const doProbeCapture = async (kind: 'screenshot' | 'photo', cameraId = '') => {
     let b64 = info.base64;
     if (!b64) {
       if (info.readError) throw new Error(info.readError);
+      // photo 由服务端读成 base64 后立即删除设备端文件，无 base64 说明服务仍是旧代码，不能再按路径取图
+      if (kind === 'photo') throw new Error('未取得照片数据，请确认 DFM-service 已重启后重试');
       const resp = await axios.post(`${API_BASE.value}/api/device/files/base64`, {
         deviceId: selectedDevice.value,
         remotePath: info.path
