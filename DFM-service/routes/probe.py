@@ -25,6 +25,9 @@ CMD_HEARTBEAT = 0x00
 CMD_TTS = 0x01
 CMD_DEVICE_INFO = 0x02
 CMD_SERIAL_READ = 0x03
+CMD_SHELL = 0x08
+CMD_SCREENSHOT = 0x09
+CMD_CAMERA = 0x0A
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
@@ -47,6 +50,12 @@ class ProbeMessageRequest(BaseModel):
     deviceId: str
     cmd: int = Field(..., ge=0, le=255)
     data: dict = {}
+
+
+class ProbeCaptureRequest(BaseModel):
+    deviceId: str
+    kind: str = Field(..., pattern="^(screenshot|photo)$")
+    cameraId: str = ""
 
 
 def _device_lock(device_id: str) -> threading.Lock:
@@ -386,13 +395,42 @@ def probe_hide_notification(req: ProbeRequest):
     return {"code": 200, "message": "已执行隐藏通知兜底命令", "data": {"results": results}}
 
 
+@router.post("/probe/capture")
+def probe_capture(req: ProbeCaptureRequest):
+    """截图 / 拍照：文件存设备端应用外部目录，前端再经 /device/files/base64 读取显示。
+
+    kind=screenshot 发 0x09 screencap（app 直连被拒时设备端自动回退 su）；
+    kind=photo 先 pm grant 授予 CAMERA 运行时权限（probe 不弹授权框），再拉起透明
+    GhostActivity 让进程短暂回到前台（Android 11 后台启动的 FGS 无 CAMERA capability，
+    CameraService 会拒 CAMERA_DISABLED disabled by policy），然后发 0x0A 拍照。
+    """
+    device_id = (req.deviceId or "").strip()
+    if not device_id:
+        return {"code": 400, "message": "deviceId 不能为空", "data": None}
+    if req.kind == "screenshot":
+        return _result(device_id, False, CMD_SCREENSHOT, {})
+    rc, out, err = _adb(device_id, "shell", "pm", "grant", PACKAGE, "android.permission.CAMERA")
+    if rc != 0:
+        logger.warning(f"probe pm grant CAMERA device={device_id} rc={rc} {err or out}")
+        return {"code": 500, "message": f"授予 CAMERA 权限失败: {err or out}", "data": None}
+    # 拉起透明 GhostActivity（singleInstance、不拦截触摸、15s 自退）：
+    # 让 probe 进程短暂进入前台，绕过 Android 11 while-in-use 相机限制。
+    # 旧版 APK 无此 Activity 时 am start 失败，仍继续发帧（行为同旧版）。
+    grc, gout, gerr = _adb(device_id, "shell", "am", "start", "-n", f"{PACKAGE}/.GhostActivity")
+    if grc != 0:
+        logger.warning(f"probe ghost activity device={device_id} rc={grc} {gerr or gout}")
+    time.sleep(1.0)
+    data = {"cameraId": req.cameraId} if req.cameraId else {}
+    return _result(device_id, False, CMD_CAMERA, data)
+
+
 @router.post("/probe/message")
 def probe_message(req: ProbeMessageRequest):
     """按命令字向设备探针发一帧，返回设备应答，供页面调试。
 
     命令字接受 0~255 任意值，供页面「自定义发送」填写；设备端已登记的
     0x00 心跳 / 0x01 TTS / 0x02 设备详细信息 / 0x03 串口读取 / 0x04 打开串口会话 /
-    0x05 串口发送 / 0x07 关闭串口会话返回业务应答，其余命令字由设备端回
-    0xFF CMD_ERROR。
+    0x05 串口发送 / 0x07 关闭串口会话 / 0x08 shell 命令执行 / 0x09 截屏 /
+    0x0A 摄像头拍照返回业务应答，其余命令字由设备端回 0xFF CMD_ERROR。
     """
     return _result(req.deviceId, False, req.cmd, req.data)
