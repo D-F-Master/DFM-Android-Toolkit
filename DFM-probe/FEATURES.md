@@ -95,6 +95,9 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `0x04` | CMD_SERIAL_OPEN | `{"serial":"/dev/ttyS3","baud":9600,"parity":"none","dataBits":8,"stopBits":1}` | 统一信封，`data` 为打开参数与 `stty` 命令 | 打开串口并起后台读线程，见 §4.4 |
 | `0x05` | CMD_SERIAL_SEND | `{"mode":"text","payload":"AT","times":1,"interval":500}` 或 `{"stop":true}` | 统一信封，`data` 为 `{mode,bytes,times,interval,loop}` 或 `{stopped}` | 单次/循环发送或停止循环，见 §4.4 |
 | `0x07` | CMD_SERIAL_CLOSE | `{}` | 统一信封，`data` 为 `{"closed":bool}` | 停读线程与循环线程、关串口，见 §4.4 |
+| `0x08` | CMD_SHELL | `{"command":"...","root":false,"timeout":30}` | 统一信封，`data` 为 `{stdout,stderr,exit,truncated}` | 设备端执行 shell 并回传输出（root 经 `su 0 sh -c`），见 §4.5 |
+| `0x09` | CMD_SCREENSHOT | `{}`（无必填字段） | 统一信封，`data` 为 `{path,size,via}` | `screencap` 截屏存应用外部目录（直连被拒自动回退 `su`），见 §4.5 |
+| `0x0A` | CMD_CAMERA | `{}` 或 `{"cameraId":"0"}` | 统一信封，`data` 为 `{path,size,cameraId,width,height}` | camera2 无预览拍照存应用外部目录（需 PC 端 pm grant + GhostActivity），见 §4.5 |
 | 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开 |
 
 > 旧版 `0x01`~`0x05`、`0x07`（PING / ECHO / TTS / INFO / QUIT / DEVICE_INFO）业务命令字已全部删除，
@@ -102,8 +105,10 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 > `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
 > `0x03` / `0x83` 为串口读取（取会话增量）命令字/响应字；`0x04` / `0x84`、`0x05` / `0x85`、
 > `0x07` / `0x87` 为新增的串口会话打开 / 发送 / 关闭命令字/响应字。
+> `0x08` / `0x88`、`0x09` / `0x89`、`0x0A` / `0x8A` 为 v2.5 新增的 shell 执行 / 屏幕截图 / 摄像头拍照
+> 命令字/响应字。
 
-设备→PC 的通知类命令字：`0x06` ACK、`0x80` / `0x81` / `0x82` / `0x83` / `0x84` / `0x85` / `0x87` 数据响应帧、`0xFF` 错误帧。
+设备→PC 的通知类命令字：`0x06` ACK、`0x80` ~ `0x85` / `0x87` ~ `0x8A` 数据响应帧、`0xFF` 错误帧。
 业务执行抛出未预期异常时回 `{"code":500,"message":"execute failed: ...","data":null}`，不会崩服务。
 
 ### 4.3 设备详细信息采集（`0x02`）
@@ -146,6 +151,30 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 - **权限依赖**：需设备已 root 且串口节点可读写；Android 设备的 `stty` 是否支持
   `csN` / `parenb` / `parodd` / `cstopb` 选项、以及 `RandomAccessFile.read` 阻塞时 CLOSE 的行为
   均未真机验证。参数规范见 `接口文档.md`「3.4」。
+
+### 4.5 Shell 执行 / 屏幕截图 / 摄像头拍照（`0x08` / `0x09` / `0x0A`，v2.5）
+
+- **`0x08 CMD_SHELL`**：参数 `command`（必填非空）、`root`（默认 `false`，`true` 经
+  `su 0 sh -c <command>`，本设备 su 不支持 `-c`）、`timeout`（秒，默认 30，范围 1..120，
+  超时强杀 `exit=-1`）。返回 `{stdout, stderr, exit, truncated}`，stdout/stderr 各按字节
+  截断至 10000。空白命令回 `400 command is required`。
+- **`0x09 CMD_SCREENSHOT`**：`screencap -p <应用外部目录>/shot_*.png`。先应用身份直连，
+  失败自动回退 `su 0 screencap -p`（真机实测直连被静默拒绝、回退成功），返回
+  `{path, size, via: direct|su}`；两条路径均失败回 `500 screencap failed (direct and su)`。
+- **`0x0A CMD_CAMERA`**：camera2 + ImageReader 无预览拍照（JPEG 画质 95，取最大分辨率，
+  open 5s / configure 5s / 成像 15s 超时），存 `photo_*.jpg`，返回
+  `{path, size, cameraId, width, height}`。缺省取后置，无后置取第一个。
+- **拍照前置条件（Android 11 while-in-use 限制）**：probe 的前台服务从后台 START 广播拉起，
+  系统不授予 CAMERA capability，CameraService 直接拒 `CAMERA_DISABLED "disabled by policy"`
+  （logcat: `Foreground service started from background can not have ... camera access`）。
+  解决：PC 端（`DFM-service` 的 `/api/probe/capture`）先 `am start -n com.dfm.probe/.GhostActivity`
+  拉起透明辅助 Activity（`GhostActivity.java`：不拦截触摸、不抢焦点、覆盖锁屏、停留 15s 自动
+  finish），进程短暂回到 TOP 获得 CAMERA capability 后再发 0x0A；Activity 自动退出，用户无感知。
+  CAMERA 运行时权限同样由 PC 端 `pm grant` 预授予（`AndroidManifest.xml` 已声明，probe 不弹授权框）。
+- 文件统一存 `getExternalFilesDir(null)`（`/sdcard/Android/data/com.dfm.probe/files/`），
+  app 无需存储权限；PC 经 adb（root）读取，前端经 `/api/device/files/base64` 拉回预览。
+- **真机验证**（2026-11-15，rk3568_r Android 11）：心跳 / shell 应用与 root 身份 / 空白命令 400 /
+  截图（via=su, PNG 800x1280）/ 拍照（GhostActivity 窗口内，JPEG 1920x1080 745KB）全部通过。
 
 ### 4.2 系统 TTS 朗读
 
