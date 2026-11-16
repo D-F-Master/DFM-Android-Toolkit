@@ -10,6 +10,7 @@ import { LineChart, BarChart, GaugeChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useAppConfig } from '../composables/useAppConfig';
+import { useProbeSettings } from '../composables/useProbeSettings';
 
 // 按需注册 ECharts 模块，避免全量引入导致打包体积膨胀
 echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
@@ -4985,6 +4986,8 @@ watch(serialScheme, async (scheme) => {
 })
 
 // ===== 探针状态指示（每台设备一个圆点，放在断开按钮左边） =====
+const { autoInstallProbe } = useProbeSettings();
+
 interface ProbeState {
   status: 'idle' | 'busy' | 'ok' | 'fail';
   message: string;
@@ -5036,6 +5039,8 @@ const autoInstallNewDevices = () => {
   for (const id of Array.from(probeKnownDevices)) {
     if (!current.has(id)) probeKnownDevices.delete(id);
   }
+  // 设置关闭时不自动探测新设备，也不记为已处理；重新开启后刷新仍会安装
+  if (!autoInstallProbe.value) return;
   for (const d of devices.value) {
     if (!d.deviceId || probeKnownDevices.has(d.deviceId)) continue;
     probeKnownDevices.add(d.deviceId);
