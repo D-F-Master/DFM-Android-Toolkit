@@ -42,12 +42,12 @@ const visibleTabs = computed(() =>
 
 const activeTab = ref('info');
 
-// 配置异步加载后，若当前 Tab 被关掉，自动跳到第一个可见 Tab
+// 当前 Tab 被关掉（含初始化与配置加载后）时自动跳到第一个可见 Tab，避免内容区空白
 watch(visibleTabs, (tabs) => {
   if (tabs.length && !tabs.some(t => t.key === activeTab.value)) {
     activeTab.value = tabs[0].key;
   }
-});
+}, { immediate: true });
 
 const loadConfig = async () => {
   try {
