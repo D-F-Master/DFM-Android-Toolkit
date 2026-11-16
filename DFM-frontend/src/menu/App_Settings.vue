@@ -19,6 +19,10 @@ const onSwitch = () => {
     <button class="back-button" @click="goHome">&lt;</button>
     <main>
       <div class="container">
+        <!-- 左侧标题 -->
+        <aside class="settings-nav">
+          <h2 class="nav-title">设置</h2>
+        </aside>
         <section class="settings-content">
           <h3 class="section-title">设置</h3>
           <div class="section-card">
@@ -84,6 +88,22 @@ const onSwitch = () => {
   height: 100%;
   overflow: hidden;
   background: #f0f2f5;
+}
+
+/* ===== 左侧标题 ===== */
+.settings-nav {
+  flex: 0 0 180px;
+  padding: 64px 12px 16px;
+  border-right: 1px solid #e2e6ec;
+  background: #f7f8fa;
+  overflow-y: auto;
+}
+
+.nav-title {
+  margin: 0 8px 12px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a1f2e;
 }
 
 /* ===== 右侧详细设置 ===== */
