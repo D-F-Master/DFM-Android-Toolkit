@@ -278,6 +278,12 @@ class MonitorRateRequest(BaseModel):
     duration: Optional[int] = 1  # 采样时长（秒），限幅 1-5
 
 
+class ProxySetRequest(BaseModel):
+    deviceId: str
+    host: str
+    port: int
+
+
 # 获取设备列表
 @router.post("/devices")
 def get_devices():
@@ -2527,3 +2533,54 @@ async def install_ca_cert(
     except Exception as e:
         logger.error(f"Install CA cert failed: {str(e)}")
         return {"code": 500, "message": str(e), "data": None}
+
+
+_HOST_RE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?")
+_DEVICE_ID_RE = re.compile(r"[A-Za-z0-9._:\-]+")
+
+
+def _proxy_apply(device_id: str, value: str) -> dict:
+    """设置或清除全局 HTTP 代理，并回读校验，返回统一信封。"""
+    # 1. 设备序列号合法性（防 shell 注入）
+    if not _DEVICE_ID_RE.fullmatch(device_id or ""):
+        return {"code": 400, "message": "设备序列号不合法", "data": None}
+
+    # 2. 写代理
+    result = execute_adb_command(
+        f"adb -s {device_id} shell settings put global http_proxy {value}", timeout=10
+    )
+    if not result["success"]:
+        logger.error(f"Set global http_proxy failed: {result.get('error', '')}")
+        return {
+            "code": 500,
+            "message": f"设置代理失败：{result.get('error', '未知错误')}",
+            "data": None,
+        }
+
+    # 3. 回读校验，确保写入生效
+    verify = execute_adb_command(
+        f"adb -s {device_id} shell settings get global http_proxy", timeout=10
+    )
+    current = verify.get("stdout", "").strip() if verify["success"] else ""
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {"proxy": current, "deviceId": device_id},
+    }
+
+
+@router.post("/device/proxy/set")
+def set_device_proxy(request: ProxySetRequest):
+    """设置全局 HTTP 代理（settings put global http_proxy host:port），即时生效。"""
+    host = (request.host or "").strip()
+    if not _HOST_RE.fullmatch(host):
+        return {"code": 400, "message": "代理地址不合法（仅支持 IP 或主机名）", "data": None}
+    if not isinstance(request.port, int) or not (1 <= request.port <= 65535):
+        return {"code": 400, "message": "代理端口必须在 1-65535 之间", "data": None}
+    return _proxy_apply(request.deviceId, f"{host}:{request.port}")
+
+
+@router.post("/device/proxy/clear")
+def clear_device_proxy(request: DeviceIdRequest):
+    """清除全局 HTTP 代理（settings put global http_proxy :0）。"""
+    return _proxy_apply(request.deviceId, ":0")
