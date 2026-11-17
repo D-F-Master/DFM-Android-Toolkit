@@ -1286,8 +1286,9 @@ def start_scrcpy(request: DeviceIdRequest):
     """
     try:
         scrcpy_path = get_scrcpy_path()
-        # 使用完整路径启动 scrcpy
-        subprocess.Popen(f'"{scrcpy_path}" -s {request.deviceId}', shell=True)
+        # 使用完整路径启动 scrcpy；--legacy-paste 用 ADB 输入文本而非设备剪贴板 API，
+        # 避免 root（uid 0）下 Ctrl+V 触发 getPrimaryClip 的 SecurityException 导致投屏断开
+        subprocess.Popen(f'"{scrcpy_path}" -s {request.deviceId} --legacy-paste', shell=True)
         return {"code": 200, "message": "success", "data": None}
     except FileNotFoundError as e:
         return {"code": 500, "message": f"启动投屏失败: {str(e)}", "data": None}
