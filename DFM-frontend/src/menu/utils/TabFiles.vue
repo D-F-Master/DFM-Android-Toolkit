@@ -12,7 +12,7 @@ import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const ctx = inject<any>('app-utils')!
-const { API_BASE, FileInfo, activeTab, currentPath, editorFileName, editorInitialContent, editorLoadError, editorLoading, editorTarget, editorVisible, fetchFiles, fileLoading, files, formatBytes, hideProgressNotification, imageViewerIndex, imageViewerList, loadViewerFile, loading, previewKindOf, selectedDevice, selectedFiles, showConfirm, showMessage, showNotification, showProgressNotification, showPrompt } = ctx
+const { API_BASE, activeTab, currentPath, editorFileName, editorInitialContent, editorLoadError, editorLoading, editorTarget, editorVisible, fetchFiles, fileLoading, files, formatBytes, hideProgressNotification, imageViewerIndex, imageViewerList, loadViewerFile, loading, previewKindOf, selectedDevice, selectedFiles, showConfirm, showMessage, showNotification, showProgressNotification, showPrompt } = ctx
 type FileSortKey = 'name' | 'size' | 'time'
 const fileSortKey = ref<FileSortKey>('name')
 const fileSortAsc = ref(true)
