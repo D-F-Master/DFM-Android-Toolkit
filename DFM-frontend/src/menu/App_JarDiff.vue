@@ -1,5 +1,6 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, ref, onUnmounted } from 'vue';
+import { computed, nextTick, onMounted, ref, onUnmounted, watch } from 'vue';
+import { useAppConfig } from '../composables/useAppConfig';
 
 const emit = defineEmits(['back']);
 
@@ -9,7 +10,18 @@ const TAB_ITEMS = [
   { key: 'codeEdit', label: 'jar代码修改' }
 ];
 
+// 按配置过滤后的 Tab（未配置的默认显示）
+const { isFeatureOn } = useAppConfig();
+const visibleTabs = computed(() => TAB_ITEMS.filter(tab => isFeatureOn(`jarDiffTabs.${tab.key}`)));
+
 const activeTab = ref('diff');
+
+// 当前 Tab 被关掉时自动跳到第一个可见 Tab
+watch(visibleTabs, (tabs) => {
+  if (tabs.length && !tabs.some(t => t.key === activeTab.value)) {
+    activeTab.value = tabs[0].key;
+  }
+}, { immediate: true });
 
 const API_BASE = ref('http://localhost:3000');
 const backendText = ref('');
@@ -492,7 +504,7 @@ onUnmounted(() => {
         <div class="content">
           <div class="tabs">
             <button
-              v-for="tab in TAB_ITEMS"
+              v-for="tab in visibleTabs"
               :key="tab.key"
               class="tab-button"
               :class="{ active: activeTab === tab.key }"

@@ -1,11 +1,27 @@
 2<script lang="ts" setup>
 import { ref, computed, onMounted, watch } from 'vue';
 import ModalDialog from '../components/ModalDialog.vue';
+import { useAppConfig } from '../composables/useAppConfig';
 
 const emit = defineEmits(['back']);
 
 // Tab 切换状态
 const activeTab = ref<'check' | 'scan' | 'ip' | 'portproxy'>('check');
+
+// 按配置过滤后的 Tab（未配置的默认显示）
+const { isFeatureOn } = useAppConfig();
+const PORT_TAB_KEYS = ['check', 'scan', 'ip', 'portproxy'] as const;
+const PORT_TAB_LABELS: Record<string, string> = {
+  check: '端口占用检查', scan: '端口扫描', ip: 'IP工具', portproxy: '端口转发'
+};
+const visibleTabs = computed(() => PORT_TAB_KEYS.filter(key => isFeatureOn(`portToolTabs.${key}`)));
+
+// 当前 Tab 被关掉时自动跳到第一个可见 Tab
+watch(visibleTabs, (tabs) => {
+  if (tabs.length && !tabs.includes(activeTab.value)) {
+    activeTab.value = tabs[0];
+  }
+}, { immediate: true });
 
 // ==================== 端口占用检查相关 ====================
 const API_BASE = ref('http://localhost:3000');
@@ -1781,33 +1797,14 @@ select.input-field {
           <!-- Tab 切换 -->
           <div class="tab-container">
             <div class="tab-buttons">
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'check' }"
-                @click="activeTab = 'check'"
+              <button
+                v-for="tab in visibleTabs"
+                :key="tab"
+                class="tab-button"
+                :class="{ active: activeTab === tab }"
+                @click="activeTab = tab"
               >
-                端口占用检查
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'scan' }"
-                @click="activeTab = 'scan'"
-              >
-                端口扫描
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'ip' }"
-                @click="activeTab = 'ip'"
-              >
-                IP工具
-              </button>
-              <button 
-                class="tab-button" 
-                :class="{ active: activeTab === 'portproxy' }"
-                @click="activeTab = 'portproxy'"
-              >
-                端口转发
+                {{ PORT_TAB_LABELS[tab] }}
               </button>
             </div>
           </div>
