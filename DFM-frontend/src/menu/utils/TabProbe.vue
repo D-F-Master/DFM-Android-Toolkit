@@ -1,9 +1,213 @@
 <script lang="ts" setup>
-import { inject } from 'vue'
+import { inject, ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import axios from 'axios'
+import * as echarts from 'echarts/core'
+import { LineChart, BarChart, GaugeChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { useAppConfig } from '../../composables/useAppConfig'
+import { useProbeSettings } from '../../composables/useProbeSettings'
+import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 
-// 共享上下文由 App_Utils.vue 提供（含状态 ref 与操作函数）
+echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+
 const ctx = inject<any>('app-utils')!
-const { activeTab, doProbeCapture, onProbePhoto, playProbeTts, probeBusy, probeDisabled, probeResult, probeShellRoot, runProbeShell, sendProbeHeartbeat } = ctx
+const { API_BASE, activeTab, files, imageViewerError, imageViewerKind, imageViewerList, imageViewerLoading, imageViewerName, imageViewerSize, imageViewerSrc, imageViewerVisible, selectedDevice, showList, showMessage, showPrompt } = ctx
+const probeBusy = ref('');
+const probeResult = ref('');
+const probeShellRoot = ref(false);
+const probeDisabled = computed(() => probeBusy.value !== '' || !selectedDevice.value);
+
+const probeReady = () => {
+  if (probeBusy.value) return false;
+  if (!selectedDevice.value) {
+    showMessage('请先在左侧选择设备', '探针工具');
+    return false;
+  }
+  return true;
+};
+
+const probePost = async (path: string, payload: any, timeout = 200000) => {
+  const res = await axios.post(`${API_BASE.value}${path}`, payload, { timeout });
+  const d = res.data;
+  if (d?.code !== 200 || d?.data?.connected !== true) {
+    throw new Error(d?.message || '通讯失败');
+  }
+  const r = d.data.response || {};
+  if (r.code !== 200) {
+    throw new Error(r.message || '设备返回错误');
+  }
+  return r.data || {};
+};
+
+const playProbeTts = () => {
+  if (!probeReady()) return;
+  showPrompt('输入要让设备朗读的文本', (text: string) => {
+    const t = (text || '').trim();
+    if (!t || new TextEncoder().encode(t).length > 60000) {
+      nextTick(() => showMessage(!t ? '文本不能为空' : '文本过长（单帧上限 65535 字节）', '远程 TTS 语音播放'));
+      return;
+    }
+    probeBusy.value = 'tts';
+    probeResult.value = '正在请求设备朗读...';
+    probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x01, data: { text: t } })
+      .then(() => {
+        probeResult.value = '朗读完成';
+        showMessage('朗读完成', '远程 TTS 语音播放');
+      })
+      .catch((e: any) => {
+        const text = `播放失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+        probeResult.value = text;
+        showMessage(text, '远程 TTS 语音播放');
+      })
+      .finally(() => { probeBusy.value = ''; });
+  }, '输入要朗读的文本', '远程 TTS 语音播放');
+};
+
+// 探针工具：心跳（0x00），结果用弹窗提示
+const sendProbeHeartbeat = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'heartbeat';
+  probeResult.value = '正在检测设备探针...';
+  try {
+    const info = await probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x00, data: {} }, 60000);
+    probeResult.value = `设备在线，探针版本 ${info.version || '未知'}`;
+    showMessage(probeResult.value, '探针心跳');
+  } catch (e: any) {
+    const text = `心跳失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '探针心跳');
+  } finally {
+    probeBusy.value = '';
+  }
+};
+
+// 探针工具：shell 命令执行（0x08），文本由弹窗输入
+const runProbeShell = () => {
+  if (!probeReady()) return;
+  showPrompt('输入要在设备上执行的 shell 命令', (command: string) => {
+    const cmd = (command || '').trim();
+    if (!cmd) {
+      nextTick(() => showMessage('命令不能为空', 'Shell 命令执行'));
+      return;
+    }
+    probeBusy.value = 'shell';
+    probeResult.value = `$ ${cmd}${probeShellRoot.value ? '  (root)' : ''}\n正在执行...`;
+    probePost('/api/probe/message', {
+      deviceId: selectedDevice.value,
+      cmd: 0x08,
+      data: { command: cmd, root: probeShellRoot.value, timeout: 60 }
+    })
+      .then((info: any) => {
+        const parts: string[] = [`$ ${cmd}${probeShellRoot.value ? '  (root)' : ''}`];
+        if (info.stdout) parts.push(info.stdout);
+        if (info.stderr) parts.push(`[stderr]\n${info.stderr}`);
+        parts.push(`[exit ${info.exit}]${info.truncated ? '（输出过长已截断）' : ''}`);
+        probeResult.value = parts.join('\n');
+      })
+      .catch((e: any) => {
+        const text = `执行失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+        probeResult.value = text;
+        showMessage(text, 'Shell 命令执行');
+      })
+      .finally(() => { probeBusy.value = ''; });
+  }, '例：ls /sdcard', 'Shell 命令执行');
+};
+
+// 探针工具：截图（0x09）/ 拍照（0x0A），拍照先取摄像头列表选择
+const probeFacing = (facing: string) => {
+  if (facing === 'front') return '前置';
+  if (facing === 'back') return '后置';
+  if (facing === 'external') return '外接';
+  return '未知';
+};
+
+const doProbeCapture = async (kind: 'screenshot' | 'photo', cameraId = '') => {
+  if (!probeReady()) return;
+  probeBusy.value = kind;
+  const label = kind === 'screenshot' ? '截屏' : '拍照';
+  probeResult.value = `正在${label}...`;
+  try {
+    const payload: any = { deviceId: selectedDevice.value, kind };
+    if (cameraId) payload.cameraId = cameraId;
+    // capture 响应 data.response.data：screenshot 带 path；photo 额外带 base64 与 deleted
+    const res = await axios.post(`${API_BASE.value}/api/probe/capture`, payload, { timeout: 200000 });
+    const d = res.data;
+    if (d?.code !== 200 || d?.data?.connected !== true) {
+      throw new Error(d?.message || '通讯失败');
+    }
+    const r = d.data.response || {};
+    if (r.code !== 200) throw new Error(r.message || '设备返回错误');
+    const info = r.data || {};
+    const name = (info.path || '').split('/').pop() || (kind === 'screenshot' ? 'screenshot.png' : 'photo.jpg');
+    let b64 = info.base64;
+    if (!b64) {
+      if (info.readError) throw new Error(info.readError);
+      // photo 由服务端读成 base64 后立即删除设备端文件，无 base64 说明服务仍是旧代码，不能再按路径取图
+      if (kind === 'photo') throw new Error('未取得照片数据，请确认 DFM-service 已重启后重试');
+      const resp = await axios.post(`${API_BASE.value}/api/device/files/base64`, {
+        deviceId: selectedDevice.value,
+        remotePath: info.path
+      });
+      if (resp.data.code !== 200 || !resp.data.data?.base64) {
+        throw new Error(resp.data.message || `已生成 ${name}，但读取预览失败`);
+      }
+      b64 = resp.data.data.base64;
+    }
+    const mime = name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+    imageViewerList.value = [];
+    imageViewerKind.value = 'image';
+    imageViewerName.value = name;
+    imageViewerSrc.value = '';
+    imageViewerError.value = '';
+    imageViewerSize.value = Number(info.size) || 0;
+    imageViewerLoading.value = true;
+    imageViewerVisible.value = true;
+    imageViewerSrc.value = `data:${mime};base64,${b64}`;
+    imageViewerLoading.value = false;
+    probeResult.value = `${label}完成（${name}）${info.deleted ? '，设备端文件已删除' : ''}`;
+  } catch (e: any) {
+    const text = `${label}失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, kind === 'screenshot' ? '屏幕截图' : '摄像头拍照');
+  } finally {
+    probeBusy.value = '';
+  }
+};
+
+const onProbePhoto = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'photo';
+  probeResult.value = '正在获取摄像头列表...';
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/cameras`, {
+      deviceId: selectedDevice.value
+    }, { timeout: 60000 });
+    const cameras = res.data?.data?.cameras || [];
+    if (res.data?.code !== 200 || cameras.length === 0) {
+      throw new Error(res.data?.message || '未检测到摄像头');
+    }
+    if (cameras.length === 1) {
+      // 单摄像头无需选择：先清 busy，否则 doProbeCapture 的 probeReady() 守卫会把本次调用直接吞掉，
+      // probeBusy 永远停在 'photo'、界面卡在「正在获取摄像头列表...」（多摄像头分支在 :5239 已清）
+      probeBusy.value = '';
+      await doProbeCapture('photo', String(cameras[0].id));
+      return;
+    }
+    probeBusy.value = '';
+    const items = cameras.map((c: any) => ({
+      value: String(c.id),
+      label: `摄像头 ${c.id} · ${probeFacing(c.facing)}`,
+      desc: c.resolution || ''
+    }));
+    showList(items, (id: string) => { doProbeCapture('photo', id); }, '选择摄像头', '未检测到摄像头', '拍照');
+  } catch (e: any) {
+    const text = `拍照失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '摄像头拍照');
+    probeBusy.value = '';
+  }
+};
 </script>
 
 <template>

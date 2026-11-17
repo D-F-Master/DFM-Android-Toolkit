@@ -1,9 +1,105 @@
 <script lang="ts" setup>
-import { inject } from 'vue'
+import { inject, ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import axios from 'axios'
+import * as echarts from 'echarts/core'
+import { LineChart, BarChart, GaugeChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { useAppConfig } from '../../composables/useAppConfig'
+import { useProbeSettings } from '../../composables/useProbeSettings'
+import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 
-// 共享上下文由 App_Utils.vue 提供（含状态 ref 与操作函数）
+echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+
 const ctx = inject<any>('app-utils')!
-const { activeTab, muteVolume, restartDevice, simulateKey, startScrcpy, volumeDown, volumeUp } = ctx
+const { API_BASE, activeTab, selectedDevice, showConfirm, showMessage } = ctx
+const startScrcpy = async () => {
+  if (!selectedDevice.value) return
+
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/scrcpy`, {
+      deviceId: selectedDevice.value
+    })
+    if (response.data.code !== 200) {
+      showMessage(response.data.message || '启动投屏失败')
+    }
+  } catch (error) {
+    console.error('启动投屏失败:', error)
+    showMessage('启动投屏失败，请确保 scrcpy 已安装并添加到系统环境变量')
+  }
+}
+
+const simulateKey = async (key: string) => {
+  if (!selectedDevice.value) return
+
+  try {
+    await axios.post(`${API_BASE.value}/api/device/key`, {
+      deviceId: selectedDevice.value,
+      key: key
+    })
+  } catch (error) {
+    console.error('按键模拟失败:', error)
+  }
+}
+
+const volumeUp = async () => {
+  if (!selectedDevice.value) return
+
+  try {
+    await axios.post(`${API_BASE.value}/api/device/volume`, {
+      deviceId: selectedDevice.value,
+      action: 'up',
+      stream: 'media'
+    })
+  } catch (error) {
+    console.error('音量增加失败:', error)
+  }
+}
+
+const volumeDown = async () => {
+  if (!selectedDevice.value) return
+
+  try {
+    await axios.post(`${API_BASE.value}/api/device/volume`, {
+      deviceId: selectedDevice.value,
+      action: 'down',
+      stream: 'media'
+    })
+  } catch (error) {
+    console.error('音量减小失败:', error)
+  }
+}
+
+const muteVolume = async () => {
+  if (!selectedDevice.value) return
+
+  try {
+    await axios.post(`${API_BASE.value}/api/device/volume`, {
+      deviceId: selectedDevice.value,
+      action: 'mute',
+      stream: 'media'
+    })
+  } catch (error) {
+    console.error('静音失败:', error)
+  }
+}
+
+const restartDevice = async () => {
+  if (!selectedDevice.value) return
+
+  showConfirm('确定要重启设备吗？', async () => {
+    try {
+      await axios.post(`${API_BASE.value}/api/command`, {
+        command: `adb -s ${selectedDevice.value} reboot`
+      })
+      showMessage('设备正在重启...')
+    } catch (error) {
+      console.error('重启设备失败:', error)
+      showMessage('重启设备失败')
+    }
+  }, '确认重启')
+}
+
 </script>
 
 <template>

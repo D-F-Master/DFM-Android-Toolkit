@@ -1,9 +1,93 @@
 <script lang="ts" setup>
-import { inject } from 'vue'
+import { inject, ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import axios from 'axios'
+import * as echarts from 'echarts/core'
+import { LineChart, BarChart, GaugeChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { useAppConfig } from '../../composables/useAppConfig'
+import { useProbeSettings } from '../../composables/useProbeSettings'
+import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 
-// 共享上下文由 App_Utils.vue 提供（含状态 ref 与操作函数）
+echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+
 const ctx = inject<any>('app-utils')!
-const { activeTab, appLoading, apps, extractApk, installApp, loading, openApkRepo, startApp, stopApp, uninstallApp } = ctx
+const { API_BASE, activeTab, apkRepoVisible, appLoading, apps, fetchApkRepo, files, installApkFile, loading, selectedDevice, showMessage, startApp, stopApp, uninstallApp } = ctx
+const installApp = async (event: Event) => {
+  if (!selectedDevice.value) return
+
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.apk'
+
+  input.onchange = async (e: Event) => {
+    const target = e.target as HTMLInputElement
+    const file = target.files?.[0]
+    if (!file) return
+
+    await installApkFile(file)
+  }
+
+  input.click()
+}
+
+// 全页拖入 APK 安装：选中设备后，页面任意位置都可拖入（仅应用管理页生效）
+const openApkRepo = () => {
+  apkRepoVisible.value = true
+  fetchApkRepo()
+}
+
+const extractApk = async (packageName: string, appName?: string) => {
+  if (!selectedDevice.value) return
+
+  const input = document.createElement('input') as HTMLInputElement & { webkitdirectory: boolean; directory: boolean }
+  input.type = 'file'
+  input.webkitdirectory = true
+  input.directory = true
+
+  input.onchange = async (e: Event) => {
+    const target = e.target as HTMLInputElement
+
+    if (!target.files || target.files.length === 0) {
+        showMessage('请选择一个目录')
+        return
+      }
+
+      const selectedFile = target.files![0] as File & { path: string }
+      const filePath = selectedFile.path
+      const localDir = filePath.substring(0, filePath.lastIndexOf('\\') + 1)
+
+      if (!localDir) {
+        showMessage('无法获取目录路径')
+        return
+      }
+
+      const safeAppName = appName?.replace(/[^a-zA-Z0-9]/g, '_') || packageName.replace(/[^a-zA-Z0-9]/g, '_')
+      const localPath = `${localDir}${safeAppName}.apk`
+
+      try {
+        const normalizedLocalPath = localPath.replace(/\\/g, '/')
+
+        const response = await axios.post(`${API_BASE.value}/api/device/app/extract`, {
+          deviceId: selectedDevice.value,
+          packageName: packageName,
+          localPath: normalizedLocalPath
+        })
+
+        if (response.data.code === 200) {
+          showMessage('APK提取成功')
+        } else {
+          showMessage('APK提取失败: ' + (response.data.message || '未知错误'))
+        }
+      } catch (error: any) {
+        console.error('提取APK失败:', error)
+        showMessage('提取APK失败: ' + error.message)
+      }
+  }
+
+  input.click()
+}
+
 </script>
 
 <template>

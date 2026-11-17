@@ -1,9 +1,1504 @@
 <script lang="ts" setup>
-import { inject } from 'vue'
+import { inject, ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import axios from 'axios'
+import * as echarts from 'echarts/core'
+import { LineChart, BarChart, GaugeChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { useAppConfig } from '../../composables/useAppConfig'
+import { useProbeSettings } from '../../composables/useProbeSettings'
+import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 
-// 共享上下文由 App_Utils.vue 提供（含状态 ref 与操作函数）
+echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+
 const ctx = inject<any>('app-utils')!
-const { SCRIPT_VARIABLE_HELP, activeTab, addScriptAdbStep, addScriptConditionStep, addScriptGestureStep, addScriptWaitStep, clearScriptSteps, exportScriptZip, loading, onScriptBranchActionChange, onScriptConditionKindChange, onScriptKeyPresetChange, onScriptStepDragEnd, onScriptStepDragLeave, onScriptStepDragOver, onScriptStepDragStart, onScriptStepDrop, onScriptTemplatePreviewError, openImportMenu, removeScriptStep, repeatRun, runCurrentSteps, saveScript, scriptApkLoading, scriptApkOptions, scriptAppLoading, scriptAppNames, scriptAppPackages, scriptCanvasRef, scriptCropMode, scriptDragging, scriptEditingStep, scriptExporting, scriptGotoTargets, scriptKeyPresetOf, scriptKeyboardActive, scriptLayoutRef, scriptOnPointerCancel, scriptOnPointerDown, scriptOnPointerMove, scriptOnPointerUp, scriptPreviewWidth, scriptRecording, scriptReleaseKeyboard, scriptRunning, scriptSaving, scriptScreenBodyRef, scriptShowMarkers, scriptSideTwoCol, scriptStepDragFrom, scriptStepDragOver, scriptStepGroups, scriptStepLabel, scriptSteps, scriptStreaming, scriptTemplateLoading, scriptTemplateOptions, scriptTemplatePreview, scriptVerify, scriptWsStatus, selectedDevice, setAllIntervals, startApp, startCropForCondition, stopApp, stopScriptRun, toggleCropMode, toggleRecording, toggleStepEdit, uninstallApp } = ctx
+const { API_BASE, SCRIPT_COMMON_KEYS, activeTab, batchRemoteCodecFromSps, batchRemoteIsKeyframe, concatU8, devices, files, formatBytes, loading, scriptFlushTyping, scriptKeyboardActive, scriptOnKeyDown, scriptOpConfig, scriptRecording, scriptStepLabel, scriptSteps, scriptStreaming, scriptWs, selectedDevice, showList, showMessage, showNotification, showPrompt, startApp, stopApp, uninstallApp } = ctx
+const scriptCanvasRef = ref<HTMLCanvasElement | null>(null)
+const scriptScreenBodyRef = ref<HTMLElement | null>(null)
+const scriptLayoutRef = ref<HTMLElement | null>(null)
+const scriptPreviewWidth = ref(0)
+const scriptSideTwoCol = ref(false)
+let scriptPreviewObserver: ResizeObserver | null = null
+const scriptWsStatus = ref('未连接')
+const scriptVerify = ref(false)
+const SCRIPT_VERIFY_THRESHOLD = 0.6
+// 裁块放大到 300：点击点常落在纯色区域，太小容易因低纹理导致匹配分数塌掉
+const SCRIPT_VERIFY_CROP = 300
+let scriptVerifySeq = 0
+let scriptVerifyPending: string | null = null
+let scriptVerifyQueue: Promise<void> = Promise.resolve()
+// 录制结束（含屏幕流断开）时关掉校验，避免下次录制沿用上次的开关状态
+watch(scriptRecording, (on) => {
+  if (on) return
+  scriptVerify.value = false
+  scriptVerifyPending = null
+})
+const scriptRunning = ref(false)
+// 每类操作的默认配置（录制时快照进步骤）
+const scriptRepeat = ref(1)
+const scriptSaving = ref(false)
+
+let scriptDecoder: VideoDecoder | null = null
+let scriptCodecConfig: Uint8Array | null = null
+let scriptMeta = { width: 1080, height: 2340 }
+
+// 右侧留白够放两列时，控制区改成左右两列并占满留白；不足则保持一列 300px。
+// 620px 是两列下限：每列不窄于现在一列时的 300px（含 10px 间距），沿用原 1600px 媒体查询的取值。
+const syncScriptSideLayout = () => {
+  const layout = scriptLayoutRef.value
+  if (!layout || layout.clientWidth <= 0 || scriptPreviewWidth.value <= 0) return
+  // -12 对应 .script-layout 的 gap；预览面板宽度含左右各 1px 边框
+  const free = layout.clientWidth - scriptPreviewWidth.value - 12
+  const twoCol = free >= 620
+  if (scriptSideTwoCol.value !== twoCol) scriptSideTwoCol.value = twoCol
+}
+
+// 竖屏时画面被高度限制而变窄，面板若还占满剩余宽度，左右就会空出大片深色底（黑框）。
+// 按「画面区高度 × 画面宽高比」给面板定宽，让它刚好包住画面；+2 补面板左右各 1px 边框。
+const syncScriptPreviewWidth = () => {
+  const body = scriptScreenBodyRef.value
+  if (!body || body.clientHeight <= 0 || scriptMeta.height <= 0) return
+  const w = Math.ceil(body.clientHeight * scriptMeta.width / scriptMeta.height) + 2
+  if (scriptPreviewWidth.value !== w) scriptPreviewWidth.value = w
+  syncScriptSideLayout()
+}
+
+// 画面尺寸变化（切设备 / 横竖屏切换）时同步刷新面板宽度；逐帧调用靠 early return 避免无谓重排
+const setScriptMeta = (width: number, height: number) => {
+  if (scriptMeta.width === width && scriptMeta.height === height) return
+  scriptMeta = { width, height }
+  syncScriptPreviewWidth()
+}
+
+// 面板宽度随画面区尺寸变化；脚本页用 v-if 挂载，切换 Tab 时要重新挂观察器
+watch(activeTab, async (tab) => {
+  scriptPreviewObserver?.disconnect()
+  scriptPreviewObserver = null
+  if (tab !== 'script') return
+  await nextTick()
+  syncScriptPreviewWidth()
+  if (scriptScreenBodyRef.value) {
+    scriptPreviewObserver = new ResizeObserver(syncScriptPreviewWidth)
+    scriptPreviewObserver.observe(scriptScreenBodyRef.value)
+    // 窗口只变宽不变高时画面区尺寸不变，需额外观察整行布局才能刷新两列状态
+    if (scriptLayoutRef.value) scriptPreviewObserver.observe(scriptLayoutRef.value)
+  }
+}, { immediate: true })
+
+let scriptPointerActive = false
+let scriptRemotePressing = false
+let scriptPressStart = { x: 0, y: 0, time: 0 }
+let scriptLongPressTimer: any = null
+let scriptMoved = false
+
+const SCRIPT_LONGPRESS_MS = 600
+
+const scriptKeyPresetOf = (step: any): string => {
+  const hit = SCRIPT_COMMON_KEYS.find(k => k.code === Number(step.keycode))
+  return hit ? String(hit.code) : 'custom'
+}
+
+const onScriptKeyPresetChange = (step: any, value: string | number) => {
+  // el-select 的 change 直接传选中值（原生 select 事件在别处使用）
+  step.keycode = value === 'custom' ? '' : Number(value)
+}
+
+// 设备动作类步骤（走 adb 或探针帧，不依赖画面录制）
+const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
+  { type: 'installApk', label: '安装APK', icon: '📦' },
+  { type: 'deleteFolder', label: '删除文件夹', icon: '🗑️' },
+  { type: 'startApp', label: '启动应用', icon: '🚀' },
+  { type: 'stopApp', label: '停止应用', icon: '⏹️' },
+  { type: 'uninstallApp', label: '卸载应用', icon: '🧹' },
+  { type: 'keyevent', label: '模拟按键', icon: '🔘' },
+  { type: 'volume', label: '音量控制', icon: '🔊' },
+  { type: 'reboot', label: '重启设备', icon: '🔄' },
+  { type: 'tts', label: 'TTS语音', icon: '🗣️' },
+]
+
+// 手势类步骤（手动添加：坐标默认屏幕中心，开启「显示步骤」后在画面上拖动标记调整）
+const SCRIPT_GESTURE_STEPS: Array<{ type: string; label: string; icon: string }> = [
+  { type: 'tap', label: '点击', icon: '👆' },
+  { type: 'longpress', label: '长按', icon: '✊' },
+  { type: 'swipe', label: '滑动', icon: '↔️' },
+  { type: 'input', label: '输入文本', icon: '⌨️' },
+]
+
+// 步骤文本变量：保存的是占位符，后端执行时才展开，仅对「输入文字」「TTS 朗读文本」生效
+const SCRIPT_VARIABLE_HELP = `输入框支持的关键字：
+{执行次数} → 当前第几次执行
+{执行轮数} → 当前第几轮
+{n位随机数} → n 位随机数字（n 取 1~18，如 {6位随机数}）`
+
+// 判断步骤：四种条件与分支动作
+const SCRIPT_CONDITION_KINDS: Array<{ kind: string; label: string }> = [
+  { kind: 'appInstalled', label: '应用已安装' },
+  { kind: 'template', label: '组件出现' },
+  { kind: 'shell', label: 'Shell 输出包含' },
+  { kind: 'time', label: '设备时刻已到' },
+]
+const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
+  { action: 'continue', label: '继续下一步' },
+  { action: 'goto', label: '跳到第 N 步' },
+  { action: 'stop', label: '终止脚本' },
+  { action: 'fail', label: '判定失败' },
+]
+
+const scriptConditionDefaults = (kind: string): Record<string, any> => {
+  switch (kind) {
+    case 'appInstalled': return { packageName: '' }
+    case 'template': return { template: '', threshold: 0.85 }
+    case 'shell': return { command: '', expected: '' }
+    case 'time': return { targetTime: '09:00', timeout: 3600 }
+    default: return {}
+  }
+}
+
+// 切换判断类型时清掉上一种类型的参数，避免脏字段落盘
+const onScriptConditionKindChange = (step: any, kind: string) => {
+  for (const field of ['packageName', 'template', 'threshold', 'command', 'expected', 'targetTime', 'timeout']) {
+    delete step[field]
+  }
+  Object.assign(step, scriptConditionDefaults(kind))
+  if (kind === 'template') fetchScriptTemplates()
+}
+
+// 只允许跳到本步骤之后的步骤（target 是 1-based 步骤序号）
+const scriptGotoTargets = (idx: number): number[] => {
+  const targets: number[] = []
+  for (let n = idx + 2; n <= scriptSteps.value.length; n++) targets.push(n)
+  return targets
+}
+
+const onScriptBranchActionChange = (branch: any, idx: number) => {
+  if (branch.action === 'goto') branch.target = idx + 2
+  else delete branch.target
+}
+
+// 已上传的 APK 列表（安装APK步骤的下拉数据源）
+const scriptApkOptions = ref<Array<{ name: string; size: number }>>([])
+const scriptApkLoading = ref(false)
+
+const fetchScriptApks = async () => {
+  scriptApkLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/pipeline/list-apks`)
+    if (res.data.code === 200) scriptApkOptions.value = res.data.data || []
+  } catch {
+    /* APK 列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptApkLoading.value = false
+  }
+}
+
+// 应用列表（启动/停止/卸载步骤的下拉数据源；中文名 -> 包名映射）
+const scriptAppPackages = ref<string[]>([])
+const scriptAppNames = ref<Record<string, string>>({})
+const scriptAppLoading = ref(false)
+
+const fetchScriptApps = async () => {
+  if (!selectedDevice.value) return
+  scriptAppLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/script/app-names`, { deviceId: selectedDevice.value })
+    if (res.data.code === 200) {
+      const map = res.data.data || {}
+      scriptAppNames.value = map
+      scriptAppPackages.value = Object.keys(map)
+    }
+  } catch {
+    /* 应用列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptAppLoading.value = false
+  }
+}
+
+// 模板图列表（等待组件步骤的下拉数据源）
+const scriptTemplateOptions = ref<Array<{ name: string; width: number; height: number }>>([])
+const scriptTemplateLoading = ref(false)
+
+const fetchScriptTemplates = async () => {
+  scriptTemplateLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/script/list-templates`)
+    if (res.data.code === 200) scriptTemplateOptions.value = res.data.data || []
+  } catch {
+    /* 模板列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptTemplateLoading.value = false
+  }
+}
+
+// 等待组件步骤展开时，预览当前已选中的模板图
+const scriptTemplatePreview = ref('')
+let scriptTemplatePreviewSeq = 0
+
+const loadScriptTemplatePreview = async (name: string) => {
+  const seq = ++scriptTemplatePreviewSeq
+  scriptTemplatePreview.value = ''
+  if (!name) return
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/script/get-template`, { name })
+    // 只让最后一次请求写入，避免模板快速切换时旧响应覆盖新图
+    if (seq === scriptTemplatePreviewSeq) {
+      scriptTemplatePreview.value = res.data.code === 200 ? (res.data.data || '') : ''
+    }
+  } catch {
+    if (seq === scriptTemplatePreviewSeq) scriptTemplatePreview.value = ''
+  }
+}
+
+const onScriptTemplatePreviewError = (e: Event) => {
+  const img = e.target as HTMLImageElement
+  if (img) img.style.visibility = 'hidden'
+}
+
+// 设备动作步骤的默认参数
+const scriptAdbStepDefaults = (type: string): Record<string, any> => {
+  switch (type) {
+    case 'installApk': return { apkName: scriptApkOptions.value[0]?.name || '' }
+    case 'deleteFolder': return { path: '/sdcard/' }
+    case 'startApp': return { packageName: '', activity: '' }
+    case 'stopApp':
+    case 'uninstallApp': return { packageName: '' }
+    case 'keyevent': return { keycode: 4 }
+    case 'volume': return { action: 'up', stream: 'media' }
+    case 'tts': return { text: '' }
+    default: return {}
+  }
+}
+
+// ---------- 画面上的步骤标记 ----------
+
+// 是否在投屏画面上标出脚本步骤位置
+const scriptShowMarkers = ref(false)
+
+// 拖拽编辑：当前被拖动的标记 { stepIndex, part }，part 为 start/end
+const scriptDragging = ref<{ stepIndex: number; part: 'start' | 'end' } | null>(null)
+// 正在编辑配置的步骤索引（展开 interval/count 编辑项）
+const scriptEditingStep = ref<number | null>(null)
+
+// 等待组件步骤展开时加载模板预览（immediate watch 须在 scriptEditingStep 声明之后，否则 TDZ 报错）
+watch(
+  () => {
+    const idx = scriptEditingStep.value
+    if (idx === null || scriptSteps.value[idx]?.type !== 'waitFor') return ''
+    return scriptSteps.value[idx]?.template || ''
+  },
+  loadScriptTemplatePreview,
+  { immediate: true },
+)
+
+// 步骤标记颜色（按类型区分）
+const SCRIPT_MARKER_COLORS: Record<string, string> = {
+  tap: '#4caf50',
+  swipe: '#2196f3',
+  longpress: '#ff9800',
+}
+
+// 在画面上绘制脚本步骤标记（画布坐标系即设备分辨率）
+const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
+  // 框选中的矩形（虚线高亮）：必须在早退之前画，
+  // 否则「显示步骤」关闭或步骤为空时拖框没有任何视觉反馈
+  if (scriptCropRegion.value) {
+    const r = scriptCropRegion.value
+    const left = Math.min(r.x1, r.x2)
+    const top = Math.min(r.y1, r.y2)
+    const w = Math.abs(r.x2 - r.x1)
+    const h = Math.abs(r.y2 - r.y1)
+    ctx.save()
+    ctx.strokeStyle = '#ff9800'
+    ctx.lineWidth = 3
+    ctx.setLineDash([10, 6])
+    ctx.strokeRect(left, top, w, h)
+    ctx.restore()
+  }
+
+  if (!scriptShowMarkers.value || scriptSteps.value.length === 0) return
+
+  const radius = Math.max(18, Math.round(scriptMeta.width / 40))
+  const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
+
+  scriptSteps.value.forEach((step, idx) => {
+    // 输入步骤与设备动作步骤没有坐标，画面上不画标记（序号也就不占位）
+    if (step.type === 'input' || step.type === 'condition' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) return
+    const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
+    const x = step.x1
+    const y = step.y1
+    // 选中的步骤加粗描边，便于辨认
+    const isSelected = scriptEditingStep.value === idx
+    const isDragging = scriptDragging.value?.stepIndex === idx
+    const lineWidth = Math.max(2, Math.round(scriptMeta.width / 300)) * (isSelected ? 2 : 1)
+
+    // 点击/长按：画圆圈
+    ctx.save()
+    ctx.strokeStyle = color
+    ctx.lineWidth = lineWidth
+    ctx.beginPath()
+    ctx.arc(x, y, radius, 0, Math.PI * 2)
+    ctx.stroke()
+
+    // 正在拖动的点：外圈光晕提示可抓取
+    if (isDragging && scriptDragging.value?.part === 'start') {
+      ctx.globalAlpha = 0.35
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(x, y, radius * 1.8, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+
+    // 滑动：起点圆圈 + 起点到终点的箭头
+    if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
+      const x2 = step.x2
+      const y2 = step.y2
+      ctx.globalAlpha = 0.85
+      ctx.beginPath()
+      ctx.arc(x2, y2, radius, 0, Math.PI * 2)
+      ctx.stroke()
+
+      // 正在拖动终点时的光晕
+      if (isDragging && scriptDragging.value?.part === 'end') {
+        ctx.globalAlpha = 0.35
+        ctx.fillStyle = color
+        ctx.beginPath()
+        ctx.arc(x2, y2, radius * 1.8, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.globalAlpha = 0.85
+      }
+
+      // 箭头线
+      ctx.beginPath()
+      ctx.moveTo(x, y)
+      ctx.lineTo(x2, y2)
+      ctx.stroke()
+
+      // 箭头头部
+      const angle = Math.atan2(y2 - y, x2 - x)
+      const headLen = radius * 0.9
+      ctx.beginPath()
+      ctx.moveTo(x2, y2)
+      ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6))
+      ctx.moveTo(x2, y2)
+      ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6))
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
+    ctx.restore()
+
+    // 序号标签
+    const label = String(idx + 1)
+    ctx.save()
+    ctx.font = `bold ${fontSize}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const tagR = radius * 0.85
+    const tagX = x + radius * 1.1
+    const tagY = y - radius * 1.1
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.arc(tagX, tagY, tagR, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#fff'
+    ctx.fillText(label, tagX, tagY)
+    ctx.restore()
+  })
+}
+
+// 视频帧绘制后叠加标记
+const scriptDrawFrame = (ctx: CanvasRenderingContext2D, frame: any) => {
+  ctx.drawImage(frame, 0, 0)
+  // 缓存一份画面供重绘使用（frame 随即被 close，不能直接持有）
+  scriptCacheFrame(frame)
+  scriptDrawMarkers(ctx)
+}
+
+// 缓存当前画面到离屏 canvas
+let scriptFrameCanvas: HTMLCanvasElement | null = null
+const scriptCacheFrame = (frame: any) => {
+  if (!scriptFrameCanvas) {
+    scriptFrameCanvas = document.createElement('canvas')
+  }
+  if (scriptFrameCanvas.width !== frame.displayWidth || scriptFrameCanvas.height !== frame.displayHeight) {
+    scriptFrameCanvas.width = frame.displayWidth
+    scriptFrameCanvas.height = frame.displayHeight
+  }
+  const fctx = scriptFrameCanvas.getContext('2d')!
+  fctx.drawImage(frame, 0, 0)
+}
+
+// 开关切换或步骤变化时重绘标记（画面静止时没有新帧，需要手动重画）
+const scriptRedrawMarkers = () => {
+  const cv = scriptCanvasRef.value
+  if (!cv || !scriptFrameCanvas) return
+  const ctx = cv.getContext('2d')!
+  ctx.drawImage(scriptFrameCanvas, 0, 0)
+  scriptDrawMarkers(ctx)
+}
+
+// 标记命中半径（与绘制半径一致，另加一点余量便于点中）
+const scriptMarkerHitRadius = () => Math.max(18, Math.round(scriptMeta.width / 40))
+
+// 命中检测：找出点 (x, y) 命中的标记
+// 滑动步骤有两个可拖动点（起点/终点），后添加的优先命中
+const scriptHitTest = (x: number, y: number): { stepIndex: number; part: 'start' | 'end' } | null => {
+  if (!scriptShowMarkers.value) return null
+  const radius = scriptMarkerHitRadius()
+  // 容差按触屏考虑，放宽到 1.5 倍半径
+  const tolerance = radius * 1.5
+
+  for (let idx = scriptSteps.value.length - 1; idx >= 0; idx--) {
+    const step = scriptSteps.value[idx]
+    // 输入步骤与设备动作步骤没有坐标，不参与命中
+    if (step.type === 'input' || step.type === 'condition' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) continue
+    const d1 = Math.hypot(x - step.x1, y - step.y1)
+    if (d1 <= tolerance) return { stepIndex: idx, part: 'start' }
+    if (step.type === 'swipe' && typeof step.x2 === 'number' && typeof step.y2 === 'number') {
+      const d2 = Math.hypot(x - step.x2, y - step.y2)
+      if (d2 <= tolerance) return { stepIndex: idx, part: 'end' }
+    }
+  }
+  return null
+}
+
+// 移动标记到新坐标
+const scriptMoveMarker = (target: { stepIndex: number; part: 'start' | 'end' }, x: number, y: number) => {
+  const step = scriptSteps.value[target.stepIndex]
+  if (!step) return
+  if (target.part === 'end' && step.type === 'swipe') {
+    step.x2 = x
+    step.y2 = y
+  } else {
+    step.x1 = x
+    step.y1 = y
+  }
+}
+
+// ---------- 框选模板（等待组件出现步骤） ----------
+
+// 框选模式：开启后在画面上拖框，松开即把框内画面存为模板
+const scriptCropMode = ref(false)
+// 正在框选的区域（设备坐标）
+const scriptCropRegion = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+// 判断步骤「组件出现」现截图时，保存后回填该步骤；空则沿用「等待组件(框选)」新增步骤的旧行为
+const scriptCropTargetStep = ref<any>(null)
+
+const toggleCropMode = () => {
+  scriptCropMode.value = !scriptCropMode.value
+  scriptCropRegion.value = null
+  scriptCropTargetStep.value = null
+  if (scriptCropMode.value) {
+    showNotification('框选模式：在画面上拖出组件所在区域，松开保存为模板', 'info')
+  }
+  scriptRedrawMarkers()
+}
+
+// 判断步骤「组件出现」现截图：沿用框选交互，但保存后只回填该步骤的模板，不新增等待步骤
+const startCropForCondition = (step: any) => {
+  scriptCropTargetStep.value = step
+  scriptCropRegion.value = null
+  scriptCropMode.value = true
+  showNotification('框选模式：在画面上拖出组件所在区域，松开保存为模板', 'info')
+  scriptRedrawMarkers()
+}
+
+// 松开鼠标：把框选区域从缓存帧裁出，上传后端保存为模板
+const finishCropRegion = async () => {
+  const region = scriptCropRegion.value
+  scriptCropRegion.value = null
+  scriptCropMode.value = false
+  const targetStep = scriptCropTargetStep.value
+  scriptCropTargetStep.value = null
+  if (!region || !scriptFrameCanvas) return
+
+  const left = Math.min(region.x1, region.x2)
+  const top = Math.min(region.y1, region.y2)
+  const w = Math.abs(region.x2 - region.x1)
+  const h = Math.abs(region.y2 - region.y1)
+  // 太小基本是误触：留在框选模式里让用户重框，不退出
+  if (w < 12 || h < 12) {
+    scriptCropMode.value = true
+    scriptCropTargetStep.value = targetStep
+    showNotification('框选区域太小，请重新框住完整的组件图案', 'error')
+    scriptRedrawMarkers()
+    return
+  }
+
+  try {
+    // 裁剪到临时 canvas，导出 base64 PNG（坐标基于缓存帧 = 当前画面）
+    const crop = document.createElement('canvas')
+    crop.width = w
+    crop.height = h
+    crop.getContext('2d')!.drawImage(scriptFrameCanvas, left, top, w, h, 0, 0, w, h)
+    const dataUrl = crop.toDataURL('image/png')
+
+    showPrompt('请输入模板名称', async (name?: string) => {
+      if (!name || !name.trim()) { scriptRedrawMarkers(); return }
+      try {
+        const response = await axios.post(`${API_BASE.value}/api/device/script/save-template`, {
+          name: name.trim(),
+          image: dataUrl,
+        })
+        if (response.data.code === 200) {
+          const d = response.data.data
+          showNotification(`模板「${d.name}」已保存（${d.width}x${d.height}）`, 'success')
+          if (targetStep) {
+            // 判断步骤「现截图」：只回填该步骤的模板，不新增等待步骤；步骤已删除则只保存模板
+            if (scriptSteps.value.includes(targetStep)) targetStep.template = d.name
+          } else {
+            // 模板就绪后立即加一个等待组件步骤引用它
+            addScriptStep({
+              type: 'waitFor',
+              template: d.name,
+              threshold: 0.85,
+              timeout: 15,
+              interval: 500,
+              count: 1,
+            })
+          }
+          fetchScriptTemplates()
+        } else {
+          showNotification('保存模板失败: ' + (response.data.message || '未知错误'), 'error')
+        }
+      } catch (error: any) {
+        showNotification('保存模板失败: ' + error.message, 'error')
+      } finally {
+        scriptRedrawMarkers()
+      }
+    }, `template_${Date.now() % 10000}`, '保存模板')
+  } catch (error: any) {
+    showNotification('裁剪画面失败: ' + error.message, 'error')
+    scriptRedrawMarkers()
+  }
+}
+
+// ---------- 画面校验（录制中每次操作自动截图创建等待组件） ----------
+
+// 按下时把点击点周围的画面裁下来暂存：等手势步骤生成后再上传，保证用的是「点击时的画面」
+const captureVerifyFrame = (p: { x: number; y: number }) => {
+  scriptVerifyPending = null
+  const frame = scriptFrameCanvas
+  if (!frame || !frame.width || !frame.height || !scriptRecording.value || !scriptVerify.value) return
+  const w = Math.min(SCRIPT_VERIFY_CROP, frame.width)
+  const h = Math.min(SCRIPT_VERIFY_CROP, frame.height)
+  const left = Math.max(0, Math.min(frame.width - w, Math.round(p.x - w / 2)))
+  const top = Math.max(0, Math.min(frame.height - h, Math.round(p.y - h / 2)))
+  const crop = document.createElement('canvas')
+  crop.width = w
+  crop.height = h
+  crop.getContext('2d')!.drawImage(frame, left, top, w, h, 0, 0, w, h)
+  scriptVerifyPending = crop.toDataURL('image/png')
+}
+
+// 上传模板并把等待组件插到对应手势步骤前面（先校验画面再点击）；串行执行，保证快速连点时顺序不乱
+const flushScriptVerify = (gesture: any) => {
+  const image = scriptVerifyPending
+  scriptVerifyPending = null
+  if (!image) return
+  const name = `verify_${Date.now()}_${++scriptVerifySeq}`
+  scriptVerifyQueue = scriptVerifyQueue.then(async () => {
+    try {
+      const response = await axios.post(`${API_BASE.value}/api/device/script/save-template`, { name, image })
+      if (response.data.code === 200) {
+        const d = response.data.data
+        // 手势步骤若已被删除就不补孤儿步骤；否则插在它前面，保证「等待组件 → 手势」紧邻
+        const i = scriptSteps.value.indexOf(gesture)
+        if (i < 0) return
+        const step = {
+          type: 'waitFor',
+          template: d.name,
+          threshold: SCRIPT_VERIFY_THRESHOLD,
+          timeout: 15,
+          interval: 500,
+          count: 1,
+        }
+        scriptSteps.value.splice(i, 0, step)
+        showNotification(`已记录画面校验：${scriptStepLabel(step)}`, 'info')
+        fetchScriptTemplates()
+      } else {
+        showNotification('画面校验模板保存失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+    } catch (error: any) {
+      showNotification('画面校验模板保存失败: ' + error.message, 'error')
+    }
+  }).catch(() => {})
+}
+
+// 手势步骤照常记录，随后在它前面补一个画面校验的等待组件步骤
+const addRecordedStep = (step: any) => {
+  addScriptStep(step)
+  flushScriptVerify(scriptSteps.value[scriptSteps.value.length - 1])
+}
+
+// ---------- 屏幕流（复用 /ws/remote，单设备） ----------
+
+const scriptHandleBinary = (buf: ArrayBuffer) => {
+  // 收到任何数据都算连接活着（半开 TCP 检测的喂狗信号）
+  scriptLastDataAt = Date.now()
+  const view = new DataView(buf)
+  const kind = view.getUint8(1)
+  const payload = new Uint8Array(buf, 2)
+  const cv = scriptCanvasRef.value
+  if (!cv) return
+
+  if (kind === 1) {
+    scriptCodecConfig = payload
+    if (scriptDecoder) {
+      try { scriptDecoder.close() } catch { /* ignore */ }
+    }
+    scriptDecoder = new VideoDecoder({
+      output: (frame) => {
+        if (cv.width !== frame.displayWidth) cv.width = frame.displayWidth
+        if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
+        const ctx = cv.getContext('2d')!
+        scriptDrawFrame(ctx, frame)
+        setScriptMeta(frame.displayWidth, frame.displayHeight)
+        frame.close()
+      },
+      error: (e) => { scriptWsStatus.value = `解码错误: ${e.message}` },
+    })
+    const codec = batchRemoteCodecFromSps(payload)
+    try {
+      scriptDecoder.configure({ codec, optimizeForLatency: true })
+    } catch { /* codec 异常时等错误回调报 */ }
+  } else if (kind === 2) {
+    const dec = scriptDecoder
+    if (dec && dec.state === 'configured') {
+      const isKey = batchRemoteIsKeyframe(payload)
+      const data = isKey && scriptCodecConfig ? concatU8(scriptCodecConfig, payload) : payload
+      const chunk = new EncodedVideoChunk({
+        type: isKey ? 'key' : 'delta',
+        timestamp: performance.now() * 1000,
+        data,
+      })
+      try { dec.decode(chunk) } catch { /* 队列满时丢弃 */ }
+    }
+  }
+}
+
+const startScriptStream = () => {
+  if (!selectedDevice.value) return
+  // 存活检测：旧连接引用还在但已不是 OPEN（close 事件异步未触发、或后端 session 已死），
+  // 直接强制清理，否则这里 return 会导致切设备/重连时画面永久卡死
+  if (scriptWs && scriptWs.readyState !== WebSocket.OPEN && scriptWs.readyState !== WebSocket.CONNECTING) {
+    try { scriptWs.close() } catch { /* ignore */ }
+    scriptWs = null
+  }
+  if (scriptWs) return
+
+  scriptWsStatus.value = '连接中'
+  const wsUrl = API_BASE.value.replace(/^http/, 'ws') + '/ws/remote'
+  const thisWs = new WebSocket(wsUrl)
+  scriptWs = thisWs
+  thisWs.binaryType = 'arraybuffer'
+  thisWs.onopen = () => {
+    // 连上了就重置重连计数
+    scriptReconnectAttempts = 0
+    thisWs.send(JSON.stringify({ type: 'start', devices: [selectedDevice.value] }))
+  }
+  thisWs.onmessage = (ev) => {
+    if (typeof ev.data === 'string') {
+      const msg = JSON.parse(ev.data)
+      if (msg.type === 'ready' && msg.devices?.length) {
+        setScriptMeta(msg.devices[0].width, msg.devices[0].height)
+        scriptStreaming.value = true
+        scriptWsStatus.value = '实时'
+      } else if (msg.type === 'meta') {
+        setScriptMeta(msg.width, msg.height)
+        scriptStreaming.value = true
+        scriptWsStatus.value = '实时'
+      } else if (msg.type === 'error') {
+        scriptWsStatus.value = `错误: ${msg.message}`
+        // 后端报错（设备断开/会话失败等）通常是致命的，主动断开触发重连流程
+        try { thisWs.close() } catch { /* ignore */ }
+      }
+    } else {
+      scriptHandleBinary(ev.data as ArrayBuffer)
+    }
+  }
+  thisWs.onclose = () => {
+    // 只有当前连接断开才算真断开：切设备时旧 ws 的 close 是异步触发的，
+    // 可能晚于新 ws 创建，不能把新连接的引用/状态误清掉
+    if (scriptWs === thisWs) {
+      scriptWs = null
+      scriptStreaming.value = false
+      // 主动停流（切页签/切设备）不重连；其余（网络波动、后端报错）自动重连
+      if (shouldStreamBeActive()) {
+        scheduleScriptReconnect()
+      } else {
+        scriptWsStatus.value = '未连接'
+      }
+    }
+  }
+}
+
+// 屏幕流是否应该处于激活状态（决定断线后要不要自动重连）
+const shouldStreamBeActive = (): boolean => {
+  return activeTab.value === 'script' && !!selectedDevice.value && !scriptManualStop
+}
+
+// 自动重连：指数退避（1s 起步，翻倍，上限 15s），连接成功后归零
+let scriptReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let scriptReconnectAttempts = 0
+let scriptManualStop = false
+
+const scheduleScriptReconnect = () => {
+  if (scriptReconnectTimer) return
+  const delay = Math.min(1000 * Math.pow(2, scriptReconnectAttempts), 15000)
+  scriptReconnectAttempts++
+  scriptWsStatus.value = `连接中断，${Math.round(delay / 1000)}s 后重连（第 ${scriptReconnectAttempts} 次）`
+  scriptReconnectTimer = setTimeout(() => {
+    scriptReconnectTimer = null
+    if (shouldStreamBeActive()) startScriptStream()
+  }, delay)
+}
+
+const stopScriptStream = () => {
+  // 主动停流：抑制自动重连
+  scriptManualStop = true
+  if (scriptReconnectTimer) { clearTimeout(scriptReconnectTimer); scriptReconnectTimer = null }
+  if (scriptWs) {
+    try { scriptWs.send(JSON.stringify({ type: 'stop' })) } catch { /* ignore */ }
+    try { scriptWs.close() } catch { /* ignore */ }
+    scriptWs = null
+  }
+  if (scriptDecoder) {
+    try { scriptDecoder.close() } catch { /* ignore */ }
+    scriptDecoder = null
+  }
+  scriptCodecConfig = null
+  // 丢弃旧画面缓存，避免下个设备首帧未到时截到上一个设备的画面
+  scriptFrameCanvas = null
+  scriptStreaming.value = false
+  scriptWsStatus.value = '未连接'
+  scriptRecording.value = false
+  // 流断开后不再接管键盘，避免打字继续发往已关闭的连接
+  scriptReleaseKeyboard()
+}
+
+// 主动启动入口：清除手动停止标记
+const beginScriptStream = () => {
+  scriptManualStop = false
+  startScriptStream()
+}
+
+// ---------- 半开 TCP 检测：流"活着"但 10 秒没有任何数据 → 强制断开触发重连 ----------
+let scriptLastDataAt = 0
+let scriptStallTimer: ReturnType<typeof setInterval> | null = null
+
+const startStallWatch = () => {
+  if (scriptStallTimer) return
+  scriptLastDataAt = Date.now()
+  scriptStallTimer = setInterval(() => {
+    if (!scriptWs || !scriptStreaming.value) {
+      scriptLastDataAt = Date.now()
+      return
+    }
+    if (Date.now() - scriptLastDataAt > 10000) {
+      // 数据流卡死：显示提示并强断，onclose 会触发自动重连
+      scriptWsStatus.value = '画面超过 10 秒无数据，重连中...'
+      try { scriptWs.close() } catch { /* ignore */ }
+    }
+  }, 2000)
+}
+
+const stopStallWatch = () => {
+  if (scriptStallTimer) { clearInterval(scriptStallTimer); scriptStallTimer = null }
+}
+
+// 进入/离开 Tab 时开关屏幕流
+watch(activeTab, async (tab) => {
+  if (tab === 'script') {
+    await nextTick()
+    startStallWatch()
+    if (selectedDevice.value) beginScriptStream()
+    // 进入脚本页时准备安装APK / 等待组件 / 应用下拉的数据
+    if (scriptApkOptions.value.length === 0) fetchScriptApks()
+    fetchScriptTemplates()
+    fetchScriptApps()
+  } else {
+    stopScriptStream()
+    stopStallWatch()
+  }
+})
+
+// 标记开关切换 / 步骤增减时重绘画面标记
+watch(scriptShowMarkers, () => {
+  nextTick(() => scriptRedrawMarkers())
+})
+watch(scriptSteps, () => {
+  nextTick(() => scriptRedrawMarkers())
+}, { deep: true })
+
+// 切换设备时重连屏幕流
+watch(selectedDevice, async (deviceId) => {
+  stopScriptStream()
+  // 清掉旧设备残留画面，避免新流接入前显示上一台设备的内容
+  const cv = scriptCanvasRef.value
+  if (cv) {
+    const ctx = cv.getContext('2d')
+    ctx?.clearRect(0, 0, cv.width, cv.height)
+  }
+  if (deviceId && activeTab.value === 'script') {
+    await nextTick()
+    beginScriptStream()
+  }
+})
+
+// ---------- 录制：点/拖/长按自动分类；非录制：触控直接注入设备 ----------
+
+const canvasPoint = (ev: PointerEvent) => {
+  const cv = scriptCanvasRef.value!
+  const rect = cv.getBoundingClientRect()
+  return {
+    x: Math.round((ev.clientX - rect.left) * scriptMeta.width / rect.width),
+    y: Math.round((ev.clientY - rect.top) * scriptMeta.height / rect.height),
+  }
+}
+
+// 非录制模式下把触控事件直接同步到设备（走 mirror 通道，同批量投屏）
+const scriptSendTouch = (action: number, p: { x: number; y: number }) => {
+  if (scriptWs && scriptWs.readyState === WebSocket.OPEN) {
+    scriptWs.send(JSON.stringify({
+      type: 'mirror',
+      event: {
+        kind: 'touch', action,
+        x: p.x, y: p.y,
+        w: scriptMeta.width, h: scriptMeta.height,
+      },
+    }))
+  }
+}
+
+// 把一段文字发到设备（走 mirror 的 text 通道，后端 session.inject_text）
+const scriptReleaseKeyboard = () => {
+  scriptKeyboardActive.value = false
+  scriptFlushTyping()
+}
+
+const scriptOnPointerDown = (ev: PointerEvent) => {
+  if (!scriptStreaming.value) return
+  ev.preventDefault()
+  const p = canvasPoint(ev)
+
+  // 框选模板模式：拖框裁剪画面当作「等待组件出现」的模板，不注入设备
+  if (scriptCropMode.value) {
+    try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+    scriptCropRegion.value = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
+    return
+  }
+
+  // 点画面即接管键盘：之后敲电脑键盘的文字会实时发到设备并在录制时记为输入步骤
+  scriptKeyboardActive.value = true
+  // 点别处意味着上一段输入结束
+  scriptFlushTyping()
+
+  // 显示步骤时优先命中标记：命中则进入拖拽编辑，不注入设备也不记录新步骤
+  if (scriptShowMarkers.value && !scriptRecording.value) {
+    const hit = scriptHitTest(p.x, p.y)
+    if (hit) {
+      try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+      scriptDragging.value = hit
+      scriptEditingStep.value = hit.stepIndex
+      return
+    }
+  }
+
+  if (!scriptRecording.value) {
+    // 远控模式：直接注入
+    try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+    scriptRemotePressing = true
+    scriptSendTouch(0, p)
+    return
+  }
+  // 画面校验：先存下点击瞬间的画面，再注入触摸（避免新帧到达后截到操作后的画面）
+  captureVerifyFrame(p)
+  // 录制模式：事件照常注入设备（记录的同时真实生效），并开始判定手势类型
+  try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
+  scriptRemotePressing = true
+  scriptSendTouch(0, p)
+  scriptPointerActive = true
+  scriptMoved = false
+  scriptPressStart = { x: p.x, y: p.y, time: Date.now() }
+  // 长按计时：600ms 未移动且未松开 → 长按步骤
+  scriptLongPressTimer = setTimeout(() => {
+    if (scriptPointerActive && !scriptMoved) {
+      scriptPointerActive = false
+      addRecordedStep({
+        type: 'longpress',
+        x1: p.x, y1: p.y,
+        duration: SCRIPT_LONGPRESS_MS + 400,
+        ...scriptOpConfig.value.longpress,
+      })
+    }
+  }, SCRIPT_LONGPRESS_MS)
+}
+
+const scriptOnPointerMove = (ev: PointerEvent) => {
+  if (!scriptStreaming.value) return
+  const p = canvasPoint(ev)
+
+  // 框选中：更新框选区域并重绘
+  if (scriptCropMode.value && scriptCropRegion.value) {
+    scriptCropRegion.value.x2 = p.x
+    scriptCropRegion.value.y2 = p.y
+    scriptRedrawMarkers()
+    return
+  }
+
+  // 拖拽标记：更新坐标并重绘
+  if (scriptDragging.value) {
+    scriptMoveMarker(scriptDragging.value, p.x, p.y)
+    scriptRedrawMarkers()
+    return
+  }
+
+  if (!scriptRemotePressing) return
+  // 移动事件注入（远控与录制模式都需要，录制时靠它让设备产生真实滑动）
+  if (!scriptRecording.value || scriptPointerActive) scriptSendTouch(2, p)
+  if (!scriptPointerActive) return
+  const dist = Math.hypot(p.x - scriptPressStart.x, p.y - scriptPressStart.y)
+  if (dist > 30) {
+    scriptMoved = true
+    clearTimeout(scriptLongPressTimer)
+  }
+}
+
+const scriptOnPointerUp = (ev: PointerEvent) => {
+  if (!scriptStreaming.value) return
+  const p = canvasPoint(ev)
+
+  // 框选结束：裁剪画面保存为模板
+  if (scriptCropMode.value && scriptCropRegion.value) {
+    finishCropRegion()
+    return
+  }
+
+  // 拖拽结束
+  if (scriptDragging.value) {
+    const moved = scriptSteps.value[scriptDragging.value.stepIndex]
+    scriptDragging.value = null
+    if (moved) {
+      showNotification(
+        `已调整第 ${scriptEditingStep.value! + 1} 步：${scriptStepLabel(moved)}`,
+        'info'
+      )
+    }
+    return
+  }
+
+  // 抬起事件注入（远控与录制模式都需要）
+  if (scriptRemotePressing) scriptSendTouch(1, p)
+  scriptRemotePressing = false
+  if (!scriptRecording.value) return
+  if (!scriptPointerActive) return
+  clearTimeout(scriptLongPressTimer)
+  scriptPointerActive = false
+  const elapsed = Date.now() - scriptPressStart.time
+  if (scriptMoved) {
+    // 拖动 → 滑动步骤
+    addRecordedStep({
+      type: 'swipe',
+      x1: scriptPressStart.x, y1: scriptPressStart.y,
+      x2: p.x, y2: p.y,
+      ...scriptOpConfig.value.swipe,
+    })
+  } else if (elapsed < SCRIPT_LONGPRESS_MS) {
+    // 快速点按 → 点击步骤
+    addRecordedStep({
+      type: 'tap',
+      x1: scriptPressStart.x, y1: scriptPressStart.y,
+      ...scriptOpConfig.value.tap,
+    })
+  }
+  // elapsed >= 600ms 且未移动的长按已在 timer 里记录
+}
+
+// 指针被中断（取消/离开窗口）：静默结束拖拽；框选中丢弃当前框但保留模式
+const scriptOnPointerCancel = () => {
+  // 手势被中断，丢弃这次按下的截图，避免下一步误用
+  scriptVerifyPending = null
+  if (scriptCropMode.value) {
+    scriptCropRegion.value = null
+    scriptRedrawMarkers()
+    return
+  }
+  if (scriptDragging.value) {
+    scriptDragging.value = null
+    return
+  }
+  scriptRemotePressing = false
+  scriptPointerActive = false
+  clearTimeout(scriptLongPressTimer)
+}
+
+const addScriptStep = (step: any) => {
+  scriptSteps.value.push(step)
+  showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
+}
+
+// 添加设备动作类步骤（安装APK/删除文件夹/应用管理/按键/音量/重启）
+const addScriptAdbStep = (type: string) => {
+  if (type === 'installApk' && scriptApkOptions.value.length === 0) {
+    fetchScriptApks()
+  }
+  // 应用管理类步骤用应用列表做下拉：进脚本页时可能列表还是旧的（刚卸载过应用），刷新一次
+  if (type === 'startApp' || type === 'stopApp' || type === 'uninstallApp') {
+    fetchScriptApps()
+  }
+  addScriptStep({
+    type,
+    ...scriptAdbStepDefaults(type),
+    interval: 500,
+    count: 1,
+  })
+}
+
+// 手动添加手势步骤（点击/长按/滑动/输入文本）：字段与录制生成的步骤一致
+const addScriptGestureStep = (type: string) => {
+  const cx = Math.round(scriptMeta.width / 2)
+  const cy = Math.round(scriptMeta.height / 2)
+  const base = { interval: 500, count: 1 }
+  const step =
+    type === 'tap' ? { type, x1: cx, y1: cy, ...base }
+    : type === 'longpress' ? { type, x1: cx, y1: cy, duration: 1000, ...base }
+    : type === 'swipe' ? { type, x1: cx, y1: cy, x2: cx, y2: Math.min(scriptMeta.height - 1, cy + 300), ...base }
+    : { type, x1: 0, y1: 0, text: '', ...base }
+  addScriptStep(step)
+}
+
+// 等待组件（选图）：直接新增等待步骤并展开参数，模板从已有模板图列表手动选择
+const addScriptWaitStep = () => {
+  fetchScriptTemplates()
+  addScriptStep({
+    type: 'waitFor',
+    template: '',
+    threshold: 0.85,
+    timeout: 15,
+    interval: 500,
+    count: 1,
+  })
+  scriptEditingStep.value = scriptSteps.value.length - 1
+}
+
+// 步骤按类别分组显示；序号仍是全局执行顺序，分组只影响展示
+const SCRIPT_STEP_GROUPS: Array<{ key: string; label: string; types: string[] }> = [
+  { key: 'gesture', label: '手势操作', types: ['tap', 'longpress', 'swipe', 'input'] },
+  { key: 'wait', label: '等待与判断', types: ['waitFor', 'condition'] },
+  { key: 'device', label: '设备动作', types: SCRIPT_ADB_STEPS.map(a => a.type) },
+]
+const scriptStepGroups = computed(() => {
+  const groups = SCRIPT_STEP_GROUPS.map(g => ({
+    ...g,
+    items: scriptSteps.value
+      .map((step, idx) => ({ step, idx }))
+      .filter(it => g.types.includes(it.step.type as string)),
+  })).filter(g => g.items.length > 0)
+  // 未知类型步骤（如导入脚本带新类型）不落任何组会从界面消失，兜底放进「其他」
+  const known = new Set(SCRIPT_STEP_GROUPS.flatMap(g => g.types))
+  const others = scriptSteps.value
+    .map((step, idx) => ({ step, idx }))
+    .filter(it => !known.has(it.step.type as string))
+  if (others.length > 0) groups.push({ key: 'other', label: '其他', types: [], items: others })
+  return groups
+})
+
+// 添加判断步骤（单次求值 + 真/假分支）
+const addScriptConditionStep = () => {
+  addScriptStep({
+    type: 'condition',
+    kind: 'appInstalled',
+    ...scriptConditionDefaults('appInstalled'),
+    negate: false,
+    onTrue: { action: 'continue' },
+    onFalse: { action: 'continue' },
+    interval: 1000,
+    count: 1,
+  })
+}
+
+const removeScriptStep = (idx: number) => {
+  scriptSteps.value.splice(idx, 1)
+}
+
+const clearScriptSteps = () => {
+  scriptSteps.value = []
+}
+
+// 批量设置所有步骤的执行间隔（毫秒）
+const setAllIntervals = () => {
+  if (scriptSteps.value.length === 0) return
+  showPrompt(
+    '请输入执行间隔(ms)，应用到全部步骤',
+    (input?: string) => {
+      const n = parseInt(input || '', 10)
+      if (isNaN(n) || n < 0) {
+        showNotification('请输入不小于 0 的整数', 'error')
+        return
+      }
+      const capped = Math.min(n, 600000)
+      for (const s of scriptSteps.value) {
+        s.interval = capped
+      }
+      showNotification(`已将 ${scriptSteps.value.length} 个步骤的间隔统一设为 ${capped}ms`, 'success')
+    },
+    String(scriptSteps.value[0]?.interval ?? 500),
+    '统一间隔'
+  )
+}
+
+// 点击步骤：选中并展开执行参数（再点一次收起）
+const toggleStepEdit = (idx: number) => {
+  scriptEditingStep.value = scriptEditingStep.value === idx ? null : idx
+}
+
+// 拖拽排序步骤：原生 draggable，拖到某一步上方即插入到该位置
+const scriptStepDragFrom = ref<number | null>(null)
+const scriptStepDragOver = ref<number | null>(null)
+
+const onScriptStepDragStart = (idx: number, ev: DragEvent) => {
+  scriptStepDragFrom.value = idx
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要 setData 才会真正进入拖拽状态
+    ev.dataTransfer.setData('text/plain', String(idx))
+  }
+}
+
+const onScriptStepDragOver = (idx: number, ev: DragEvent) => {
+  ev.preventDefault()
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+  scriptStepDragOver.value = idx
+}
+
+const onScriptStepDragLeave = (idx: number) => {
+  if (scriptStepDragOver.value === idx) {
+    scriptStepDragOver.value = null
+  }
+}
+
+const onScriptStepDrop = (idx: number, ev: DragEvent) => {
+  ev.preventDefault()
+  const from = scriptStepDragFrom.value
+  scriptStepDragOver.value = null
+  if (from === null || from === idx) {
+    scriptStepDragFrom.value = null
+    return
+  }
+  const arr = scriptSteps.value
+  const moved = arr.splice(from, 1)[0]
+  arr.splice(idx, 0, moved)
+  // 同步修正展开的编辑索引，使其继续跟随被移动的那一步
+  if (scriptEditingStep.value !== null) {
+    if (scriptEditingStep.value === from) {
+      scriptEditingStep.value = idx
+    } else if (from < scriptEditingStep.value && idx >= scriptEditingStep.value) {
+      scriptEditingStep.value -= 1
+    } else if (from > scriptEditingStep.value && idx <= scriptEditingStep.value) {
+      scriptEditingStep.value += 1
+    }
+  }
+  showNotification(`已将步骤移动到第 ${idx + 1} 位`, 'info')
+  scriptStepDragFrom.value = null
+}
+
+const onScriptStepDragEnd = () => {
+  scriptStepDragFrom.value = null
+  scriptStepDragOver.value = null
+}
+
+const toggleRecording = () => {
+  if (!scriptStreaming.value) {
+    showMessage('屏幕流未连接，无法录制', '提示')
+    return
+  }
+  scriptRecording.value = !scriptRecording.value
+  if (scriptRecording.value) {
+    showNotification('录制已开始：单击记录点击，拖动记录滑动，长按记录长按', 'info')
+  }
+}
+
+// ---------- 保存 / 执行 / 重复 ----------
+
+const saveScript = async () => {
+  if (scriptSteps.value.length === 0) {
+    showMessage('没有步骤可保存，请先录制', '提示')
+    return
+  }
+  showPrompt('请输入脚本名称', async (name?: string) => {
+    if (!name || !name.trim()) return
+    scriptSaving.value = true
+    try {
+      const response = await axios.post(`${API_BASE.value}/api/device/script/save`, {
+        name: name.trim(),
+        repeat: scriptRepeat.value,
+        steps: scriptSteps.value,
+        videoWidth: scriptMeta.width,
+        videoHeight: scriptMeta.height,
+      })
+      if (response.data.code === 200) {
+        showNotification(`脚本「${response.data.data.name}」已保存`, 'success')
+      } else {
+        showNotification('保存失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+    } catch (error: any) {
+      showNotification('保存失败: ' + error.message, 'error')
+    } finally {
+      scriptSaving.value = false
+    }
+  }, '', '保存脚本')
+}
+
+// ---------- 导入脚本 ----------
+
+// 把已载入的步骤应用到当前脚本面板
+const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
+  scriptSteps.value = steps.map((s: any) => ({
+    type: s.type,
+    x1: s.x1,
+    y1: s.y1,
+    x2: s.x2,
+    y2: s.y2,
+    duration: s.duration,
+    text: s.text,
+    apkName: s.apkName,
+    path: s.path,
+    packageName: s.packageName,
+    activity: s.activity,
+    keycode: s.keycode,
+    action: s.action,
+    stream: s.stream,
+    template: s.template,
+    threshold: s.threshold,
+    timeout: s.timeout,
+    interval: s.interval ?? 0,
+    count: s.count ?? 1,
+  }))
+  scriptRepeat.value = repeat
+  showNotification(`已导入脚本「${name}」，共 ${steps.length} 个步骤`, 'success')
+}
+
+// ---------- 导出脚本包（zip：脚本 JSON + 引用的 APK/模板图） ----------
+
+const scriptExporting = ref(false)
+
+const exportScriptZip = async () => {
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
+    if (response.data.code !== 200) {
+      showNotification('获取脚本列表失败: ' + (response.data.message || '未知错误'), 'error')
+      return
+    }
+    const scripts = response.data.data || []
+    // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
+    const items = scripts
+      .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
+      .map((s: any) => ({
+        value: s.name,
+        label: s.name,
+        desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+      }))
+
+    showList(items, async (name?: string) => {
+      if (!name) return
+      scriptExporting.value = true
+      try {
+        const exported = await axios.post(`${API_BASE.value}/api/device/script/export-zip`, { name })
+        if (exported.data.code === 200) {
+          const d = exported.data.data
+          const parts = [`脚本「${d.path}」导出成功`, `大小 ${formatBytes(d.size)}`]
+          if (d.apkNames?.length) parts.push(`含 APK：${d.apkNames.join('、')}`)
+          if (d.templateNames?.length) parts.push(`含模板图：${d.templateNames.join('、')}`)
+          showNotification(parts.join('\n'), 'success')
+        } else {
+          showNotification('导出失败: ' + (exported.data.message || '未知错误'), 'error')
+        }
+      } catch (error: any) {
+        showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
+      } finally {
+        scriptExporting.value = false
+      }
+    }, '选择要导出的脚本', '还没有保存过脚本', '导出')
+  } catch (error: any) {
+    showNotification('获取脚本列表失败: ' + error.message, 'error')
+  }
+}
+
+// 从导出 zip 包一键导入：脚本 + 资源一次到位
+const importScriptFromZip = () => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.zip,application/zip'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    scriptSaving.value = true
+    try {
+      const form = new FormData()
+      form.append('script', file)
+      const response = await axios.post(`${API_BASE.value}/api/device/script/import-zip`, form)
+      if (response.data.code !== 200) {
+        showNotification('导入失败: ' + (response.data.message || '未知错误'), 'error')
+        return
+      }
+      const d = response.data.data
+      // 导入后读回标准化的脚本载入面板
+      const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name: d.name })
+      if (loaded.data.code !== 200) {
+        showNotification('导入后读取失败: ' + (loaded.data.message || '未知错误'), 'error')
+        return
+      }
+      applyImportedSteps(loaded.data.data.steps, loaded.data.data.repeat, loaded.data.data.name)
+      const extras: string[] = []
+      if (d.apkNames?.length) extras.push(`APK ${d.apkNames.length} 个`)
+      if (d.templateNames?.length) extras.push(`模板图 ${d.templateNames.length} 张`)
+      showNotification(
+        `已导入脚本「${d.name}」（${d.stepCount} 个步骤${extras.length ? '，含' + extras.join('和') : ''}）${d.overwritten ? '，已覆盖同名脚本' : ''}`,
+        'success'
+      )
+    } catch (error: any) {
+      showNotification('导入失败: ' + (error?.response?.data?.message || error.message), 'error')
+    } finally {
+      scriptSaving.value = false
+    }
+  }
+  input.click()
+}
+
+// 从已保存脚本列表中载入
+const importScriptFromList = async () => {
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
+    if (response.data.code !== 200) {
+      showNotification('获取脚本列表失败: ' + (response.data.message || '未知错误'), 'error')
+      return
+    }
+    const scripts = response.data.data || []
+    // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
+    const items = scripts
+      .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
+      .map((s: any) => ({
+        value: s.name,
+        label: s.name,
+        desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+      }))
+
+    showList(items, async (name?: string) => {
+      if (!name) return
+      try {
+        scriptSaving.value = true
+        const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name })
+        if (loaded.data.code !== 200) {
+          showNotification('读取脚本失败: ' + (loaded.data.message || '未知错误'), 'error')
+          return
+        }
+        applyImportedSteps(
+          loaded.data.data.steps,
+          loaded.data.data.repeat,
+          loaded.data.data.name
+        )
+      } catch (error: any) {
+        showNotification('读取脚本失败: ' + error.message, 'error')
+      } finally {
+        scriptSaving.value = false
+      }
+    }, '选择已保存的脚本', '还没有保存过脚本', '载入')
+  } catch (error: any) {
+    showNotification('获取脚本列表失败: ' + error.message, 'error')
+  }
+}
+
+// 导入按钮：弹出选择（导出 zip 包 / 已保存列表）
+const openImportMenu = () => {
+  showList(
+    [
+      { value: 'zip', label: '从导出包（zip）导入', desc: '脚本 + 引用的 APK/模板图一次导入' },
+      { value: 'saved', label: '从已保存脚本载入', desc: '载入 data/scripts 下已有的脚本' },
+    ],
+    (choice?: string) => {
+      if (choice === 'zip') {
+        importScriptFromZip()
+      } else if (choice === 'saved') {
+        importScriptFromList()
+      }
+    },
+    '导入脚本',
+    '',
+    '确定'
+  )
+}
+
+// 执行当前步骤：直接把步骤发给后端执行，不落盘（不再产生 current_xxx.json 临时文件）
+const runCurrentSteps = async () => {
+  if (!selectedDevice.value) {
+    showMessage('请先选择设备', '提示')
+    return
+  }
+  if (scriptSteps.value.length === 0) {
+    showMessage('没有步骤可执行，请先录制', '提示')
+    return
+  }
+  if (scriptRunning.value) {
+    showNotification('已有脚本在执行中', 'error')
+    return
+  }
+  scriptRunning.value = true
+  try {
+    // 后端同步执行：接口返回时脚本已跑完，失败原因直接在 message 里
+    const response = await axios.post(`${API_BASE.value}/api/device/script/run-steps`, {
+      deviceId: selectedDevice.value,
+      steps: scriptSteps.value,
+      repeat: scriptRepeat.value,
+      videoWidth: scriptMeta.width,
+      videoHeight: scriptMeta.height,
+    }, { timeout: 600000 })
+    if (response.data.code !== 200) {
+      showNotification(response.data.message || '执行失败', 'error')
+      return
+    }
+    const d = response.data.data || {}
+    showNotification(`执行完成：${d.stepCount ?? scriptSteps.value.length} 步 × ${d.repeat ?? scriptRepeat.value} 轮`, 'success')
+  } catch (error: any) {
+    showNotification('执行失败: ' + (error?.response?.data?.message || error.message), 'error')
+  } finally {
+    scriptRunning.value = false
+  }
+}
+
+// 停止当前设备上正在执行的脚本
+const stopScriptRun = async () => {
+  if (!selectedDevice.value) return
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/stop-run`, {
+      deviceId: selectedDevice.value,
+    })
+    if (response.data.code === 200) {
+      showNotification(response.data.message || '已发送停止请求', 'info')
+    } else {
+      showNotification('停止失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    showNotification('停止失败: ' + error.message, 'error')
+  }
+}
+
+// 重复按钮：输入轮数后执行当前步骤
+const repeatRun = () => {
+  showPrompt('请输入重复执行的轮数', (input?: string) => {
+    const n = parseInt(input || '', 10)
+    if (!n || n < 1) {
+      showNotification('请输入大于 0 的整数', 'error')
+      return
+    }
+    scriptRepeat.value = n
+    runCurrentSteps()
+  }, '', '重复执行')
+}
+
+
+onMounted(() => { window.addEventListener('keydown', scriptOnKeyDown) })
+onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch() })
+
 </script>
 
 <template>

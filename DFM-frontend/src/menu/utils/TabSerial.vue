@@ -1,9 +1,546 @@
 <script lang="ts" setup>
-import { inject } from 'vue'
+import { inject, ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import axios from 'axios'
+import * as echarts from 'echarts/core'
+import { LineChart, BarChart, GaugeChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { useAppConfig } from '../../composables/useAppConfig'
+import { useProbeSettings } from '../../composables/useProbeSettings'
+import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 
-// 共享上下文由 App_Utils.vue 提供（含状态 ref 与操作函数）
+echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
+
 const ctx = inject<any>('app-utils')!
-const { activeTab, appendKey, applyKeys, buildKeyFrame, clearKeySequence, controlPty, deployPtyTools, deploySerialTool, keyFunctionText, keyInjectBusy, keyInjectOutput, keyList, keySequence, loadPtyStatus, loadSerialPorts, loading, ptyAppHolds, ptyBusy, ptyDevice, ptyLeftover, ptyLog, ptyNodeType, ptyPid, ptyRunning, removeKeyAt, selectedDevice, sendSerialData, sendSerialSessionData, serialBaud, serialDevice, serialEnd, serialLoop, serialMessage, serialMessageType, serialMode, serialOutput, serialPayload, serialPorts, serialPortsLoading, serialReadBaud, serialReadDataBits, serialReadParity, serialReadStopBits, serialReadView, serialReading, serialScheme, serialSendInterval, serialSendMode, serialSendPayload, serialSendTimes, serialSending, serialSessionOpened, serialStream, serialStreamBusy, serialStreamLog, serialStreamPid, serialStreamRunning, serialToolDeployed, stopSerialSessionSend, toggleSerialRead } = ctx
+const { API_BASE, activeTab, loading, selectedDevice } = ctx
+interface SerialPort {
+  device: string
+  majorMinor: string
+}
+
+const serialPorts = ref<SerialPort[]>([])
+const serialPortsLoading = ref(false)
+const serialToolDeployed = ref(true)
+const serialDevice = ref('/dev/ttyS3')
+const serialMode = ref<'text' | 'hex'>('text')
+const serialPayload = ref('HELLO-1234')
+const serialEnd = ref('none')
+const serialBaud = ref('')
+const serialLoop = ref(true)
+const serialSending = ref(false)
+const serialOutput = ref('')
+const serialMessage = ref('')
+const serialMessageType = ref<'ok' | 'err' | ''>('')
+const serialStreamRunning = ref(false)
+const serialStreamPid = ref('')
+const serialStreamLog = ref('')
+const serialStreamBusy = ref(false)
+
+// 串口会话（探针 0x04 打开 / 0x03 取增量 / 0x05 发送 / 0x07 关闭）
+const serialReadBaud = ref('9600')
+const serialReadParity = ref('none')
+const serialReadDataBits = ref('8')
+const serialReadStopBits = ref('1')
+const serialReadView = ref<'hex' | 'text'>('hex')
+const serialSendMode = ref<'text' | 'hex'>('text')
+const serialSendPayload = ref('HELLO')
+const serialSendTimes = ref('1')
+const serialSendInterval = ref('500')
+const serialSessionOpened = ref(false)
+const serialReading = ref(false)
+let serialReadLoopId = 0
+
+// 切换设备后重新拉取串口列表
+watch(selectedDevice, async (deviceId) => {
+  serialPorts.value = []
+  serialStreamRunning.value = false
+  serialStreamPid.value = ''
+  serialStreamLog.value = ''
+  if (!deviceId) return
+  await nextTick()
+  await loadSerialPorts()
+})
+
+// 首次进入串口页时加载端口列表
+watch(activeTab, async (tab) => {
+  if (tab === 'serial' && selectedDevice.value && serialPorts.value.length === 0) {
+    await nextTick()
+    await loadSerialPorts()
+  }
+})
+
+const loadSerialPorts = async () => {
+  if (!selectedDevice.value) return
+  serialPortsLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/ports`, {
+      deviceId: selectedDevice.value
+    })
+    if (res.data.code === 200) {
+      serialPorts.value = res.data.data.ports || []
+      serialToolDeployed.value = !!res.data.data.toolDeployed
+      // 默认选中第一个串口
+      if (serialPorts.value.length && !serialPorts.value.some(p => p.device === serialDevice.value)) {
+        serialDevice.value = serialPorts.value[0].device
+      }
+    } else {
+      serialMessage.value = res.data.message || '获取串口列表失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '获取串口列表失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialPortsLoading.value = false
+  }
+}
+
+const deploySerialTool = async () => {
+  if (!selectedDevice.value) return
+  serialSending.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/deploy`, {
+      deviceId: selectedDevice.value
+    })
+    if (res.data.code === 200) {
+      serialMessage.value = '串口工具已部署到设备'
+      serialMessageType.value = 'ok'
+      serialToolDeployed.value = true
+    } else {
+      serialMessage.value = res.data.message || '部署失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '部署失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialSending.value = false
+  }
+}
+
+const sendSerialData = async () => {
+  if (!selectedDevice.value) return
+  serialSending.value = true
+  serialMessage.value = ''
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/send`, {
+      deviceId: selectedDevice.value,
+      device: serialDevice.value,
+      mode: serialMode.value,
+      payload: serialPayload.value,
+      end: serialEnd.value,
+      baud: serialBaud.value ? Number(serialBaud.value) : null,
+      loop: serialLoop.value
+    })
+    const data = res.data.data || {}
+    serialOutput.value = data.output || ''
+    if (res.data.code === 200) {
+      serialMessage.value = `发送成功（${data.sentBytes || 0} 字节）`
+      serialMessageType.value = 'ok'
+    } else {
+      serialMessage.value = res.data.message || '发送失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '发送失败'
+    serialMessageType.value = 'err'
+    serialOutput.value = ''
+  } finally {
+    serialSending.value = false
+  }
+}
+
+const serialStream = async (action: 'start' | 'stop' | 'status') => {
+  if (!selectedDevice.value) return
+  serialStreamBusy.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/stream`, {
+      deviceId: selectedDevice.value,
+      device: serialDevice.value,
+      baud: serialBaud.value ? Number(serialBaud.value) : 115200,
+      loop: serialLoop.value,
+      action
+    })
+    const data = res.data.data || {}
+    serialStreamRunning.value = !!data.running
+    serialStreamPid.value = data.pid || ''
+    serialStreamLog.value = data.log || ''
+    if (action !== 'status') {
+      serialMessage.value = res.data.message || ''
+      serialMessageType.value = res.data.code === 200 ? 'ok' : 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '操作失败'
+    serialMessageType.value = 'err'
+  } finally {
+    serialStreamBusy.value = false
+  }
+}
+
+// 组 0x04 打开串口会话参数；串口未选时写入提示并返回 null
+const buildSerialOpenPayload = (): Record<string, unknown> | null => {
+  if (!serialDevice.value) {
+    serialMessage.value = '请先选择串口设备'
+    serialMessageType.value = 'err'
+    return null
+  }
+  return {
+    serial: serialDevice.value,
+    baud: Number(serialReadBaud.value),
+    parity: serialReadParity.value,
+    dataBits: Number(serialReadDataBits.value),
+    stopBits: Number(serialReadStopBits.value)
+  }
+}
+
+// 向探针发一条串口命令并解出业务 data；失败写入状态提示并返回 null
+const postSerialCommand = async (cmd: number, data: Record<string, unknown>, label: string): Promise<Record<string, any> | null> => {
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+      deviceId: selectedDevice.value,
+      cmd,
+      data
+    }, { timeout: 200000 })
+    const d = res.data
+    if (d?.code !== 200 || d?.data?.connected !== true) {
+      serialMessage.value = `${label}失败：${d?.message || '通讯失败'}`
+      serialMessageType.value = 'err'
+      return null
+    }
+    const r = d.data.response || {}
+    if (r.code !== 200) {
+      serialMessage.value = `${label}失败：${r.message || '设备返回错误'}`
+      serialMessageType.value = 'err'
+      return null
+    }
+    return r.data || {}
+  } catch (e: any) {
+    serialMessage.value = `${label}失败：${e?.response?.data?.message || e?.message || '请求异常'}`
+    serialMessageType.value = 'err'
+    return null
+  }
+}
+
+// 执行日志追加一行，最多保留最近 100 行
+const appendSerialReadLine = (line: string) => {
+  const lines = serialOutput.value ? serialOutput.value.split('\n') : []
+  lines.push(line)
+  if (lines.length > 100) lines.splice(0, lines.length - 100)
+  serialOutput.value = lines.join('\n')
+}
+
+// 记录一轮失败（日志行 + 状态提示）
+const failSerialReadLine = (count: number, msg: string) => {
+  appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} 错误：${msg}`)
+  serialMessage.value = `持续读取中（第 ${count} 次失败：${msg}）`
+  serialMessageType.value = 'err'
+}
+
+// 单轮读取：从会话缓冲取增量字节并按 Hex/Txt 原样追加；true 成功 / false 失败 / null 会话已关闭需停止
+const readSerialData = async (count: number, token: number): Promise<boolean | null> => {
+  if (!serialSessionOpened.value) return null
+  const rd = await postSerialCommand(0x03, {}, '串口读取')
+  if (serialReadLoopId !== token) return false
+  if (!rd) {
+    failSerialReadLine(count, serialMessage.value)
+    return false
+  }
+  const bytes = Number(rd.bytes ?? 0)
+  if (bytes > 0) {
+    const shown = serialReadView.value === 'text' ? (rd.text ?? '') : (rd.hex ?? '')
+    appendSerialReadLine(`#${count} ${new Date().toLocaleTimeString()} [Read][${serialReadView.value === 'text' ? 'Txt' : 'Hex'}] ${shown}`)
+  }
+  return true
+}
+
+const stopSerialRead = async () => {
+  serialReading.value = false
+  serialReadLoopId += 1
+  if (serialSessionOpened.value) {
+    serialSessionOpened.value = false
+    const closed = await postSerialCommand(0x07, {}, '关闭串口会话')
+    if (closed) {
+      appendSerialReadLine(`${new Date().toLocaleTimeString()} 串口已关闭`)
+    }
+  }
+}
+
+// 开启后连续读取：成功立即下一轮，失败等 1 秒；关闭 / 切设备 / 切方案后停发新请求
+const runSerialReadLoop = async (token: number) => {
+  const deviceAtStart = selectedDevice.value
+  let count = 0
+  while (
+    serialReading.value &&
+    serialReadLoopId === token &&
+    serialScheme.value === 'read' &&
+    selectedDevice.value === deviceAtStart
+  ) {
+    count += 1
+    const ok = await readSerialData(count, token)
+    if (ok === null) {
+      serialReading.value = false
+      return
+    }
+    if (!serialReading.value || serialReadLoopId !== token) break
+    if (!ok) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+  }
+  if (serialReadLoopId === token) {
+    serialReading.value = false
+    serialMessage.value = `已停止持续读取（共 ${count} 次）`
+    serialMessageType.value = 'ok'
+  }
+}
+
+// 按钮：打开串口并开启持续读 / 关闭读取并关闭串口会话
+const toggleSerialRead = async () => {
+  if (serialReading.value) {
+    stopSerialRead()
+    return
+  }
+  if (!selectedDevice.value) return
+  const openData = buildSerialOpenPayload()
+  if (!openData) return
+  serialOutput.value = ''
+  const opened = await postSerialCommand(0x04, openData, '打开串口会话')
+  if (!opened) return
+  serialSessionOpened.value = true
+  appendSerialReadLine(`${new Date().toLocaleTimeString()} 串口已打开：${opened.serial || serialDevice.value} ${opened.baud || ''} ${opened.parity || ''}/${opened.dataBits || ''}/${opened.stopBits || ''}`)
+  serialReadLoopId += 1
+  const token = serialReadLoopId
+  serialReading.value = true
+  serialMessage.value = '持续读取中...'
+  serialMessageType.value = 'ok'
+  runSerialReadLoop(token)
+}
+
+// 单次 / 循环发送：mode=text|hex，times=0 表示持续到手动停止
+const sendSerialSessionData = async () => {
+  if (!selectedDevice.value) {
+    serialMessage.value = '请先在左侧选择设备'
+    serialMessageType.value = 'err'
+    return
+  }
+  if (!serialSessionOpened.value) {
+    serialMessage.value = '请先打开串口会话'
+    serialMessageType.value = 'err'
+    return
+  }
+  const payload = serialSendPayload.value
+  if (!payload.trim()) {
+    serialMessage.value = '发送内容不能为空'
+    serialMessageType.value = 'err'
+    return
+  }
+  const times = Number(serialSendTimes.value)
+  const interval = Number(serialSendInterval.value)
+  if (!Number.isInteger(times) || times < 0 || times > 10000) {
+    serialMessage.value = '发送次数必须是 0~10000 的整数（0=持续到手动停止）'
+    serialMessageType.value = 'err'
+    return
+  }
+  if (!Number.isInteger(interval) || interval < 0 || interval > 60000) {
+    serialMessage.value = '循环间隔必须是 0~60000 的整数（毫秒）'
+    serialMessageType.value = 'err'
+    return
+  }
+  const r = await postSerialCommand(0x05, {
+    mode: serialSendMode.value,
+    payload,
+    times,
+    interval
+  }, '串口发送')
+  if (!r) return
+  appendSerialReadLine(`${new Date().toLocaleTimeString()} [Send][${serialSendMode.value === 'text' ? 'Txt' : 'Hex'}] ${payload}`)
+  serialMessage.value = r.loop ? `循环发送中（${times || '持续'} 次 / ${interval}ms）` : '发送成功'
+  serialMessageType.value = 'ok'
+}
+
+const stopSerialSessionSend = async () => {
+  const r = await postSerialCommand(0x05, { stop: true }, '停止循环发送')
+  if (!r) return
+  appendSerialReadLine(`${new Date().toLocaleTimeString()} [Send] 循环发送已停止`)
+  serialMessage.value = '循环发送已停止'
+  serialMessageType.value = 'ok'
+}
+
+// ---------- 模拟串口：方案 B（pty 替换 + 按键注入） ----------
+
+const serialScheme = ref<'loop' | 'pty' | 'read'>('loop')
+
+// pty 状态
+const ptyRunning = ref(false)
+const ptyPid = ref('')
+const ptyNodeType = ref('')
+const ptyAppHolds = ref(false)
+const ptyLeftover = ref('')
+const ptyLog = ref('')
+const ptyBusy = ref(false)
+
+// 按键
+const keyList = ref<Array<{ name: string; value: number; label?: string; desc?: string }>>([])
+const keyInjectBusy = ref(false)
+const keyInjectOutput = ref('')
+
+// 按键名 -> 协议帧（55 | 03 | 05 | KEY | CRC，CRC=(0x05+KEY)&0xFF）
+const buildKeyFrame = (keyValue: number) => {
+  const bytes = [0x55, 0x03, 0x05, keyValue & 0xFF, (0x05 + keyValue) & 0xFF]
+  return bytes.map(b => b.toString(16).padStart(2, '0').toUpperCase()).join('')
+}
+
+// pty 设备节点（与方案 A 独立，避免混淆）
+const ptyDevice = ref('/dev/ttyS7')
+
+const loadKeyList = async () => {
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/keys/list`, {
+      deviceId: selectedDevice.value || ''
+    })
+    if (res.data.code === 200) {
+      keyList.value = res.data.data.keys || []
+    }
+  } catch (e) {
+    console.error('获取按键列表失败:', e)
+  }
+}
+
+const loadPtyStatus = async () => {
+  if (!selectedDevice.value) return
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/pty/status`, {
+      deviceId: selectedDevice.value,
+      device: ptyDevice.value
+    })
+    if (res.data.code === 200) {
+      const d = res.data.data
+      ptyRunning.value = !!d.running
+      ptyPid.value = d.pid || ''
+      ptyNodeType.value = d.nodeType || ''
+      ptyAppHolds.value = !!d.appHolds
+      ptyLeftover.value = d.leftoverMount || ''
+      ptyLog.value = d.log || ''
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '查询 pty 状态失败'
+    serialMessageType.value = 'err'
+  }
+}
+
+const deployPtyTools = async () => {
+  if (!selectedDevice.value) return
+  ptyBusy.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/pty/deploy`, {
+      deviceId: selectedDevice.value
+    })
+    serialMessage.value = res.data.code === 200 ? 'pty 工具已部署到设备' : (res.data.message || '部署失败')
+    serialMessageType.value = res.data.code === 200 ? 'ok' : 'err'
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '部署失败'
+    serialMessageType.value = 'err'
+  } finally {
+    ptyBusy.value = false
+  }
+}
+
+const controlPty = async (action: 'start' | 'stop') => {
+  if (!selectedDevice.value) return
+  ptyBusy.value = true
+  serialMessage.value = ''
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/pty/control`, {
+      deviceId: selectedDevice.value,
+      device: ptyDevice.value,
+      action,
+      restartApp: true
+    })
+    const d = res.data.data || {}
+    ptyRunning.value = !!d.running
+    ptyPid.value = d.pid || ''
+    ptyNodeType.value = d.nodeType || ''
+    ptyAppHolds.value = !!d.appHolds
+    ptyLeftover.value = d.leftoverMount || ''
+    ptyLog.value = d.log || ''
+    serialMessage.value = res.data.message || ''
+    serialMessageType.value = res.data.code === 200 ? 'ok' : 'err'
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '操作失败'
+    serialMessageType.value = 'err'
+  } finally {
+    ptyBusy.value = false
+  }
+}
+
+// 按键序列：每次点击追加一个，同一个键可以重复按多次
+const keySequence = ref<string[]>([])
+
+const appendKey = (keyName: string) => {
+  keySequence.value.push(keyName)
+}
+
+const removeKeyAt = (index: number) => {
+  keySequence.value.splice(index, 1)
+}
+
+const clearKeySequence = () => {
+  keySequence.value = []
+}
+
+// 序列对应的显示文字（数字键直接显示数字，符号键显示功能名）
+const keyFunctionText = (keyName: string) => {
+  const found = keyList.value.find(k => k.name === keyName)
+  return found?.label || keyName
+}
+
+const applyKeys = async () => {
+  if (!selectedDevice.value) return
+  if (keySequence.value.length === 0) {
+    serialMessage.value = '请先点击按键添加序列'
+    serialMessageType.value = 'err'
+    return
+  }
+  keyInjectBusy.value = true
+  serialMessage.value = ''
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/serial/keys`, {
+      deviceId: selectedDevice.value,
+      device: ptyDevice.value,
+      keys: keySequence.value.join(','),
+      interval: 1500
+    })
+    const d = res.data.data || {}
+    keyInjectOutput.value = (d.frames || []).join(', ')
+    if (res.data.code === 200) {
+      serialMessage.value = res.data.message || '按键已注入'
+      serialMessageType.value = 'ok'
+      ptyRunning.value = !!d.running
+      ptyPid.value = d.pid || ''
+      ptyNodeType.value = d.nodeType || ''
+      ptyAppHolds.value = !!d.appHolds
+    } else {
+      serialMessage.value = res.data.message || '按键注入失败'
+      serialMessageType.value = 'err'
+    }
+  } catch (e: any) {
+    serialMessage.value = e?.response?.data?.message || '按键注入失败'
+    serialMessageType.value = 'err'
+  } finally {
+    keyInjectBusy.value = false
+  }
+}
+
+// 切换方案 / 首次进入时加载按键表
+watch(serialScheme, async (scheme) => {
+  if (scheme !== 'pty') return
+  if (keyList.value.length === 0) await loadKeyList()
+  if (selectedDevice.value) await loadPtyStatus()
+})
+
+// ===== 探针状态指示（每台设备一个圆点，放在断开按钮左边） =====
+
+onUnmounted(() => { stopSerialRead() })
+
 </script>
 
 <template>
