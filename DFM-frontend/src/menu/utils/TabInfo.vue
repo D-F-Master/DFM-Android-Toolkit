@@ -275,6 +275,98 @@ const copyDeviceInfo = async () => {
 };
 
 // 断开全部网络设备连接（仅断开 IP:端口 形式的网络设备，USB 设备不受影响）
+
+// ===== 设置全局 HTTP 代理（抓包用，即时生效）=====
+const proxyDialogVisible = ref(false)
+const proxyHost = ref('')
+const proxyPort = ref('')
+const proxyBusy = ref(false)
+const PROXY_HOST_KEY = 'dfm_device_proxy_host'
+const PROXY_PORT_KEY = 'dfm_device_proxy_port'
+
+const openProxyDialog = () => {
+  if (!selectedDevice.value) {
+    showMessage('请先选择设备')
+    return
+  }
+  try {
+    proxyHost.value = localStorage.getItem(PROXY_HOST_KEY) || '192.168.0.48'
+    proxyPort.value = localStorage.getItem(PROXY_PORT_KEY) || ''
+  } catch (e) {
+    proxyHost.value = '192.168.0.48'
+    proxyPort.value = ''
+  }
+  proxyDialogVisible.value = true
+}
+
+const closeProxyDialog = () => {
+  proxyDialogVisible.value = false
+}
+
+const rememberProxy = () => {
+  try {
+    localStorage.setItem(PROXY_HOST_KEY, proxyHost.value.trim())
+    localStorage.setItem(PROXY_PORT_KEY, proxyPort.value.trim())
+  } catch (e) {
+    // localStorage 不可用时忽略，不影响设置代理本身
+  }
+}
+
+const applyProxy = async () => {
+  if (!selectedDevice.value || proxyBusy.value) return
+  const host = proxyHost.value.trim()
+  const port = Number(proxyPort.value)
+  if (!host) {
+    showNotification('请输入代理地址', 'error')
+    return
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    showNotification('代理端口必须是 1-65535 之间的整数', 'error')
+    return
+  }
+  proxyBusy.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/proxy/set`, {
+      deviceId: selectedDevice.value,
+      host,
+      port
+    })
+    if (response.data.code === 200) {
+      rememberProxy()
+      const applied = response.data.data?.proxy || `${host}:${port}`
+      showNotification(`代理已设置：${applied}`, 'success')
+      proxyDialogVisible.value = false
+    } else {
+      showNotification('设置代理失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    console.error('设置代理失败:', error)
+    showNotification('设置代理失败: ' + error.message, 'error')
+  } finally {
+    proxyBusy.value = false
+  }
+}
+
+const clearProxy = async () => {
+  if (!selectedDevice.value || proxyBusy.value) return
+  proxyBusy.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/proxy/clear`, {
+      deviceId: selectedDevice.value
+    })
+    if (response.data.code === 200) {
+      showNotification('代理已清除（全局 http_proxy 已复位）', 'success')
+      proxyDialogVisible.value = false
+    } else {
+      showNotification('清除代理失败: ' + (response.data.message || '未知错误'), 'error')
+    }
+  } catch (error: any) {
+    console.error('清除代理失败:', error)
+    showNotification('清除代理失败: ' + error.message, 'error')
+  } finally {
+    proxyBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -424,6 +516,14 @@ const copyDeviceInfo = async () => {
                         </svg>
                         <span>{{ importingCert ? '导入中…' : '导入证书' }}</span>
                       </button>
+                      <button class="feature-btn" @click="openProxyDialog">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                          <path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/>
+                          <line x1="2" y1="12" x2="22" y2="12"/>
+                          <path d="M12 2a15 15 0 010 20M12 2a15 15 0 000 20"/>
+                        </svg>
+                        <span>设置代理</span>
+                      </button>
                       <button class="feature-btn danger" @click="rebootToLoader">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
                           <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
@@ -434,4 +534,162 @@ const copyDeviceInfo = async () => {
                   </div>
                 </div>
               </div>
+
+              <!-- 设置全局 HTTP 代理弹窗 -->
+              <div v-if="proxyDialogVisible" class="proxy-overlay" @click.self="closeProxyDialog">
+                <div class="proxy-modal">
+                  <div class="proxy-modal-header">
+                    <h3>设置代理</h3>
+                    <button class="proxy-close" @click="closeProxyDialog">&times;</button>
+                  </div>
+                  <div class="proxy-modal-body">
+                    <p class="proxy-hint">设置全局 HTTP 代理，即时生效，用于抓包。清除后恢复直连。</p>
+                    <label class="proxy-field">
+                      <span>代理地址</span>
+                      <input v-model="proxyHost" type="text" class="proxy-input" placeholder="例如 192.168.0.48">
+                    </label>
+                    <label class="proxy-field">
+                      <span>端口</span>
+                      <input v-model="proxyPort" type="number" class="proxy-input" placeholder="例如 8888" min="1" max="65535">
+                    </label>
+                  </div>
+                  <div class="proxy-modal-footer">
+                    <button class="proxy-btn proxy-btn-clear" :disabled="proxyBusy" @click="clearProxy">清除代理</button>
+                    <button class="proxy-btn proxy-btn-cancel" :disabled="proxyBusy" @click="closeProxyDialog">取消</button>
+                    <button class="proxy-btn proxy-btn-apply" :disabled="proxyBusy" @click="applyProxy">
+                      {{ proxyBusy ? '处理中…' : '设置代理' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
 </template>
+
+<style scoped>
+.proxy-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+.proxy-modal {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  width: 400px;
+  max-width: 90%;
+  animation: proxyFadeIn 0.3s ease;
+}
+@keyframes proxyFadeIn {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.proxy-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e8e8e8;
+}
+.proxy-modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+.proxy-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #999;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+}
+.proxy-modal-body {
+  padding: 20px;
+}
+.proxy-hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+}
+.proxy-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.proxy-field span {
+  font-size: 13px;
+  color: #555;
+}
+.proxy-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+.proxy-input:focus {
+  outline: none;
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+.proxy-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid #e8e8e8;
+  background-color: #fafafa;
+  border-radius: 0 0 8px 8px;
+}
+.proxy-btn {
+  padding: 6px 16px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.proxy-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.proxy-btn-clear {
+  margin-right: auto;
+  background-color: white;
+  color: #e53935;
+  border-color: #e53935;
+}
+.proxy-btn-cancel {
+  background-color: white;
+  color: #333;
+}
+.proxy-btn-apply {
+  background-color: #1890ff;
+  border-color: #1890ff;
+  color: white;
+}
+.proxy-btn-apply:hover:not(:disabled) {
+  background-color: #40a9ff;
+}
+@media (prefers-color-scheme: dark) {
+  .proxy-modal { background-color: #2d2f36; }
+  .proxy-modal-header { border-bottom-color: #40434a; }
+  .proxy-modal-header h3 { color: #e0e0e0; }
+  .proxy-hint, .proxy-field span { color: #aaa; }
+  .proxy-input { background-color: #3a3d45; border-color: #555; color: #e0e0e0; }
+  .proxy-modal-footer { background-color: #33363e; border-top-color: #40434a; }
+  .proxy-btn-cancel, .proxy-btn-clear { background-color: #3a3d45; color: #ccc; }
+}
+</style>
