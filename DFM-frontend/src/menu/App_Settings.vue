@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useProbeSettings } from '../composables/useProbeSettings';
 import { useFeatureOverrides } from '../composables/useFeatureOverrides';
 import { useAppConfig } from '../composables/useAppConfig';
@@ -36,7 +36,7 @@ const menuFeatures = [
   { path: 'mcpService', label: 'MCP管理工具' },
 ];
 
-const tabFeatures = [
+const utilsTabFeatures = [
   { path: 'utilsTabs.info', label: '设备信息' },
   { path: 'utilsTabs.apps', label: '应用管理' },
   { path: 'utilsTabs.files', label: '文件管理' },
@@ -48,9 +48,61 @@ const tabFeatures = [
   { path: 'utilsTabs.probe', label: '探针工具' },
 ];
 
+const portToolTabFeatures = [
+  { path: 'portToolTabs.check', label: '端口占用检查' },
+  { path: 'portToolTabs.scan', label: '端口扫描' },
+  { path: 'portToolTabs.ip', label: 'IP工具' },
+  { path: 'portToolTabs.portproxy', label: '端口转发' },
+];
+
+const jarDiffTabFeatures = [
+  { path: 'jarDiffTabs.diff', label: 'jar包对比' },
+  { path: 'jarDiffTabs.codeEdit', label: 'jar代码修改' },
+];
+
 const toggleFeature = (path: string) => {
   setOverride(path, !isFeatureOn(path));
 };
+
+// ===== 左侧点击 → 右侧滚动到对应 section =====
+const scrollPane = ref<HTMLElement | null>(null);
+const sectionRefs = ref<Record<string, HTMLElement | null>>({});
+
+const setSectionRef = (key: string) => (el: any) => {
+  sectionRefs.value[key] = el;
+};
+
+const scrollToCategory = (key: string) => {
+  activeCategory.value = key;
+  const pane = scrollPane.value;
+  const el = sectionRefs.value[key];
+  if (!pane || !el) return;
+  pane.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' });
+};
+
+// ===== 右侧滚动 → 左侧高亮当前 section =====
+const onPaneScroll = () => {
+  const pane = scrollPane.value;
+  if (!pane) return;
+  const pos = pane.scrollTop + 40;
+  let current = categories[0].key;
+  for (const c of categories) {
+    const el = sectionRefs.value[c.key];
+    if (el && el.offsetTop - 16 <= pos) current = c.key;
+  }
+  if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 4) {
+    current = categories[categories.length - 1].key;
+  }
+  activeCategory.value = current;
+};
+
+onMounted(() => {
+  scrollPane.value?.addEventListener('scroll', onPaneScroll, { passive: true });
+});
+
+onBeforeUnmount(() => {
+  scrollPane.value?.removeEventListener('scroll', onPaneScroll);
+});
 </script>
 
 <template>
@@ -67,16 +119,16 @@ const toggleFeature = (path: string) => {
               :key="c.key"
               class="nav-item"
               :class="{ active: activeCategory === c.key }"
-              @click="activeCategory = c.key"
+              @click="scrollToCategory(c.key)"
             >
               {{ c.label }}
             </button>
           </nav>
         </aside>
 
-        <!-- 右侧详细设置 -->
-        <section class="settings-content">
-          <template v-if="activeCategory === 'general'">
+        <!-- 右侧滚动区 -->
+        <section ref="scrollPane" class="settings-content">
+          <div :ref="setSectionRef('general')" class="settings-section">
             <h3 class="section-title">通用</h3>
             <div class="section-card">
               <div class="setting-row">
@@ -95,9 +147,9 @@ const toggleFeature = (path: string) => {
                 </button>
               </div>
             </div>
-          </template>
+          </div>
 
-          <template v-else>
+          <div :ref="setSectionRef('build')" class="settings-section">
             <h3 class="section-title">构建</h3>
             <div class="section-card">
               <div v-for="f in menuFeatures" :key="f.path" class="setting-row">
@@ -117,9 +169,9 @@ const toggleFeature = (path: string) => {
               </div>
             </div>
 
-            <h3 class="section-title group-title">工具 Tab 页</h3>
+            <h3 class="section-title group-title">ADB工具 Tab 页</h3>
             <div class="section-card">
-              <div v-for="f in tabFeatures" :key="f.path" class="setting-row">
+              <div v-for="f in utilsTabFeatures" :key="f.path" class="setting-row">
                 <div class="setting-text">
                   <div class="setting-label">{{ f.label }}</div>
                   <div class="setting-desc">ADB工具页 · {{ f.path }}</div>
@@ -135,7 +187,45 @@ const toggleFeature = (path: string) => {
                 </button>
               </div>
             </div>
-          </template>
+
+            <h3 class="section-title group-title">端口工具 Tab 页</h3>
+            <div class="section-card">
+              <div v-for="f in portToolTabFeatures" :key="f.path" class="setting-row">
+                <div class="setting-text">
+                  <div class="setting-label">{{ f.label }}</div>
+                  <div class="setting-desc">端口工具页 · {{ f.path }}</div>
+                </div>
+                <button
+                  class="toggle"
+                  :class="{ on: isFeatureOn(f.path) }"
+                  role="switch"
+                  :aria-checked="isFeatureOn(f.path)"
+                  @click="toggleFeature(f.path)"
+                >
+                  <span class="toggle-thumb"></span>
+                </button>
+              </div>
+            </div>
+
+            <h3 class="section-title group-title">jar包工具 Tab 页</h3>
+            <div class="section-card">
+              <div v-for="f in jarDiffTabFeatures" :key="f.path" class="setting-row">
+                <div class="setting-text">
+                  <div class="setting-label">{{ f.label }}</div>
+                  <div class="setting-desc">jar包工具页 · {{ f.path }}</div>
+                </div>
+                <button
+                  class="toggle"
+                  :class="{ on: isFeatureOn(f.path) }"
+                  role="switch"
+                  :aria-checked="isFeatureOn(f.path)"
+                  @click="toggleFeature(f.path)"
+                >
+                  <span class="toggle-thumb"></span>
+                </button>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
     </main>
@@ -232,12 +322,17 @@ const toggleFeature = (path: string) => {
   font-weight: 600;
 }
 
-/* ===== 右侧详细设置 ===== */
+/* ===== 右侧滚动区 ===== */
 .settings-content {
+  position: relative; /* 让 section 的 offsetTop 相对本滚动区 */
   flex: 1;
   min-width: 0;
   padding: 56px 28px 32px;
   overflow-y: auto;
+}
+
+.settings-section + .settings-section {
+  margin-top: 24px;
 }
 
 .section-title {
