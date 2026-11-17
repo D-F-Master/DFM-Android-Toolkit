@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import axios from 'axios'
-import { onMounted, onUnmounted, onBeforeUnmount, ref, computed, nextTick, watch } from 'vue';
+import { onMounted, onUnmounted, onBeforeUnmount, ref, computed, nextTick, watch, provide } from 'vue';
 import ModalDialog from '../components/ModalDialog.vue';
 import FileEditorDialog from '../components/FileEditorDialog.vue';
 import FileImageViewer from '../components/FileImageViewer.vue';
@@ -10,6 +10,15 @@ import { LineChart, BarChart, GaugeChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useAppConfig } from '../composables/useAppConfig';
+import TabInfo from './utils/TabInfo.vue';
+import TabApps from './utils/TabApps.vue';
+import TabFiles from './utils/TabFiles.vue';
+import TabKeys from './utils/TabKeys.vue';
+import TabBatch from './utils/TabBatch.vue';
+import TabScript from './utils/TabScript.vue';
+import TabSerial from './utils/TabSerial.vue';
+import TabMonitor from './utils/TabMonitor.vue';
+import TabProbe from './utils/TabProbe.vue';
 import { useProbeSettings } from '../composables/useProbeSettings';
 
 // 按需注册 ECharts 模块，避免全量引入导致打包体积膨胀
@@ -5224,6 +5233,9 @@ const onProbePhoto = async () => {
       throw new Error(res.data?.message || '未检测到摄像头');
     }
     if (cameras.length === 1) {
+      // 单摄像头无需选择：先清 busy，否则 doProbeCapture 的 probeReady() 守卫会把本次调用直接吞掉，
+      // probeBusy 永远停在 'photo'、界面卡在「正在获取摄像头列表...」（多摄像头分支在 :5239 已清）
+      probeBusy.value = '';
       await doProbeCapture('photo', String(cameras[0].id));
       return;
     }
@@ -5241,22 +5253,23 @@ const onProbePhoto = async () => {
     probeBusy.value = '';
   }
 };
+provide('app-utils', { emit, API_BASE, TAB_ITEMS, visibleTabs, activeTab, loadConfig, fileSortKey, fileSortAsc, sortedFiles, toggleFileSort, selectedFiles, selectedFileCount, fileAllSelected, fileSomeSelected, toggleFileSelection, toggleSelectAllFiles, clearFileSelection, enterAction, devices, selectedDevice, deviceInfo, loading, apps, appLoading, files, fileLoading, currentPath, dbViewerFile, route, wirelessIp, wirelessStatus, batchDeviceInfos, batchSelectedDevices, batchLoading, batchModelFilter, batchFilteredDevices, batchSelectAllChecked, loadBatchDeviceInfos, toggleBatchDevice, toggleAllBatchDevices, selectedBatchCount, batchRemoteActive, batchRemoteConnecting, batchRemoteCards, batchRemoteSource, batchRemoteStatus, batchRemoteWsStatus, batchRemoteCanvasRefs, setBatchRemoteCanvasRef, setBatchRemoteSource, batchRemoteGridCols, batchRemoteSendMirror, BATCH_REMOTE_CLICK_THRESHOLD, batchRemoteOnPointer, batchRemoteHandleJson, batchRemoteCodecFromSps, batchRemoteIsKeyframe, batchRemoteDrawFrame, batchRemoteHandleBinary, concatU8, startBatchRemote, stopBatchRemote, scriptCanvasRef, scriptScreenBodyRef, scriptLayoutRef, scriptPreviewWidth, scriptSideTwoCol, scriptStreaming, scriptWsStatus, scriptRecording, scriptVerify, SCRIPT_VERIFY_THRESHOLD, SCRIPT_VERIFY_CROP, scriptVerifySeq, scriptSteps, scriptRunning, scriptOpConfig, scriptRepeat, scriptSaving, scriptMeta, syncScriptSideLayout, syncScriptPreviewWidth, setScriptMeta, scriptPointerActive, scriptRemotePressing, scriptPressStart, scriptMoved, SCRIPT_LONGPRESS_MS, scriptStepLabel, scriptKeyName, scriptKeyPresetOf, onScriptKeyPresetChange, SCRIPT_VARIABLE_HELP, scriptConditionDefaults, onScriptConditionKindChange, scriptGotoTargets, onScriptBranchActionChange, scriptApkOptions, scriptApkLoading, fetchScriptApks, scriptAppPackages, scriptAppNames, scriptAppLoading, fetchScriptApps, scriptTemplateOptions, scriptTemplateLoading, fetchScriptTemplates, scriptTemplatePreview, scriptTemplatePreviewSeq, loadScriptTemplatePreview, onScriptTemplatePreviewError, scriptAdbStepDefaults, scriptShowMarkers, scriptDragging, scriptEditingStep, scriptDrawMarkers, scriptDrawFrame, scriptCacheFrame, scriptRedrawMarkers, scriptMarkerHitRadius, scriptHitTest, scriptMoveMarker, scriptCropMode, scriptCropRegion, scriptCropTargetStep, toggleCropMode, startCropForCondition, finishCropRegion, captureVerifyFrame, flushScriptVerify, addRecordedStep, scriptHandleBinary, startScriptStream, shouldStreamBeActive, scriptReconnectAttempts, scriptManualStop, scheduleScriptReconnect, stopScriptStream, beginScriptStream, scriptLastDataAt, startStallWatch, stopStallWatch, canvasPoint, scriptSendTouch, scriptSendText, scriptKeyboardActive, scriptTypingIndex, scriptFlushTyping, scriptReleaseKeyboard, scriptOnKeyDown, scriptSendKey, scriptOnPointerDown, scriptOnPointerMove, scriptOnPointerUp, scriptOnPointerCancel, addScriptStep, addScriptAdbStep, addScriptGestureStep, addScriptWaitStep, scriptStepGroups, addScriptConditionStep, removeScriptStep, clearScriptSteps, setAllIntervals, toggleStepEdit, scriptStepDragFrom, scriptStepDragOver, onScriptStepDragStart, onScriptStepDragOver, onScriptStepDragLeave, onScriptStepDrop, onScriptStepDragEnd, toggleRecording, saveScript, applyImportedSteps, scriptExporting, exportScriptZip, importScriptFromZip, importScriptFromList, openImportMenu, runCurrentSteps, stopScriptRun, repeatRun, batchRebootLoading, batchInstallLoading, batchShellLoading, batchShellResults, showBatchShellResults, batchShellCommand, batchKeyLoading, batchKeyevent, batchReboot, batchInstallApp, modalVisible, modalType, modalTitle, modalMessage, modalPlaceholder, modalConfirmText, modalVariant, modalProgress, modalCallback, modalListItems, modalEmptyText, fetchDevices, fetchDeviceInfo, startScrcpy, fetchApps, fetchFiles, exportFile, isSqliteFile, openSqliteViewer, importFile, EDITABLE_EXTS, EDIT_MAX_BYTES, editorVisible, editorFileName, editorInitialContent, editorLoading, editorLoadError, editorSaving, isEditableTextFile, editDisabledReason, openFileEditor, readResp_dataCodeIs404, handleEditorSave, handleEditorClose, IMAGE_EXTS, VIDEO_EXTS, IMAGE_MAX_BYTES, previewKindOf, imageViewerVisible, imageViewerName, imageViewerSrc, imageViewerLoading, imageViewerError, imageViewerSize, imageViewerKind, imageViewerList, imageViewerIndex, imageViewerTotal, isViewableFile, isViewableImageFile, viewDisabledReason, openImageViewer, loadViewerFile, handleImageViewerNav, handleImageViewerClose, selectDevice, installApkFile, installApp, apkDragOver, onPageDragOver, onApkDragLeave, onApkDrop, uninstallApp, apkRepoVisible, apkRepoUploading, apkRepoOptions, apkRepoLoading, apkRepoInputEl, fetchApkRepo, openApkRepo, pickRepoApk, onRepoApkChosen, installFromRepo, removeRepoApk, formatRepoSize, startApp, stopApp, extractApk, navigateTo, goBack, createFolder, createFile, deleteFile, renameFile, batchDeleteSelected, batchMoveSelected, simulateKey, volumeUp, volumeDown, muteVolume, restartDevice, showDeviceLogs, openDeviceShell, capturingLogs, startLogCapture, stopLogCapture, cleaningMemory, cleanMemory, rebootToLoader, importingCert, importCaCert, connectWireless, goHome, showMessage, showConfirm, showPrompt, showList, showNotification, showProgressNotification, hideProgressNotification, handleModalConfirm, handleModalCancel, copyToClipboard, confirmDisconnect, copyDeviceInfo, disconnectAllLoading, confirmDisconnectAll, RATE_POLL_INTERVAL, SNAPSHOT_INTERVAL, RATE_HISTORY_MAX, monitorSnapshot, monitorRate, monitorLoading, monitorError, monitorActive, rateHistory, rateViewMode, topProcesses, topRequesting, fetchMonitorTop, rateRequesting, snapshotChartEl, rateChartEl, coreChartEl, isDarkMode, formatBytes, formatRate, formatFreq, formatPercent, usageColor, chartTextColor, chartAxisColor, chartSplitColor, buildGaugeOption, buildCoreOption, buildRateOption, renderSnapshotCharts, renderRateChart, resizeMonitorCharts, activeNic, fetchMonitorSnapshot, fetchMonitorRate, scheduleRatePoll, startMonitor, stopMonitor, refreshMonitor, disposeMonitorCharts, serialPorts, serialPortsLoading, serialToolDeployed, serialDevice, serialMode, serialPayload, serialEnd, serialBaud, serialLoop, serialSending, serialOutput, serialMessage, serialMessageType, serialStreamRunning, serialStreamPid, serialStreamLog, serialStreamBusy, serialReadBaud, serialReadParity, serialReadDataBits, serialReadStopBits, serialReadView, serialSendMode, serialSendPayload, serialSendTimes, serialSendInterval, serialSessionOpened, serialReading, serialReadLoopId, loadSerialPorts, deploySerialTool, sendSerialData, serialStream, buildSerialOpenPayload, postSerialCommand, appendSerialReadLine, failSerialReadLine, readSerialData, stopSerialRead, runSerialReadLoop, toggleSerialRead, sendSerialSessionData, stopSerialSessionSend, serialScheme, ptyRunning, ptyPid, ptyNodeType, ptyAppHolds, ptyLeftover, ptyLog, ptyBusy, keyList, keyInjectBusy, keyInjectOutput, buildKeyFrame, ptyDevice, loadKeyList, loadPtyStatus, deployPtyTools, controlPty, keySequence, appendKey, removeKeyAt, clearKeySequence, keyFunctionText, applyKeys, probeStates, probeLoadingMap, probeKnownDevices, probeStateOf, setProbeState, setProbeBusy, runProbe, retryProbe, autoInstallNewDevices, probeBusy, probeResult, probeShellRoot, probeDisabled, probeReady, probePost, playProbeTts, sendProbeHeartbeat, runProbeShell, probeFacing, doProbeCapture, onProbePhoto });
 </script>
 <style scoped>
-.sidebar {
+:deep(.sidebar) {
   display: flex;
   flex-direction: column;
   width: 250px;
   height: 100%;
 }
 
-.device-list-container {
+:deep(.device-list-container) {
   flex: 1;
   overflow-y: auto;
   margin-bottom: 8px;
 }
 
-.probe-dot {
+:deep(.probe-dot) {
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -5266,40 +5279,40 @@ const onProbePhoto = async () => {
   transition: background-color 0.2s;
 }
 
-.probe-dot.ok {
+:deep(.probe-dot.ok) {
   background-color: #4caf50;
 }
 
-.probe-dot.fail {
+:deep(.probe-dot.fail) {
   background-color: #f44336;
 }
 
-.probe-dot.busy {
+:deep(.probe-dot.busy) {
   background-color: #ff9800;
 }
 
-.probe-dot:hover {
+:deep(.probe-dot:hover) {
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
 }
 
-.file-list {
+:deep(.file-list) {
   border: 1px solid #ccc;
   max-height: calc(100vh - 180px);
   overflow-y: auto;
 }
 
-.wireless-connect {
+:deep(.wireless-connect) {
   margin-top: auto;
   border-top: 1px solid #e0e0e0;
 }
 
-.wireless-input-group {
+:deep(.wireless-input-group) {
   display: flex;
   gap: 8px;
   margin-top: 8px;
 }
 
-.wireless-input {
+:deep(.wireless-input) {
   width: 150px;
   height: 32px;
   padding: 0 8px;
@@ -5308,7 +5321,7 @@ const onProbePhoto = async () => {
   font-size: 14px;
 }
 
-.wireless-button {
+:deep(.wireless-button) {
   height: 32px;
   padding: 0 16px;
   background-color: #4caf50;
@@ -5319,18 +5332,18 @@ const onProbePhoto = async () => {
   font-size: 14px;
 }
 
-.wireless-button:hover {
+:deep(.wireless-button:hover) {
   background-color: #45a049;
 }
 
-.wireless-status {
+:deep(.wireless-status) {
   margin-top: 8px;
   font-size: 12px;
   color: #666;
   min-height: 16px;
 }
 
-.back-button {
+:deep(.back-button) {
   position: absolute;
   top: 10px;
   left: 10px;
@@ -5349,7 +5362,7 @@ const onProbePhoto = async () => {
   transition: background 0.3s ease;
 }
 
-.back-button:hover {
+:deep(.back-button:hover) {
   background: rgba(128, 128, 128, 0.8);
 }
 
@@ -5361,20 +5374,20 @@ const onProbePhoto = async () => {
 }
 
 /* ===== 投屏页面卡片布局 ===== */
-.keys-page {
+:deep(.keys-page) {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.scrcpy-card {
+:deep(.scrcpy-card) {
   background: #fff;
   border-radius: 10px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
   overflow: hidden;
 }
 
-.card-header {
+:deep(.card-header) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5386,14 +5399,14 @@ const onProbePhoto = async () => {
   background: #fafafa;
 }
 
-.card-icon {
+:deep(.card-icon) {
   display: flex;
   align-items: center;
   color: #4caf50;
 }
 
 /* 卡片头部右侧操作按钮（如设备信息「复制」） */
-.card-header-action {
+:deep(.card-header-action) {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
@@ -5410,27 +5423,27 @@ const onProbePhoto = async () => {
   transition: all 0.2s ease;
 }
 
-.card-header-action:hover:not(:disabled) {
+:deep(.card-header-action:hover:not(:disabled)) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
 }
 
-.card-header-action:active:not(:disabled) {
+:deep(.card-header-action:active:not(:disabled)) {
   background: #c8e6c9;
 }
 
-.card-header-action:disabled {
+:deep(.card-header-action:disabled) {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.card-body {
+:deep(.card-body) {
   padding: 16px;
 }
 
 /* ===== 投屏启动按钮 ===== */
-.scrcpy-btn {
+:deep(.scrcpy-btn) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5449,26 +5462,26 @@ const onProbePhoto = async () => {
   box-shadow: 0 4px 16px rgba(76, 175, 80, 0.3);
 }
 
-.scrcpy-btn:hover {
+:deep(.scrcpy-btn:hover) {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
   background: linear-gradient(135deg, #43a047, #388e3c);
 }
 
-.scrcpy-btn:active {
+:deep(.scrcpy-btn:active) {
   transform: translateY(0);
   box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
 }
 
 /* ===== 按键网格 ===== */
-.key-grid {
+:deep(.key-grid) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
   margin-bottom: 10px;
 }
 
-.key-btn {
+:deep(.key-btn) {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -5486,7 +5499,7 @@ const onProbePhoto = async () => {
   transition: all 0.25s ease;
 }
 
-.key-btn:hover {
+:deep(.key-btn:hover) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
@@ -5494,21 +5507,21 @@ const onProbePhoto = async () => {
   box-shadow: 0 3px 10px rgba(76, 175, 80, 0.12);
 }
 
-.key-btn:active {
+:deep(.key-btn:active) {
   transform: translateY(0);
   background: #c8e6c9;
 }
 
-.key-btn svg {
+:deep(.key-btn svg) {
   color: #666;
 }
 
-.key-btn:hover svg {
+:deep(.key-btn:hover svg) {
   color: #4caf50;
 }
 
 /* ===== 重启按钮 ===== */
-.restart-btn {
+:deep(.restart-btn) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5526,25 +5539,25 @@ const onProbePhoto = async () => {
   transition: all 0.25s ease;
 }
 
-.restart-btn:hover {
+:deep(.restart-btn:hover) {
   background: #ffebee;
   border-color: #ef9a9a;
   transform: translateY(-1px);
   box-shadow: 0 3px 10px rgba(198, 40, 40, 0.12);
 }
 
-.restart-btn:active {
+:deep(.restart-btn:active) {
   transform: translateY(0);
 }
 
 /* ===== 音量控制行 ===== */
-.volume-row {
+:deep(.volume-row) {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
 }
 
-.vol-btn {
+:deep(.vol-btn) {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -5562,7 +5575,7 @@ const onProbePhoto = async () => {
   transition: all 0.25s ease;
 }
 
-.vol-btn:hover {
+:deep(.vol-btn:hover) {
   background: #e3f2fd;
   border-color: #90caf9;
   color: #1565c0;
@@ -5570,12 +5583,12 @@ const onProbePhoto = async () => {
   box-shadow: 0 3px 10px rgba(33, 150, 243, 0.12);
 }
 
-.vol-btn:active {
+:deep(.vol-btn:active) {
   transform: translateY(0);
   background: #bbdefb;
 }
 
-.vol-btn.mute-btn:hover {
+:deep(.vol-btn.mute-btn:hover) {
   background: #fff3e0;
   border-color: #ffcc80;
   color: #e65100;
@@ -5583,37 +5596,37 @@ const onProbePhoto = async () => {
 }
 
 /* ===== 设备信息页 ===== */
-.info-grid-2col {
+:deep(.info-grid-2col) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 2px 12px;
 }
 
-.info-item-2col {
+:deep(.info-item-2col) {
   padding: 6px 0;
   border-bottom: 1px solid #f5f5f5;
   min-width: 0;
 }
 
-.info-item-2col:nth-last-child(-n+2) {
+:deep(.info-item-2col:nth-last-child(-n+2)) {
   border-bottom: none;
 }
 
-.info-label {
+:deep(.info-label) {
   display: block;
   font-size: 11px;
   color: #999;
   margin-bottom: 2px;
 }
 
-.info-value {
+:deep(.info-value) {
   display: block;
   font-size: 13px;
   color: #333;
   word-break: break-all;
 }
 
-.copyable-value {
+:deep(.copyable-value) {
   cursor: pointer;
   padding: 2px 6px;
   margin: -2px -6px;
@@ -5623,27 +5636,27 @@ const onProbePhoto = async () => {
   position: relative;
 }
 
-.copyable-value:hover:not(.disabled) {
+:deep(.copyable-value:hover:not(.disabled)) {
   background-color: #e3f2fd;
   color: #1565c0;
 }
 
-.copyable-value:hover:not(.disabled)::after {
+:deep(.copyable-value:hover:not(.disabled)::after) {
   content: '📋';
   margin-left: 4px;
   font-size: 12px;
 }
 
-.copyable-value:active:not(.disabled) {
+:deep(.copyable-value:active:not(.disabled)) {
   background-color: #bbdefb;
 }
 
-.copyable-value.disabled {
+:deep(.copyable-value.disabled) {
   cursor: not-allowed;
   color: #999;
 }
 
-.status-badge {
+:deep(.status-badge) {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 10px;
@@ -5651,29 +5664,29 @@ const onProbePhoto = async () => {
   font-weight: 500;
 }
 
-.status-badge.connected {
+:deep(.status-badge.connected) {
   background: #e8f5e9;
   color: #2e7d32;
 }
 
-.status-badge.locked {
+:deep(.status-badge.locked) {
   background: #fff3e0;
   color: #e65100;
 }
 
-.loading-text {
+:deep(.loading-text) {
   color: #999;
   font-size: 13px;
 }
 
 /* ===== 功能区按钮 ===== */
-.feature-grid {
+:deep(.feature-grid) {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 8px;
 }
 
-.feature-btn {
+:deep(.feature-btn) {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -5691,7 +5704,7 @@ const onProbePhoto = async () => {
   transition: all 0.25s ease;
 }
 
-.feature-btn:hover {
+:deep(.feature-btn:hover) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
@@ -5699,12 +5712,12 @@ const onProbePhoto = async () => {
   box-shadow: 0 3px 10px rgba(76, 175, 80, 0.12);
 }
 
-.feature-btn:active {
+:deep(.feature-btn:active) {
   transform: translateY(0);
   background: #c8e6c9;
 }
 
-.feature-btn.danger:hover {
+:deep(.feature-btn.danger:hover) {
   background: #fff3e0;
   border-color: #ffcc80;
   color: #e65100;
@@ -5712,22 +5725,22 @@ const onProbePhoto = async () => {
 }
 
 /* 抓取中状态：红色提示，悬停显示"结束抓取" */
-.feature-btn.capturing {
+:deep(.feature-btn.capturing) {
   background: #ffebee;
   border-color: #ef9a9a;
   color: #c62828;
   animation: capturePulse 1.6s ease-in-out infinite;
 }
 
-.feature-btn.capturing svg {
+:deep(.feature-btn.capturing svg) {
   color: #c62828;
 }
 
-.capture-stop-label {
+:deep(.capture-stop-label) {
   display: none;
 }
 
-.feature-btn.capturing:hover {
+:deep(.feature-btn.capturing:hover) {
   background: #ffcdd2;
   border-color: #e57373;
   color: #b71c1c;
@@ -5735,11 +5748,11 @@ const onProbePhoto = async () => {
   transform: translateY(-1px);
 }
 
-.feature-btn.capturing:hover .capture-stop-label {
+:deep(.feature-btn.capturing:hover .capture-stop-label) {
   display: inline;
 }
 
-.feature-btn.capturing:hover .capture-status-label {
+:deep(.feature-btn.capturing:hover .capture-status-label) {
   display: none;
 }
 
@@ -5748,20 +5761,20 @@ const onProbePhoto = async () => {
   50% { box-shadow: 0 0 0 5px rgba(239, 83, 80, 0.08); }
 }
 
-.feature-btn svg {
+:deep(.feature-btn svg) {
   color: #666;
 }
 
-.feature-btn:hover svg {
+:deep(.feature-btn:hover svg) {
   color: #4caf50;
 }
 
-.feature-btn.danger:hover svg {
+:deep(.feature-btn.danger:hover svg) {
   color: #e65100;
 }
 
 /* ===== 应用管理页 ===== */
-.card-action-btn {
+:deep(.card-action-btn) {
   margin-left: auto;
   padding: 4px 12px;
   background: #4caf50;
@@ -5775,17 +5788,17 @@ const onProbePhoto = async () => {
   transition: all 0.2s ease;
 }
 
-.card-action-btn:hover {
+:deep(.card-action-btn:hover) {
   background: #43a047;
   transform: translateY(-1px);
 }
 
-.card-action-btn:active {
+:deep(.card-action-btn:active) {
   transform: translateY(0);
 }
 
 /* APK 全页拖拽安装覆盖层 */
-.apk-drop-overlay {
+:deep(.apk-drop-overlay) {
   position: fixed;
   inset: 0;
   z-index: 9999;
@@ -5798,7 +5811,7 @@ const onProbePhoto = async () => {
   pointer-events: none;
 }
 
-.apk-drop-overlay-box {
+:deep(.apk-drop-overlay-box) {
   padding: 24px 48px;
   background: transparent;
   border: none;
@@ -5813,12 +5826,12 @@ const onProbePhoto = async () => {
     2px 2px 3px rgba(27, 94, 32, 0.45);
 }
 
-.app-list {
+:deep(.app-list) {
   max-height: calc(100vh - 140px);
   overflow-y: auto;
 }
 
-.app-item {
+:deep(.app-item) {
   display: flex;
   align-items: center;
   padding: 10px 16px;
@@ -5826,20 +5839,20 @@ const onProbePhoto = async () => {
   transition: background 0.2s;
 }
 
-.app-item:first-child {
+:deep(.app-item:first-child) {
   border-top: none;
 }
 
-.app-item:hover {
+:deep(.app-item:hover) {
   background: #f8f9fb;
 }
 
-.app-item-info {
+:deep(.app-item-info) {
   flex: 1;
   min-width: 0;
 }
 
-.app-item-name {
+:deep(.app-item-name) {
   font-size: 13px;
   font-weight: 600;
   color: #333;
@@ -5848,7 +5861,7 @@ const onProbePhoto = async () => {
   text-overflow: ellipsis;
 }
 
-.app-item-desc {
+:deep(.app-item-desc) {
   font-size: 11px;
   color: #999;
   margin-top: 2px;
@@ -5857,14 +5870,14 @@ const onProbePhoto = async () => {
   text-overflow: ellipsis;
 }
 
-.app-item-actions {
+:deep(.app-item-actions) {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
   margin-left: 8px;
 }
 
-.app-act-btn {
+:deep(.app-act-btn) {
   width: 28px;
   height: 28px;
   display: flex;
@@ -5878,37 +5891,37 @@ const onProbePhoto = async () => {
   transition: all 0.2s ease;
 }
 
-.app-act-btn:hover {
+:deep(.app-act-btn:hover) {
   border-color: #a5d6a7;
   background: #e8f5e9;
 }
 
-.app-act-btn.start:hover {
+:deep(.app-act-btn.start:hover) {
   border-color: #a5d6a7;
   background: #e8f5e9;
   color: #2e7d32;
 }
 
-.app-act-btn.stop:hover {
+:deep(.app-act-btn.stop:hover) {
   border-color: #90caf9;
   background: #e3f2fd;
   color: #1565c0;
 }
 
-.app-act-btn.extract:hover {
+:deep(.app-act-btn.extract:hover) {
   border-color: #ffcc80;
   background: #fff3e0;
   color: #e65100;
 }
 
-.app-act-btn.uninstall:hover {
+:deep(.app-act-btn.uninstall:hover) {
   border-color: #ef9a9a;
   background: #ffebee;
   color: #c62828;
 }
 
 /* ===== 文件管理页 ===== */
-.file-path-text {
+:deep(.file-path-text) {
   font-size: 13px;
   font-weight: 500;
   color: #555;
@@ -5919,7 +5932,7 @@ const onProbePhoto = async () => {
   margin-right: 8px;
 }
 
-.file-toolbar {
+:deep(.file-toolbar) {
   display: flex;
   gap: 4px;
   padding: 8px 12px;
@@ -5927,7 +5940,7 @@ const onProbePhoto = async () => {
   background: #fafafa;
 }
 
-.toolbar-btn {
+:deep(.toolbar-btn) {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -5942,29 +5955,29 @@ const onProbePhoto = async () => {
   transition: all 0.2s ease;
 }
 
-.toolbar-btn:hover {
+:deep(.toolbar-btn:hover) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
 }
 
-.toolbar-btn:active {
+:deep(.toolbar-btn:active) {
   background: #c8e6c9;
 }
 
-.toolbar-btn:disabled {
+:deep(.toolbar-btn:disabled) {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.toolbar-btn:disabled:hover {
+:deep(.toolbar-btn:disabled:hover) {
   background: #fff;
   border-color: #e8eaed;
   color: #555;
   transform: none;
 }
 
-.file-item {
+:deep(.file-item) {
   display: flex;
   align-items: center;
   padding: 8px 12px;
@@ -5973,22 +5986,22 @@ const onProbePhoto = async () => {
   transition: background 0.2s;
 }
 
-.file-item:first-child {
+:deep(.file-item:first-child) {
   border-top: none;
 }
 
-.file-item:hover {
+:deep(.file-item:hover) {
   background: #f0f7f0;
 }
 
-.file-item-icon {
+:deep(.file-item-icon) {
   flex-shrink: 0;
   margin-right: 8px;
   font-size: 16px;
 }
 
 /* 文件多选：勾选列与批量操作条 */
-.file-item-check {
+:deep(.file-item-check) {
   flex-shrink: 0;
   width: 24px;
   margin-right: 4px;
@@ -5997,25 +6010,25 @@ const onProbePhoto = async () => {
   justify-content: center;
 }
 
-.file-item-check input[type="checkbox"] {
+:deep(.file-item-check input[type="checkbox"]) {
   cursor: pointer;
   accent-color: #2e7d32;
 }
 
-.file-batch-info {
+:deep(.file-batch-info) {
   align-self: center;
   font-size: 12px;
   font-weight: 500;
   color: #2e7d32;
 }
 
-.toolbar-btn.danger:hover {
+:deep(.toolbar-btn.danger:hover) {
   background: #ffebee;
   border-color: #ef9a9a;
   color: #c62828;
 }
 
-.file-item-name {
+:deep(.file-item-name) {
   flex: 1;
   font-size: 13px;
   color: #333;
@@ -6025,12 +6038,12 @@ const onProbePhoto = async () => {
   min-width: 0;
 }
 
-.file-item-name.is-dir {
+:deep(.file-item-name.is-dir) {
   font-weight: 500;
   color: #1565c0;
 }
 
-.file-item-size {
+:deep(.file-item-size) {
   flex-shrink: 0;
   font-size: 11px;
   color: #999;
@@ -6041,7 +6054,7 @@ const onProbePhoto = async () => {
 }
 
 /* 文件列表排序表头与修改时间列 */
-.file-list-header {
+:deep(.file-list-header) {
   display: flex;
   align-items: center;
   padding: 6px 12px;
@@ -6051,20 +6064,20 @@ const onProbePhoto = async () => {
   user-select: none;
 }
 
-.file-sortable {
+:deep(.file-sortable) {
   cursor: pointer;
 }
 
-.file-sortable:hover {
+:deep(.file-sortable:hover) {
   color: #1565c0;
 }
 
-.file-sortable.sort-active {
+:deep(.file-sortable.sort-active) {
   color: #1565c0;
   font-weight: 500;
 }
 
-.file-item-time {
+:deep(.file-item-time) {
   flex-shrink: 0;
   font-size: 11px;
   color: #999;
@@ -6073,20 +6086,20 @@ const onProbePhoto = async () => {
   text-align: right;
 }
 
-.device-item {
+:deep(.device-item) {
   display: flex !important;
   align-items: center;
   gap: 8px;
 }
 
-.device-item-info {
+:deep(.device-item-info) {
   flex: 1;
   min-width: 0;
   cursor: pointer;
 }
 
 /* 断开全部：设备列表末尾的常驻按钮，宽度与设备项一致 */
-.disconnect-all-btn {
+:deep(.disconnect-all-btn) {
   display: block;
   width: 100%;
   box-sizing: border-box;
@@ -6104,16 +6117,16 @@ const onProbePhoto = async () => {
   flex-shrink: 0; /* 列表滚动时按钮不被压缩，始终完整显示在末尾 */
 }
 
-.disconnect-all-btn:hover:not(:disabled) {
+:deep(.disconnect-all-btn:hover:not(:disabled)) {
   background-color: #d32f2f;
 }
 
-.disconnect-all-btn:disabled {
+:deep(.disconnect-all-btn:disabled) {
   filter: grayscale(1);
   cursor: not-allowed;
 }
 
-.disconnect-btn {
+:deep(.disconnect-btn) {
   flex-shrink: 0;
   width: 24px;
   height: 24px;
@@ -6128,19 +6141,19 @@ const onProbePhoto = async () => {
   transition: all 0.2s ease;
 }
 
-.disconnect-btn:hover {
+:deep(.disconnect-btn:hover) {
   background: #ffebee;
   border-color: #ef9a9a;
 }
 
-.file-item-actions {
+:deep(.file-item-actions) {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
   margin-left: 8px;
 }
 
-button.file-act-btn {
+:deep(button.file-act-btn) {
   width: 26px;
   height: 26px;
   display: flex;
@@ -6155,25 +6168,25 @@ button.file-act-btn {
   transition: all 0.2s ease;
 }
 
-button.file-act-btn.export:hover {
+:deep(button.file-act-btn.export:hover) {
   background: #e8f5e9;
   border-color: #a5d6a7;
 }
 
-button.file-act-btn.delete:hover {
+:deep(button.file-act-btn.delete:hover) {
   background: #ffebee;
   border-color: #ef9a9a;
 }
 
 /* ===== 批量操作页面 ===== */
-.tab-content {
+:deep(.tab-content) {
   height: auto;
   flex: 1;
   min-height: 0;
 }
 
 /* 模拟脚本 Tab 需要确定高度的父级链，让 script-page/layout 能撑满剩余空间 */
-.tab-content:has(> .script-page) {
+:deep(.tab-content:has(> .script-page)) {
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -6181,14 +6194,14 @@ button.file-act-btn.delete:hover {
 }
 
 /* 批量操作 Tab 同理：需要确定高度，投屏区才能在剩余空间内滚而不撑高整页 */
-.tab-content:has(> .batch-page) {
+:deep(.tab-content:has(> .batch-page)) {
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.batch-page {
+:deep(.batch-page) {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -6199,7 +6212,7 @@ button.file-act-btn.delete:hover {
   min-height: 0;
 }
 
-.batch-card {
+:deep(.batch-card) {
   background: #fff;
   border-radius: 10px;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
@@ -6211,25 +6224,25 @@ button.file-act-btn.delete:hover {
   min-height: 0;
 }
 
-.batch-header {
+:deep(.batch-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
-.batch-header-left {
+:deep(.batch-header-left) {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.batch-selected-info {
+:deep(.batch-selected-info) {
   font-size: 13px;
   font-weight: 400;
   color: #4caf50;
 }
 
-.batch-content {
+:deep(.batch-content) {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -6237,7 +6250,7 @@ button.file-act-btn.delete:hover {
 }
 
 /* 上半部分：设备列表 - flex:1 占据剩余空间 */
-.batch-device-list {
+:deep(.batch-device-list) {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -6246,7 +6259,7 @@ button.file-act-btn.delete:hover {
   min-height: 0;
 }
 
-.batch-list-header {
+:deep(.batch-list-header) {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -6258,18 +6271,18 @@ button.file-act-btn.delete:hover {
   border-bottom: 1px solid #f0f0f0;
 }
 
-.batch-list-header input[type="checkbox"] {
+:deep(.batch-list-header input[type="checkbox"]) {
   width: 16px;
   height: 16px;
   cursor: pointer;
 }
 
-.batch-list-body {
+:deep(.batch-list-body) {
   flex: 1;
   overflow-y: auto;
 }
 
-.batch-device-row {
+:deep(.batch-device-row) {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -6281,21 +6294,21 @@ button.file-act-btn.delete:hover {
   transition: background 0.15s;
 }
 
-.batch-device-row:hover {
+:deep(.batch-device-row:hover) {
   background: #f5f9ff;
 }
 
-.batch-device-row.is-selected {
+:deep(.batch-device-row.is-selected) {
   background: #e8f5e9;
 }
 
-.batch-device-row input[type="checkbox"] {
+:deep(.batch-device-row input[type="checkbox"]) {
   width: 16px;
   height: 16px;
   cursor: pointer;
 }
 
-.col-device-id {
+:deep(.col-device-id) {
   flex: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6303,7 +6316,7 @@ button.file-act-btn.delete:hover {
   min-width: 0;
 }
 
-.col-model {
+:deep(.col-model) {
   flex: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6311,7 +6324,7 @@ button.file-act-btn.delete:hover {
   min-width: 0;
 }
 
-.col-sn {
+:deep(.col-sn) {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6321,7 +6334,7 @@ button.file-act-btn.delete:hover {
   font-size: 12px;
 }
 
-.batch-checkbox-label {
+:deep(.batch-checkbox-label) {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -6329,14 +6342,14 @@ button.file-act-btn.delete:hover {
 }
 
 .batch-loading,
-.batch-empty {
+:deep(.batch-empty) {
   padding: 24px;
   text-align: center;
   color: #999;
   font-size: 13px;
 }
 
-.model-filter-input {
+:deep(.model-filter-input) {
   width: 90px;
   padding: 3px 8px;
   margin-top: 4px;
@@ -6347,12 +6360,12 @@ button.file-act-btn.delete:hover {
   transition: border-color 0.2s;
 }
 
-.model-filter-input:focus {
+:deep(.model-filter-input:focus) {
   border-color: #4caf50;
 }
 
 /* 下半部分：操作按钮区 + 结果区 - 高度由内容决定，不强制拉伸 */
-.batch-action-area {
+:deep(.batch-action-area) {
   flex: 0 0 auto;
   padding: 16px;
   display: flex;
@@ -6365,7 +6378,7 @@ button.file-act-btn.delete:hover {
 }
 
 /* 按钮区 - 高度由按钮内容决定，不拉伸 */
-.batch-action-grid {
+:deep(.batch-action-grid) {
   flex: none;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -6374,7 +6387,7 @@ button.file-act-btn.delete:hover {
   max-width: 600px;
 }
 
-button.batch-action-btn {
+:deep(button.batch-action-btn) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6392,26 +6405,26 @@ button.batch-action-btn {
   transition: all 0.2s ease;
 }
 
-button.batch-action-btn:hover:not(:disabled) {
+:deep(button.batch-action-btn:hover:not(:disabled)) {
   background: #e8f5e9;
   border-color: #4caf50;
   color: #2e7d32;
 }
 
-button.batch-action-btn:disabled {
+:deep(button.batch-action-btn:disabled) {
   background: #f5f5f5;
   color: #bbb;
   border-color: #eee;
   cursor: not-allowed;
 }
 
-.batch-action-placeholder {
+:deep(.batch-action-placeholder) {
   color: #bbb;
   font-size: 14px;
 }
 
 /* 批量 Shell 执行结果 - 显示时给合适的高度，不参与外层比例 */
-.batch-shell-results {
+:deep(.batch-shell-results) {
   flex: none;
   width: 100%;
   max-width: 800px;
@@ -6425,7 +6438,7 @@ button.batch-action-btn:disabled {
   flex-direction: column;
 }
 
-.shell-results-header {
+:deep(.shell-results-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6437,7 +6450,7 @@ button.batch-action-btn:disabled {
   color: #333;
 }
 
-.shell-close-btn {
+:deep(.shell-close-btn) {
   background: none;
   border: none;
   font-size: 18px;
@@ -6447,11 +6460,11 @@ button.batch-action-btn:disabled {
   line-height: 1;
 }
 
-.shell-close-btn:hover {
+:deep(.shell-close-btn:hover) {
   color: #666;
 }
 
-.shell-results-list {
+:deep(.shell-results-list) {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -6461,26 +6474,26 @@ button.batch-action-btn:disabled {
   margin-top: 8px;
 }
 
-.shell-result-item {
+:deep(.shell-result-item) {
   padding: 8px;
   background: #fafafa;
   border-radius: 4px;
   border-left: 3px solid #d9d9d9;
 }
 
-.shell-result-item:nth-child(odd) {
+:deep(.shell-result-item:nth-child(odd)) {
   background: #f5f5f5;
 }
 
-.shell-success {
+:deep(.shell-success) {
   border-left-color: #4caf50;
 }
 
-.shell-failed {
+:deep(.shell-failed) {
   border-left-color: #f44336;
 }
 
-.shell-result-device {
+:deep(.shell-result-device) {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -6488,7 +6501,7 @@ button.batch-action-btn:disabled {
   font-size: 12px;
 }
 
-.shell-status-icon {
+:deep(.shell-status-icon) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6500,22 +6513,22 @@ button.batch-action-btn:disabled {
   color: #fff;
 }
 
-.shell-success .shell-status-icon {
+:deep(.shell-success .shell-status-icon) {
   background: #4caf50;
 }
 
-.shell-failed .shell-status-icon {
+:deep(.shell-failed .shell-status-icon) {
   background: #f44336;
 }
 
-.shell-device-id {
+:deep(.shell-device-id) {
   font-weight: 500;
   color: #333;
   word-break: break-all;
 }
 
 /* ===== 批量投屏画面区 ===== */
-.batch-remote-area {
+:deep(.batch-remote-area) {
   padding: 12px 16px;
   background: #fafafa;
   border-radius: 8px;
@@ -6526,7 +6539,7 @@ button.batch-action-btn:disabled {
   flex-direction: column;
 }
 
-.batch-remote-header {
+:deep(.batch-remote-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6537,7 +6550,7 @@ button.batch-action-btn:disabled {
   flex: 0 0 auto;
 }
 
-.batch-remote-status {
+:deep(.batch-remote-status) {
   padding: 2px 10px;
   border-radius: 10px;
   background: #eceff1;
@@ -6546,12 +6559,12 @@ button.batch-action-btn:disabled {
   font-weight: 500;
 }
 
-.batch-remote-status.live {
+:deep(.batch-remote-status.live) {
   background: #e8f5e9;
   color: #2e7d32;
 }
 
-.batch-remote-error {
+:deep(.batch-remote-error) {
   margin-bottom: 10px;
   padding: 6px 10px;
   border-radius: 6px;
@@ -6560,7 +6573,7 @@ button.batch-action-btn:disabled {
   font-size: 12px;
 }
 
-.batch-remote-grid {
+:deep(.batch-remote-grid) {
   display: grid;
   gap: 10px;
   /* 画面超出可视区时在网格内部滚动，不影响整页布局 */
@@ -6572,7 +6585,7 @@ button.batch-action-btn:disabled {
   grid-auto-rows: 1fr;
 }
 
-.batch-remote-tile {
+:deep(.batch-remote-tile) {
   position: relative;
   background: #000;
   border-radius: 8px;
@@ -6583,15 +6596,15 @@ button.batch-action-btn:disabled {
   min-height: 0;
 }
 
-.batch-remote-tile.source {
+:deep(.batch-remote-tile.source) {
   outline: 2px solid #4caf50;
 }
 
-.batch-remote-tile.dead {
+:deep(.batch-remote-tile.dead) {
   opacity: 0.4;
 }
 
-.batch-remote-tile-header {
+:deep(.batch-remote-tile-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6601,7 +6614,7 @@ button.batch-action-btn:disabled {
   font-size: 11px;
 }
 
-.batch-remote-tile-name {
+:deep(.batch-remote-tile-name) {
   font-weight: 600;
   color: #333;
   overflow: hidden;
@@ -6609,14 +6622,14 @@ button.batch-action-btn:disabled {
   white-space: nowrap;
 }
 
-.batch-remote-tile-diag {
+:deep(.batch-remote-tile-diag) {
   margin-left: 6px;
   font-weight: 400;
   color: #999;
   font-size: 10px;
 }
 
-button.batch-remote-tile-tag {
+:deep(button.batch-remote-tile-tag) {
   flex-shrink: 0;
   padding: 2px 10px;
   border: 1px solid #e0e0e0;
@@ -6628,28 +6641,28 @@ button.batch-remote-tile-tag {
   cursor: pointer;
 }
 
-button.batch-remote-tile-tag:hover:not(:disabled) {
+:deep(button.batch-remote-tile-tag:hover:not(:disabled)) {
   background: #e8f5e9;
   border-color: #4caf50;
   color: #2e7d32;
 }
 
 button.batch-remote-tile-tag.active,
-button.batch-remote-tile-tag:disabled.active {
+:deep(button.batch-remote-tile-tag:disabled.active) {
   background: #4caf50;
   border-color: #4caf50;
   color: #fff;
   cursor: default;
 }
 
-.batch-remote-tile-tag.active {
+:deep(.batch-remote-tile-tag.active) {
   background: #4caf50;
   color: #fff;
 }
 
 /* 画面容器：撑满卡片剩余空间（卡片高度由网格行均分，见 .batch-remote-grid）。
    高度完全由布局分配，不再依赖 JS 测高，因此不存在自反馈。 */
-.batch-remote-tile-body {
+:deep(.batch-remote-tile-body) {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
@@ -6663,7 +6676,7 @@ button.batch-remote-tile-tag:disabled.active {
 /* canvas 的 width/height 属性是视频原始像素，不能当显示尺寸用。
    这里铺满容器再用 object-fit: contain 等比收进框内：
    竖屏 9:16 与横屏 16:9 都完整显示，不裁切上下或左右。 */
-.batch-remote-canvas {
+:deep(.batch-remote-canvas) {
   display: block;
   width: 100%;
   height: 100%;
@@ -6675,15 +6688,15 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* 主控画面可操作（十字光标）；从机画面单击可切主控（手型光标） */
-.batch-remote-tile.source .batch-remote-canvas {
+:deep(.batch-remote-tile.source .batch-remote-canvas) {
   cursor: crosshair;
 }
 
-.batch-remote-tile:not(.source) .batch-remote-canvas {
+:deep(.batch-remote-tile:not(.source) .batch-remote-canvas) {
   cursor: pointer;
 }
 
-.batch-remote-tile-loading {
+:deep(.batch-remote-tile-loading) {
   position: absolute;
   inset: 0;
   display: flex;
@@ -6695,18 +6708,18 @@ button.batch-remote-tile-tag:disabled.active {
   pointer-events: none;
 }
 
-.shell-output-section {
+:deep(.shell-output-section) {
   margin-top: 4px;
 }
 
-.shell-output-label {
+:deep(.shell-output-label) {
   font-size: 11px;
   color: #888;
   margin-bottom: 2px;
   font-weight: 500;
 }
 
-.shell-output {
+:deep(.shell-output) {
   margin: 0;
   padding: 6px 8px;
   background: #fff;
@@ -6722,17 +6735,17 @@ button.batch-remote-tile-tag:disabled.active {
   line-height: 1.4;
 }
 
-.shell-error .shell-output {
+:deep(.shell-error .shell-output) {
   background: #fff8f8;
   border-color: #ffd6d6;
 }
 
-.shell-error-text {
+:deep(.shell-error-text) {
   color: #c62828;
 }
 
 /* ===== 性能监控页面 ===== */
-.monitor-error {
+:deep(.monitor-error) {
   margin-bottom: 12px;
   padding: 8px 12px;
   background: #ffebee;
@@ -6742,37 +6755,37 @@ button.batch-remote-tile-tag:disabled.active {
   font-size: 13px;
 }
 
-.monitor-usage {
+:deep(.monitor-usage) {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.gauge-chart-wide {
+:deep(.gauge-chart-wide) {
   width: 100%;
   height: 190px;
 }
 
 /* 性能监控第二行：CPU 频率 | 内存/磁盘 两列布局 */
-.monitor-row {
+:deep(.monitor-row) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   align-items: stretch;
 }
 
-.gauge-chart {
+:deep(.gauge-chart) {
   width: 100%;
   height: 160px;
 }
 
-.gauge-detail-row {
+:deep(.gauge-detail-row) {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 
-.gauge-detail {
+:deep(.gauge-detail) {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -6784,19 +6797,19 @@ button.batch-remote-tile-tag:disabled.active {
   color: #666;
 }
 
-.detail-title {
+:deep(.detail-title) {
   font-size: 13px;
   font-weight: 600;
   color: #333;
   margin-bottom: 2px;
 }
 
-.monitor-empty {
+:deep(.monitor-empty) {
   color: #999;
   font-size: 12px;
 }
 
-.monitor-live-tag {
+:deep(.monitor-live-tag) {
   margin-left: auto;
   padding: 2px 8px;
   border-radius: 10px;
@@ -6807,7 +6820,7 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* ===== 视图切换开关（折线图 / TOP进程） ===== */
-.rate-view-switch {
+:deep(.rate-view-switch) {
   margin-left: auto;
   display: inline-flex;
   border: 1px solid #e0e0e0;
@@ -6815,7 +6828,7 @@ button.batch-remote-tile-tag:disabled.active {
   overflow: hidden;
 }
 
-.rate-view-switch button {
+:deep(.rate-view-switch button) {
   padding: 3px 10px;
   border: none;
   background: transparent;
@@ -6825,37 +6838,37 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.2s ease;
 }
 
-.rate-view-switch button + button {
+:deep(.rate-view-switch button + button) {
   border-left: 1px solid #e0e0e0;
 }
 
-.rate-view-switch button.active {
+:deep(.rate-view-switch button.active) {
   background: #4caf50;
   color: #fff;
 }
 
 /* ===== TOP 进程表格 ===== */
-.top-table-wrap {
+:deep(.top-table-wrap) {
   max-height: 260px;
   overflow-y: auto;
   border: 1px solid #eef1f4;
   border-radius: 8px;
 }
 
-.top-table {
+:deep(.top-table) {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
 
 .top-table th,
-.top-table td {
+:deep(.top-table td) {
   padding: 6px 10px;
   text-align: left;
   white-space: nowrap;
 }
 
-.top-table thead th {
+:deep(.top-table thead th) {
   position: sticky;
   top: 0;
   background: #f8f9fb;
@@ -6864,40 +6877,40 @@ button.batch-remote-tile-tag:disabled.active {
   border-bottom: 1px solid #eef1f4;
 }
 
-.top-table tbody tr {
+:deep(.top-table tbody tr) {
   border-bottom: 1px solid #f5f6f8;
 }
 
-.top-table tbody tr:last-child {
+:deep(.top-table tbody tr:last-child) {
   border-bottom: none;
 }
 
-.top-cpu-high {
+:deep(.top-cpu-high) {
   color: #f44336;
   font-weight: 600;
 }
 
-.top-cmd {
+:deep(.top-cmd) {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 260px;
 }
 
-.monitor-freq-info {
+:deep(.monitor-freq-info) {
   margin-left: auto;
   font-size: 12px;
   font-weight: 400;
   color: #888;
 }
 
-.rate-summary {
+:deep(.rate-summary) {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   margin-bottom: 12px;
 }
 
-.rate-item {
+:deep(.rate-item) {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -6907,89 +6920,89 @@ button.batch-remote-tile-tag:disabled.active {
   border-radius: 8px;
 }
 
-.rate-label {
+:deep(.rate-label) {
   font-size: 11px;
   color: #999;
 }
 
-.rate-value {
+:deep(.rate-value) {
   font-size: 15px;
   font-weight: 600;
   color: #333;
 }
 
-.rate-value.cpu {
+:deep(.rate-value.cpu) {
   color: #4caf50;
 }
 
-.rate-value.down {
+:deep(.rate-value.down) {
   color: #2196f3;
 }
 
-.rate-value.up {
+:deep(.rate-value.up) {
   color: #ff9800;
 }
 
-.rate-chart {
+:deep(.rate-chart) {
   width: 100%;
   height: 220px;
 }
 
-.core-chart {
+:deep(.core-chart) {
   width: 100%;
   height: 180px;
 }
 
 @media (max-width: 720px) {
-  .monitor-row {
+  :deep(.monitor-row) {
     grid-template-columns: 1fr;
   }
 
-  .gauge-detail-row {
+  :deep(.gauge-detail-row) {
     grid-template-columns: 1fr;
   }
 
-  .rate-summary {
+  :deep(.rate-summary) {
     grid-template-columns: repeat(2, 1fr);
   }
 }
 
 @media (prefers-color-scheme: dark) {
   .gauge-detail,
-  .rate-item {
+  :deep(.rate-item) {
     background: #33363e;
     border-color: #40434a;
     color: #b0b0b0;
   }
 
   .detail-title,
-  .rate-value {
+  :deep(.rate-value) {
     color: #e0e0e0;
   }
 
-  .monitor-error {
+  :deep(.monitor-error) {
     background: #3a2426;
     border-color: #5c3234;
     color: #ef9a9a;
   }
 
-  .monitor-live-tag {
+  :deep(.monitor-live-tag) {
     background: #2e3d31;
     color: #81c784;
   }
 
-  .monitor-freq-info {
+  :deep(.monitor-freq-info) {
     color: #999;
   }
 }
 
 /* ==================== 模拟脚本页 ==================== */
 /* 脚本页专属：撑满 tab-content 高度（普通 keys-page 是自然流式布局） */
-.script-page {
+:deep(.script-page) {
   height: 100%;
 }
 
-.script-layout {
+:deep(.script-layout) {
   display: flex;
   gap: 12px;
   /* 撑满 Tab 内容区剩余高度（不用 vh 魔法数字，避免底部空隙），
@@ -7000,7 +7013,7 @@ button.batch-remote-tile-tag:disabled.active {
   box-sizing: border-box;
 }
 
-.script-screen-panel {
+:deep(.script-screen-panel) {
   /* 宽度由 JS 按画面比例给出，不再占满剩余空间（避免竖屏时左右大片黑框）；
      可用空间不足时允许收缩，保证右侧控制区不被挤掉 */
   flex: 0 1 auto;
@@ -7014,7 +7027,7 @@ button.batch-remote-tile-tag:disabled.active {
   min-width: 0;
 }
 
-.script-screen-header {
+:deep(.script-screen-header) {
   display: flex;
   align-items: center;
   /* 面板随画面收窄后，头部控件换行而不被裁切 */
@@ -7027,17 +7040,17 @@ button.batch-remote-tile-tag:disabled.active {
   color: #333;
 }
 
-.script-ws-status {
+:deep(.script-ws-status) {
   margin-left: auto;
   font-size: 12px;
   color: #999;
 }
 
-.script-ws-status.live {
+:deep(.script-ws-status.live) {
   color: #2e7d32;
 }
 
-.script-rec-tag {
+:deep(.script-rec-tag) {
   color: #e53935;
   font-size: 12px;
   font-weight: 700;
@@ -7045,7 +7058,7 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* 键盘接管提示：点过画面后出现，提示可直接敲键盘打字 */
-.script-kbd-tag {
+:deep(.script-kbd-tag) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -7057,7 +7070,7 @@ button.batch-remote-tile-tag:disabled.active {
   font-weight: 500;
 }
 
-.script-kbd-exit {
+:deep(.script-kbd-exit) {
   padding: 0 4px;
   border: none;
   background: transparent;
@@ -7069,7 +7082,7 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* ===== 画面步骤标记开关 ===== */
-.script-switch {
+:deep(.script-switch) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -7081,14 +7094,14 @@ button.batch-remote-tile-tag:disabled.active {
   transition: color 0.25s ease;
 }
 
-.script-switch input {
+:deep(.script-switch input) {
   position: absolute;
   opacity: 0;
   width: 0;
   height: 0;
 }
 
-.script-switch-track {
+:deep(.script-switch-track) {
   position: relative;
   display: inline-block;
   width: 32px;
@@ -7098,7 +7111,7 @@ button.batch-remote-tile-tag:disabled.active {
   transition: background 0.25s ease;
 }
 
-.script-switch-track::after {
+:deep(.script-switch-track::after) {
   content: '';
   position: absolute;
   top: 2px;
@@ -7111,23 +7124,23 @@ button.batch-remote-tile-tag:disabled.active {
   transition: transform 0.25s ease;
 }
 
-.script-switch.on {
+:deep(.script-switch.on) {
   color: #2e7d32;
 }
 
-.script-switch.on .script-switch-track {
+:deep(.script-switch.on .script-switch-track) {
   background: #4caf50;
 }
 
-.script-switch.on .script-switch-track::after {
+:deep(.script-switch.on .script-switch-track::after) {
   transform: translateX(14px);
 }
 
-.script-switch input:focus-visible + .script-switch-track {
+:deep(.script-switch input:focus-visible + .script-switch-track) {
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
 }
 
-.script-screen-body {
+:deep(.script-screen-body) {
   flex: 1;
   display: flex;
   align-items: center;
@@ -7139,7 +7152,7 @@ button.batch-remote-tile-tag:disabled.active {
   min-height: 0;
 }
 
-.script-canvas {
+:deep(.script-canvas) {
   /* 视口内完整可见：宽高都限制在容器内，保持比例 */
   max-width: 100%;
   max-height: 100%;
@@ -7149,22 +7162,22 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: pointer;
 }
 
-.script-canvas.recording {
+:deep(.script-canvas.recording) {
   cursor: crosshair;
   outline: 2px solid #e53935;
   outline-offset: -2px;
 }
 
 /* 显示步骤时可拖拽标记 */
-.script-canvas.editing-markers {
+:deep(.script-canvas.editing-markers) {
   cursor: grab;
 }
 
-.script-canvas.editing-markers.dragging {
+:deep(.script-canvas.editing-markers.dragging) {
   cursor: grabbing;
 }
 
-.script-screen-placeholder {
+:deep(.script-screen-placeholder) {
   position: absolute;
   inset: 0;
   display: flex;
@@ -7174,7 +7187,7 @@ button.batch-remote-tile-tag:disabled.active {
   font-size: 14px;
 }
 
-.script-side-panel {
+:deep(.script-side-panel) {
   width: 300px;
   flex-shrink: 0;
   display: flex;
@@ -7185,19 +7198,19 @@ button.batch-remote-tile-tag:disabled.active {
 
 /* 竖屏等场景下预览面板收窄，右侧留白足够时：录制功能区与脚本步骤区左右两列并占满留白。
    触发由 JS 按「布局宽 - 预览宽 - gap」判断，横屏 / 窄窗口自动退回一列 */
-.script-side-panel.two-col {
+:deep(.script-side-panel.two-col) {
   width: auto;
   flex: 1;
   flex-direction: row;
   align-items: stretch;
 }
 
-.script-side-panel.two-col .script-section {
+:deep(.script-side-panel.two-col .script-section) {
   flex: 1;
   min-width: 0;
 }
 
-.script-section {
+:deep(.script-section) {
   background: #fff;
   border: 1px solid #e8eaed;
   border-radius: 12px;
@@ -7205,11 +7218,11 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* 步骤功能区标题栏：复用屏幕预览的标题样式，负边距抵消卡片内边距使其通栏 */
-.script-section .script-screen-header {
+:deep(.script-section .script-screen-header) {
   margin: -12px -12px 12px;
 }
 
-.script-record-btn {
+:deep(.script-record-btn) {
   width: 100%;
   padding: 10px;
   border: none;
@@ -7223,29 +7236,29 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.2s ease;
 }
 
-.script-record-btn:hover {
+:deep(.script-record-btn:hover) {
   background: #d32f2f;
 }
 
-.script-record-btn.active {
+:deep(.script-record-btn.active) {
   background: #c62828;
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
 /* 录制中：按钮收窄一半，右侧留出画面校验开关 */
-.script-record-row {
+:deep(.script-record-row) {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.script-record-row .script-record-btn {
+:deep(.script-record-row .script-record-btn) {
   flex: 1 1 0;
   width: auto;
   min-width: 0;
 }
 
-.script-verify-switch {
+:deep(.script-verify-switch) {
   flex: 0 0 calc(50% - 4px);
   display: flex;
   align-items: center;
@@ -7257,7 +7270,7 @@ button.batch-remote-tile-tag:disabled.active {
   white-space: nowrap;
 }
 
-.script-config-row {
+:deep(.script-config-row) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7266,16 +7279,16 @@ button.batch-remote-tile-tag:disabled.active {
   color: #555;
 }
 
-.script-config-row:last-of-type {
+:deep(.script-config-row:last-of-type) {
   margin-bottom: 0;
 }
 
 /* 等待组件步骤：已选模板图预览 */
-.script-template-preview-row {
+:deep(.script-template-preview-row) {
   align-items: flex-start;
 }
 
-.script-template-preview {
+:deep(.script-template-preview) {
   max-width: 68%;
   max-height: 120px;
   border: 1px solid #dfe3e8;
@@ -7284,7 +7297,7 @@ button.batch-remote-tile-tag:disabled.active {
   object-fit: contain;
 }
 
-.script-config-input {
+:deep(.script-config-input) {
   width: 90px;
   padding: 4px 8px;
   border: 1px solid #dfe3e8;
@@ -7296,7 +7309,7 @@ button.batch-remote-tile-tag:disabled.active {
 
 /* 设备动作步骤的文本/下拉配置（宽度更大，左对齐） */
 .script-config-text,
-.script-config-select {
+:deep(.script-config-select) {
   flex: 1;
   min-width: 0;
   max-width: 62%;
@@ -7310,22 +7323,22 @@ button.batch-remote-tile-tag:disabled.active {
 
 /* Element Plus 配置控件：占满行内剩余宽度 */
 .ep-config-select,
-.ep-config-input {
+:deep(.ep-config-input) {
   flex: 1;
   min-width: 0;
   max-width: 68%;
 }
 
-.ep-config-select {
+:deep(.ep-config-select) {
   width: 68%;
 }
 
-.ep-config-num {
+:deep(.ep-config-num) {
   width: 110px;
 }
 
 /* 添加设备动作步骤按钮组 */
-.script-add-steps {
+:deep(.script-add-steps) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -7333,13 +7346,13 @@ button.batch-remote-tile-tag:disabled.active {
   margin-top: 8px;
 }
 
-.script-add-label {
+:deep(.script-add-label) {
   font-size: 12px;
   color: #888;
   margin-right: 2px;
 }
 
-.script-add-btn {
+:deep(.script-add-btn) {
   padding: 4px 9px;
   border: 1px dashed #bdbdbd;
   border-radius: 6px;
@@ -7351,32 +7364,32 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.15s ease;
 }
 
-.script-add-btn:hover:not(:disabled) {
+:deep(.script-add-btn:hover:not(:disabled)) {
   border-color: #4caf50;
   color: #2e7d32;
   background: #f6fbf6;
 }
 
-.script-add-btn:disabled {
+:deep(.script-add-btn:disabled) {
   opacity: 0.4;
   cursor: default;
 }
 
 /* 框选模式进行中 */
-.script-add-btn.cropping {
+:deep(.script-add-btn.cropping) {
   border-style: solid;
   border-color: #ff9800;
   color: #e65100;
   background: #fff3e0;
 }
 
-.script-config-hint {
+:deep(.script-config-hint) {
   margin-top: 6px;
   font-size: 11px;
   color: #999;
 }
 
-.script-list-section {
+:deep(.script-list-section) {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -7386,12 +7399,12 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* 步骤列表弹性占满剩余空间，底栏（保存/执行/重复）始终贴底 */
-.script-list-section .script-actions {
+:deep(.script-list-section .script-actions) {
   margin-top: auto;
   padding-top: 10px;
 }
 
-.script-list-header {
+:deep(.script-list-header) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7401,7 +7414,7 @@ button.batch-remote-tile-tag:disabled.active {
   margin-bottom: 8px;
 }
 
-.script-help-icon {
+:deep(.script-help-icon) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -7417,19 +7430,19 @@ button.batch-remote-tile-tag:disabled.active {
   vertical-align: middle;
 }
 
-.script-help-content {
+:deep(.script-help-content) {
   white-space: pre-line;
   line-height: 1.6;
   font-size: 12px;
   max-width: 340px;
 }
 
-.script-header-actions {
+:deep(.script-header-actions) {
   display: flex;
   gap: 6px;
 }
 
-.script-mini-btn {
+:deep(.script-mini-btn) {
   padding: 3px 10px;
   border: 1px solid #e8eaed;
   border-radius: 6px;
@@ -7440,17 +7453,17 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: pointer;
 }
 
-.script-mini-btn:hover:not(:disabled) {
+:deep(.script-mini-btn:hover:not(:disabled)) {
   border-color: #ef9a9a;
   color: #c62828;
 }
 
-.script-mini-btn:disabled {
+:deep(.script-mini-btn:disabled) {
   opacity: 0.4;
   cursor: default;
 }
 
-.script-steps-list {
+:deep(.script-steps-list) {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
@@ -7458,16 +7471,16 @@ button.batch-remote-tile-tag:disabled.active {
   scrollbar-width: thin;
 }
 
-.script-steps-list::-webkit-scrollbar {
+:deep(.script-steps-list::-webkit-scrollbar) {
   width: 6px;
 }
 
-.script-steps-list::-webkit-scrollbar-thumb {
+:deep(.script-steps-list::-webkit-scrollbar-thumb) {
   background: #d0d5db;
   border-radius: 3px;
 }
 
-.script-empty {
+:deep(.script-empty) {
   padding: 24px 8px;
   text-align: center;
   color: #999;
@@ -7475,14 +7488,14 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* 步骤分组标题：只影响展示，序号仍是全局执行顺序 */
-.script-step-group-header {
+:deep(.script-step-group-header) {
   padding: 6px 4px 3px;
   font-size: 11px;
   font-weight: 600;
   color: #909399;
 }
 
-.script-step-item {
+:deep(.script-step-item) {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -7494,26 +7507,26 @@ button.batch-remote-tile-tag:disabled.active {
   transition: background 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
-.script-step-item:hover {
+:deep(.script-step-item:hover) {
   background: #f5f7fa;
 }
 
-.script-step-item.dragging {
+:deep(.script-step-item.dragging) {
   opacity: 0.45;
 }
 
-.script-step-item.drag-over {
+:deep(.script-step-item.drag-over) {
   background: #e3f2fd;
   box-shadow: inset 0 2px 0 0 #1976d2;
 }
 
-.script-step-item.selected {
+:deep(.script-step-item.selected) {
   background: #e8f5e9;
   box-shadow: inset 0 0 0 1px #a5d6a7;
 }
 
 /* 展开的单步执行参数 */
-.script-step-config {
+:deep(.script-step-config) {
   flex-basis: 100%;
   margin-top: 6px;
   padding: 10px;
@@ -7522,7 +7535,7 @@ button.batch-remote-tile-tag:disabled.active {
   border-radius: 8px;
 }
 
-.script-step-idx {
+:deep(.script-step-idx) {
   flex-shrink: 0;
   width: 20px;
   height: 20px;
@@ -7536,7 +7549,7 @@ button.batch-remote-tile-tag:disabled.active {
   font-weight: 700;
 }
 
-.script-step-desc {
+:deep(.script-step-desc) {
   flex: 1;
   color: #333;
   white-space: nowrap;
@@ -7544,13 +7557,13 @@ button.batch-remote-tile-tag:disabled.active {
   text-overflow: ellipsis;
 }
 
-.script-step-meta {
+:deep(.script-step-meta) {
   flex-shrink: 0;
   color: #999;
   font-size: 11px;
 }
 
-.script-step-del {
+:deep(.script-step-del) {
   flex-shrink: 0;
   width: 20px;
   height: 20px;
@@ -7565,18 +7578,18 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: pointer;
 }
 
-.script-step-del:hover {
+:deep(.script-step-del:hover) {
   background: #ffebee;
   color: #c62828;
 }
 
-.script-actions {
+:deep(.script-actions) {
   display: flex;
   gap: 8px;
   margin-top: 10px;
 }
 
-.script-action-btn {
+:deep(.script-action-btn) {
   flex: 1;
   padding: 8px 0;
   border: none;
@@ -7590,62 +7603,62 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.2s ease;
 }
 
-.script-action-btn:hover:not(:disabled) {
+:deep(.script-action-btn:hover:not(:disabled)) {
   background: #43a047;
 }
 
-.script-action-btn:disabled {
+:deep(.script-action-btn:disabled) {
   opacity: 0.5;
   cursor: default;
 }
 
 /* 执行中的停止按钮 */
-.script-stop-btn {
+:deep(.script-stop-btn) {
   background: #f44336;
 }
 
-.script-stop-btn:hover:not(:disabled) {
+:deep(.script-stop-btn:hover:not(:disabled)) {
   background: #d32f2f;
 }
 
 /* 模拟脚本页 暗色模式 */
 @media (prefers-color-scheme: dark) {
-  .script-step-group-header {
+  :deep(.script-step-group-header) {
     color: #6b7079;
   }
 
-  .script-step-item:hover {
+  :deep(.script-step-item:hover) {
     background: #33363e;
   }
 
-  .script-step-item.selected {
+  :deep(.script-step-item.selected) {
     background: #2e3d31;
     box-shadow: inset 0 0 0 1px #66bb6a;
   }
 
-  .script-step-desc {
+  :deep(.script-step-desc) {
     color: #e0e0e0;
   }
 
-  .script-step-config {
+  :deep(.script-step-config) {
     background: #33363e;
     border-color: #40434a;
   }
 
   .script-config-text,
-  .script-config-select {
+  :deep(.script-config-select) {
     background: #3a3d44;
     border-color: #4a4d55;
     color: #e0e0e0;
   }
 
-  .script-add-btn {
+  :deep(.script-add-btn) {
     background: #33363e;
     border-color: #4a4d55;
     color: #bbb;
   }
 
-  .script-add-btn:hover:not(:disabled) {
+  :deep(.script-add-btn:hover:not(:disabled)) {
     border-color: #66bb6a;
     color: #81c784;
     background: #2e3d31;
@@ -7653,13 +7666,13 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* ==================== APK 仓库弹窗（应用管理页） ==================== */
-.apps-header-btns {
+:deep(.apps-header-btns) {
   margin-left: auto;
   display: flex;
   gap: 8px;
 }
 
-.apk-repo-mask {
+:deep(.apk-repo-mask) {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
@@ -7669,7 +7682,7 @@ button.batch-remote-tile-tag:disabled.active {
   z-index: 200;
 }
 
-.apk-repo-dialog {
+:deep(.apk-repo-dialog) {
   width: 560px;
   max-width: 92vw;
   max-height: 70vh;
@@ -7681,7 +7694,7 @@ button.batch-remote-tile-tag:disabled.active {
   overflow: hidden;
 }
 
-.apk-repo-head {
+:deep(.apk-repo-head) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7693,7 +7706,7 @@ button.batch-remote-tile-tag:disabled.active {
   border-bottom: 1px solid #f0f0f0;
 }
 
-.apk-repo-close {
+:deep(.apk-repo-close) {
   width: 26px;
   height: 26px;
   display: flex;
@@ -7707,12 +7720,12 @@ button.batch-remote-tile-tag:disabled.active {
   font-size: 13px;
 }
 
-.apk-repo-close:hover {
+:deep(.apk-repo-close:hover) {
   background: #ffebee;
   color: #c62828;
 }
 
-.apk-repo-body {
+:deep(.apk-repo-body) {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
@@ -7720,18 +7733,18 @@ button.batch-remote-tile-tag:disabled.active {
   overflow: hidden;
 }
 
-.apk-repo-actions {
+:deep(.apk-repo-actions) {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.apk-repo-hint {
+:deep(.apk-repo-hint) {
   font-size: 12px;
   color: #999;
 }
 
-.apk-repo-list {
+:deep(.apk-repo-list) {
   flex: 1;
   min-height: 120px;
   max-height: 340px;
@@ -7740,14 +7753,14 @@ button.batch-remote-tile-tag:disabled.active {
   border-radius: 8px;
 }
 
-.apk-repo-empty {
+:deep(.apk-repo-empty) {
   padding: 32px;
   text-align: center;
   color: #999;
   font-size: 13px;
 }
 
-.apk-repo-item {
+:deep(.apk-repo-item) {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -7756,11 +7769,11 @@ button.batch-remote-tile-tag:disabled.active {
   font-size: 13px;
 }
 
-.apk-repo-item:last-child {
+:deep(.apk-repo-item:last-child) {
   border-bottom: none;
 }
 
-.apk-repo-name {
+:deep(.apk-repo-name) {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -7769,13 +7782,13 @@ button.batch-remote-tile-tag:disabled.active {
   color: #333;
 }
 
-.apk-repo-size {
+:deep(.apk-repo-size) {
   flex-shrink: 0;
   font-size: 12px;
   color: #888;
 }
 
-.apk-repo-install {
+:deep(.apk-repo-install) {
   flex-shrink: 0;
   padding: 3px 12px;
   font-size: 12px;
@@ -7786,11 +7799,11 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: pointer;
 }
 
-.apk-repo-install:hover {
+:deep(.apk-repo-install:hover) {
   background: #e8f5e9;
 }
 
-.apk-repo-del {
+:deep(.apk-repo-del) {
   flex-shrink: 0;
   padding: 3px 10px;
   font-size: 12px;
@@ -7801,52 +7814,52 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: pointer;
 }
 
-.apk-repo-del:hover {
+:deep(.apk-repo-del:hover) {
   background: #ffebee;
 }
 
 @media (prefers-color-scheme: dark) {
-  .apk-repo-dialog {
+  :deep(.apk-repo-dialog) {
     background: #2b2e35;
   }
 
-  .apk-repo-head {
+  :deep(.apk-repo-head) {
     background: #33363e;
     border-bottom-color: #40434a;
     color: #e0e0e0;
   }
 
-  .apk-repo-list {
+  :deep(.apk-repo-list) {
     border-color: #40434a;
   }
 
-  .apk-repo-item {
+  :deep(.apk-repo-item) {
     border-bottom-color: #383b42;
     color: #ddd;
   }
 
-  .apk-repo-name {
+  :deep(.apk-repo-name) {
     color: #e0e0e0;
   }
 
   .apk-repo-install,
-  .apk-repo-del {
+  :deep(.apk-repo-del) {
     background: #33363e;
   }
 
-  .apk-repo-install {
+  :deep(.apk-repo-install) {
     color: #81c784;
     border-color: #4a6b4d;
   }
 
-  .apk-repo-del {
+  :deep(.apk-repo-del) {
     color: #ef9a9a;
     border-color: #6b4a4a;
   }
 }
 
 /* ==================== 模拟串口页 ==================== */
-.serial-row {
+:deep(.serial-row) {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -7854,14 +7867,14 @@ button.batch-remote-tile-tag:disabled.active {
   margin-bottom: 12px;
 }
 
-.serial-label {
+:deep(.serial-label) {
   font-size: 13px;
   color: #666;
   white-space: nowrap;
 }
 
 .serial-select,
-.serial-input {
+:deep(.serial-input) {
   height: 32px;
   padding: 0 10px;
   border: 1px solid #ddd;
@@ -7874,23 +7887,23 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 .serial-select:focus,
-.serial-input:focus {
+:deep(.serial-input:focus) {
   outline: none;
   border-color: #4caf50;
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
 }
 
 .serial-select-sm,
-.serial-input-sm {
+:deep(.serial-input-sm) {
   width: 90px;
 }
 
-.serial-mode-group {
+:deep(.serial-mode-group) {
   display: flex;
   gap: 4px;
 }
 
-.serial-mode-btn {
+:deep(.serial-mode-btn) {
   padding: 6px 16px;
   border: 1px solid #e8eaed;
   border-radius: 6px;
@@ -7902,19 +7915,19 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.2s ease;
 }
 
-.serial-mode-btn:hover {
+:deep(.serial-mode-btn:hover) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
 }
 
-.serial-mode-btn.active {
+:deep(.serial-mode-btn.active) {
   background: #4caf50;
   border-color: #4caf50;
   color: #fff;
 }
 
-.serial-check {
+:deep(.serial-check) {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -7923,7 +7936,7 @@ button.batch-remote-tile-tag:disabled.active {
   cursor: pointer;
 }
 
-.serial-mini-btn {
+:deep(.serial-mini-btn) {
   padding: 6px 12px;
   border: 1px solid #e8eaed;
   border-radius: 6px;
@@ -7935,18 +7948,18 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.2s ease;
 }
 
-.serial-mini-btn:hover:not(:disabled) {
+:deep(.serial-mini-btn:hover:not(:disabled)) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
 }
 
-.serial-mini-btn:disabled {
+:deep(.serial-mini-btn:disabled) {
   opacity: 0.5;
   cursor: default;
 }
 
-.serial-textarea {
+:deep(.serial-textarea) {
   width: 100%;
   box-sizing: border-box;
   min-height: 88px;
@@ -7960,20 +7973,20 @@ button.batch-remote-tile-tag:disabled.active {
   transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
-.serial-textarea:focus {
+:deep(.serial-textarea:focus) {
   outline: none;
   border-color: #4caf50;
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
 }
 
-.probe-actions {
+:deep(.probe-actions) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
 }
 
-.probe-shell-out {
+:deep(.probe-shell-out) {
   margin-bottom: 10px;
   padding: 10px 12px;
   background: #f5f7fa;
@@ -7988,13 +8001,13 @@ button.batch-remote-tile-tag:disabled.active {
   overflow: auto;
 }
 
-.serial-actions {
+:deep(.serial-actions) {
   display: flex;
   gap: 10px;
   margin-bottom: 10px;
 }
 
-.serial-stream-btn {
+:deep(.serial-stream-btn) {
   height: 40px;
   padding: 0 22px;
   background: #2196f3;
@@ -8013,47 +8026,47 @@ button.batch-remote-tile-tag:disabled.active {
   box-shadow: 0 4px 14px -4px rgba(33, 150, 243, 0.3);
 }
 
-.serial-stream-btn:hover:not(:disabled) {
+:deep(.serial-stream-btn:hover:not(:disabled)) {
   background: #1976d2;
   transform: translateY(-2px);
 }
 
-.serial-stream-btn.active {
+:deep(.serial-stream-btn.active) {
   background: #f44336;
   box-shadow: 0 4px 14px -4px rgba(244, 67, 54, 0.3);
 }
 
-.serial-stream-btn:disabled {
+:deep(.serial-stream-btn:disabled) {
   background: #bdbdbd;
   box-shadow: none;
   cursor: not-allowed;
   transform: none;
 }
 
-.serial-msg {
+:deep(.serial-msg) {
   margin-bottom: 10px;
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 13px;
 }
 
-.serial-msg.ok {
+:deep(.serial-msg.ok) {
   background: #e8f5e9;
   color: #2e7d32;
 }
 
-.serial-msg.err {
+:deep(.serial-msg.err) {
   background: #ffebee;
   color: #c62828;
 }
 
-.serial-stream-state {
+:deep(.serial-stream-state) {
   margin-bottom: 10px;
   font-size: 12px;
   color: #1976d2;
 }
 
-.serial-tool-missing {
+:deep(.serial-tool-missing) {
   margin-left: auto;
   padding: 2px 8px;
   border-radius: 10px;
@@ -8064,7 +8077,7 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* ===== 方案切换 ===== */
-.serial-scheme-group {
+:deep(.serial-scheme-group) {
   display: flex;
   gap: 8px;
   margin-bottom: 14px;
@@ -8072,7 +8085,7 @@ button.batch-remote-tile-tag:disabled.active {
   border-bottom: 1px solid #f0f0f0;
 }
 
-.serial-scheme-btn {
+:deep(.serial-scheme-btn) {
   flex: 1;
   padding: 9px 12px;
   border: 1px solid #e8eaed;
@@ -8086,30 +8099,30 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.25s ease;
 }
 
-.serial-scheme-btn:hover {
+:deep(.serial-scheme-btn:hover) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   color: #2e7d32;
 }
 
-.serial-scheme-btn.active {
+:deep(.serial-scheme-btn.active) {
   background: #4caf50;
   border-color: #4caf50;
   color: #fff;
   font-weight: 600;
 }
 
-.serial-input-lg {
+:deep(.serial-input-lg) {
   width: 200px;
 }
 
-.serial-hint {
+:deep(.serial-hint) {
   font-size: 12px;
   color: #999;
   line-height: 1.6;
 }
 
-.serial-hint-block {
+:deep(.serial-hint-block) {
   display: block;
   margin-bottom: 14px;
   padding: 10px 12px;
@@ -8120,7 +8133,7 @@ button.batch-remote-tile-tag:disabled.active {
 }
 
 /* ===== pty 状态条 ===== */
-.pty-state {
+:deep(.pty-state) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 18px;
@@ -8133,26 +8146,26 @@ button.batch-remote-tile-tag:disabled.active {
   color: #666;
 }
 
-.pty-state-item b.ok {
+:deep(.pty-state-item b.ok) {
   color: #2e7d32;
 }
 
-.pty-state-item b.warn {
+:deep(.pty-state-item b.warn) {
   color: #ef6c00;
 }
 
-.pty-state-item.err {
+:deep(.pty-state-item.err) {
   color: #c62828;
 }
 
 /* ===== 按键序列 ===== */
-.serial-key-grid {
+:deep(.serial-key-grid) {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 8px;
 }
 
-.serial-key-btn {
+:deep(.serial-key-btn) {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -8167,36 +8180,36 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.25s ease;
 }
 
-.serial-key-btn:hover:not(:disabled) {
+:deep(.serial-key-btn:hover:not(:disabled)) {
   background: #e8f5e9;
   border-color: #a5d6a7;
   transform: translateY(-1px);
   box-shadow: 0 3px 10px rgba(76, 175, 80, 0.12);
 }
 
-.serial-key-btn:active:not(:disabled) {
+:deep(.serial-key-btn:active:not(:disabled)) {
   transform: translateY(0);
   background: #c8e6c9;
 }
 
-.serial-key-btn:disabled {
+:deep(.serial-key-btn:disabled) {
   opacity: 0.5;
   cursor: default;
 }
 
-.serial-key-btn-label {
+:deep(.serial-key-btn-label) {
   font-size: 13px;
   font-weight: 600;
   color: #444;
 }
 
-.serial-key-btn-value {
+:deep(.serial-key-btn-value) {
   font-size: 10px;
   color: #999;
 }
 
 /* 已输入的按键序列 */
-.serial-seq-list {
+:deep(.serial-seq-list) {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -8208,12 +8221,12 @@ button.batch-remote-tile-tag:disabled.active {
   border-radius: 8px;
 }
 
-.serial-seq-empty {
+:deep(.serial-seq-empty) {
   font-size: 12px;
   color: #999;
 }
 
-.serial-seq-item {
+:deep(.serial-seq-item) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -8226,13 +8239,13 @@ button.batch-remote-tile-tag:disabled.active {
   color: #2e7d32;
 }
 
-.serial-seq-item .serial-seq-idx {
+:deep(.serial-seq-item .serial-seq-idx) {
   font-size: 10px;
   color: #66bb6a;
   font-weight: 700;
 }
 
-.serial-seq-del {
+:deep(.serial-seq-del) {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -8248,12 +8261,12 @@ button.batch-remote-tile-tag:disabled.active {
   transition: all 0.2s ease;
 }
 
-.serial-seq-del:hover {
+:deep(.serial-seq-del:hover) {
   background: #ffebee;
   color: #c62828;
 }
 
-.serial-output {
+:deep(.serial-output) {
   margin: 0 0 10px;
   padding: 10px 12px;
   background: #1a1f2e;
@@ -8270,95 +8283,95 @@ button.batch-remote-tile-tag:disabled.active {
 
 @media (prefers-color-scheme: dark) {
   .serial-select,
-  .serial-input {
+  :deep(.serial-input) {
     background: #3a3d45;
     border-color: #555;
     color: #e0e0e0;
   }
 
   .serial-label,
-  .serial-check {
+  :deep(.serial-check) {
     color: #b0b0b0;
   }
 
   .serial-mode-btn,
   .serial-mini-btn,
-  .serial-scheme-btn {
+  :deep(.serial-scheme-btn) {
     background: #3a3d45;
     border-color: #555;
     color: #ccc;
   }
 
   .serial-mode-btn.active,
-  .serial-scheme-btn.active {
+  :deep(.serial-scheme-btn.active) {
     background: #66bb6a;
     border-color: #66bb6a;
     color: #1a1d23;
   }
 
-  .serial-textarea {
+  :deep(.serial-textarea) {
     background: #3a3d45;
     border-color: #555;
     color: #e0e0e0;
   }
 
-  .serial-msg.ok {
+  :deep(.serial-msg.ok) {
     background: #2e3d31;
     color: #81c784;
   }
 
-  .serial-msg.err {
+  :deep(.serial-msg.err) {
     background: #3a2426;
     color: #ef9a9a;
   }
 
-  .pty-state {
+  :deep(.pty-state) {
     background: #33363e;
     border-color: #40434a;
   }
 
-  .script-switch {
+  :deep(.script-switch) {
     color: #999;
   }
 
-  .script-switch.on {
+  :deep(.script-switch.on) {
     color: #81c784;
   }
 
-  .script-switch-track {
+  :deep(.script-switch-track) {
     background: #4a4d55;
   }
 
-  .script-switch.on .script-switch-track {
+  :deep(.script-switch.on .script-switch-track) {
     background: #66bb6a;
   }
 
-  .serial-key-btn {
+  :deep(.serial-key-btn) {
     background: #3a3d45;
     border-color: #555;
   }
 
-  .serial-key-btn:hover:not(:disabled) {
+  :deep(.serial-key-btn:hover:not(:disabled)) {
     background: #2e3d31;
     border-color: #66bb6a;
   }
 
-  .serial-key-btn-label {
+  :deep(.serial-key-btn-label) {
     color: #e0e0e0;
   }
 
-  .serial-seq-list {
+  :deep(.serial-seq-list) {
     background: #33363e;
     border-color: #40434a;
   }
 
-  .serial-seq-item {
+  :deep(.serial-seq-item) {
     background: #2e3d31;
     border-color: #66bb6a;
     color: #81c784;
   }
 
-  .serial-seq-del:hover {
+  :deep(.serial-seq-del:hover) {
     background: #3a2426;
     color: #ef9a9a;
   }
@@ -8452,1604 +8465,24 @@ button.batch-remote-tile-tag:disabled.active {
             </div>
             
             <div class="tab-content">
-              <div v-if="activeTab === 'info'" class="keys-page">
-                <!-- 卡片1: 设备信息 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="4" y="4" width="16" height="16" rx="2"/>
-                        <line x1="4" y1="10" x2="20" y2="10"/>
-                        <line x1="10" y1="4" x2="10" y2="20"/>
-                      </svg>
-                    </span>
-                    <span>设备信息</span>
-                    <button
-                      class="card-header-action"
-                      :disabled="!deviceInfo"
-                      @click="copyDeviceInfo"
-                      title="复制设备信息到剪贴板"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                        <rect x="9" y="9" width="12" height="12" rx="2"/>
-                        <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
-                      </svg>
-                      <span>复制</span>
-                    </button>
-                  </div>
-                  <div class="card-body">
-                    <div v-if="deviceInfo" class="info-grid-2col">
-                      <div class="info-item-2col">
-                        <span class="info-label">设备状态</span>
-                        <span class="info-value"><span class="status-badge connected">{{ deviceInfo.status }}</span></span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">设备序列号</span>
-                        <span class="info-value">{{ deviceInfo.deviceId }}</span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">设备名称</span>
-                        <span class="info-value">{{ deviceInfo.deviceName || deviceInfo.model || '未知' }}</span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">安卓版本</span>
-                        <span class="info-value">{{ deviceInfo.androidVersion || deviceInfo.version || '未知' }}</span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">版本信息</span>
-                        <span class="info-value">{{ deviceInfo.displayVersion || '未知' }}</span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">构建日期</span>
-                        <span class="info-value">{{ deviceInfo.buildDate || '未知' }}</span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">SN号</span>
-                        <span 
-                          class="info-value copyable-value" 
-                          :class="{ disabled: !deviceInfo.sn }"
-                          @click="copyToClipboard(deviceInfo.sn, 'SN号')"
-                          title="点击复制"
-                        >
-                          {{ deviceInfo.sn || '未知' }}
-                        </span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">WiFi MAC</span>
-                        <span 
-                          class="info-value copyable-value" 
-                          :class="{ disabled: !deviceInfo.wifiMac }"
-                          @click="copyToClipboard(deviceInfo.wifiMac, 'WiFi MAC')"
-                          title="点击复制"
-                        >
-                          {{ deviceInfo.wifiMac || '未知' }}
-                        </span>
-                      </div>
-                      <div class="info-item-2col">
-                        <span class="info-label">以太网 MAC</span>
-                        <span 
-                          class="info-value copyable-value" 
-                          :class="{ disabled: !deviceInfo.ethMac }"
-                          @click="copyToClipboard(deviceInfo.ethMac, '以太网 MAC')"
-                          title="点击复制"
-                        >
-                          {{ deviceInfo.ethMac || '未知' }}
-                        </span>
-                      </div>
-                    </div>
-                    <div v-else class="loading-text">加载设备信息中...</div>
-                  </div>
-                </div>
-
-                <!-- 卡片2: 功能区 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-                      </svg>
-                    </span>
-                    <span>功能区</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="feature-grid">
-                      <button class="feature-btn" @click="showDeviceLogs">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                        </svg>
-                        <span>实时日志</span>
-                      </button>
-                      <button class="feature-btn" @click="openDeviceShell">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <polyline points="16 18 22 12 16 6"/>
-                          <polyline points="8 6 2 12 8 18"/>
-                        </svg>
-                        <span>Shell窗口</span>
-                      </button>
-                      <button
-                        class="feature-btn"
-                        :class="{ capturing: capturingLogs }"
-                        @click="capturingLogs ? stopLogCapture() : startLogCapture()"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                          <polyline points="7 10 12 15 17 10"/>
-                          <line x1="12" y1="15" x2="12" y2="3"/>
-                        </svg>
-                        <span v-if="!capturingLogs">导出日志</span>
-                        <template v-else>
-                          <span class="capture-status-label">抓取中...</span>
-                          <span class="capture-stop-label">结束抓取</span>
-                        </template>
-                      </button>
-                      <button class="feature-btn" :disabled="cleaningMemory" @click="cleanMemory">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                          <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/>
-                          <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
-                        </svg>
-                        <span>{{ cleaningMemory ? '清理中…' : '清理内存' }}</span>
-                      </button>
-                      <button class="feature-btn" :disabled="importingCert" @click="importCaCert">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                          <path d="M9 12l2 2 4-4"/>
-                        </svg>
-                        <span>{{ importingCert ? '导入中…' : '导入证书' }}</span>
-                      </button>
-                      <button class="feature-btn danger" @click="rebootToLoader">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                        </svg>
-                        <span>reboot loader</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TabInfo />
               
-              <div v-if="activeTab === 'apps'" class="keys-page">
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="4" y="2" width="16" height="20" rx="2"/>
-                        <line x1="8" y1="6" x2="16" y2="6"/>
-                        <line x1="8" y1="10" x2="16" y2="10"/>
-                        <line x1="8" y1="14" x2="12" y2="14"/>
-                      </svg>
-                    </span>
-                    <span>应用管理</span>
-                    <div class="apps-header-btns">
-                      <button class="card-action-btn" @click="openApkRepo">🗄️ APK仓库</button>
-                      <button class="card-action-btn" @click="installApp">+ 安装</button>
-                    </div>
-                  </div>
-                  <div
-                    class="card-body"
-                    style="padding: 0;"
-                  >
-                    <div v-if="appLoading" class="loading-text" style="padding: 24px; text-align: center;">加载应用列表中...</div>
-                    <div v-else-if="apps.length === 0" class="loading-text" style="padding: 24px; text-align: center;">无应用</div>
-                    <div v-else class="app-list">
-                      <div v-for="app in apps" :key="app.packageName" class="app-item">
-                        <div class="app-item-info">
-                          <div class="app-item-name">{{ app.appName }}</div>
-                          <div class="app-item-desc">{{ app.packageName }} · v{{ app.versionName || '?' }}</div>
-                        </div>
-                        <div class="app-item-actions">
-                          <button class="app-act-btn start" @click="startApp(app.packageName)" title="启动">
-                            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                          </button>
-                          <button class="app-act-btn stop" @click="stopApp(app.packageName)" title="停止">
-                            <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><rect x="6" y="6" width="12" height="12"/></svg>
-                          </button>
-                          <button class="app-act-btn extract" @click="extractApk(app.packageName, app.appName)" title="提取APK">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                          </button>
-                          <button class="app-act-btn uninstall" @click="uninstallApp(app.packageName)" title="卸载">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TabApps />
               
-              <div v-if="activeTab === 'files'" class="keys-page">
-                <!-- SQLite 数据库查看模式：整体替换文件列表 -->
-                <SqliteDbViewer
-                  v-if="dbViewerFile"
-                  :device-id="selectedDevice"
-                  :remote-path="dbViewerFile.path"
-                  :file-name="dbViewerFile.name"
-                  @close="dbViewerFile = null"
-                />
-                <div v-else class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
-                      </svg>
-                    </span>
-                    <span class="file-path-text">{{ currentPath }}</span>
-                    <button class="card-action-btn" @click="navigateTo('/sdcard')">根目录</button>
-                  </div>
-                  <div class="card-body" style="padding: 0;">
-                    <div class="file-toolbar">
-                      <span class="file-batch-info">{{ selectedFileCount > 0 ? '已选中 ' + selectedFileCount + ' 项' : '未选中' }}</span>
-                      <button class="toolbar-btn" @click="fetchFiles(selectedDevice, currentPath)" title="刷新">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                        </svg>
-                        刷新
-                      </button>
-                      <button class="toolbar-btn" @click="goBack" title="返回上一级" :disabled="currentPath === '/' || currentPath === '/sdcard'">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <polyline points="15 18 9 12 15 6"/>
-                        </svg>
-                        返回
-                      </button>
-                      <button class="toolbar-btn" @click="createFolder" title="创建文件夹">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                        </svg>
-                        新建文件夹
-                      </button>
-                      <button class="toolbar-btn" @click="createFile" title="创建文件">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><line x1="9" y1="15" x2="15" y2="15"/>
-                        </svg>
-                        新建文件
-                      </button>
-                      <button class="toolbar-btn" @click="importFile" title="导入文件">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                        </svg>
-                        导入
-                      </button>
-                      <button v-if="selectedFileCount > 0" class="toolbar-btn danger" @click="batchDeleteSelected" title="删除选中的文件/文件夹">
-                        <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
-                          <path d="M202.666667 256h-42.666667a32 32 0 0 1 0-64h704a32 32 0 0 1 0 64H266.666667v565.333333a53.333333 53.333333 0 0 0 53.333333 53.333334h384a53.333333 53.333333 0 0 0 53.333333-53.333334V352a32 32 0 0 1 64 0v469.333333c0 64.8-52.533333 117.333333-117.333333 117.333334H320c-64.8 0-117.333333-52.533333-117.333333-117.333334V256z m224-106.666667a32 32 0 0 1 0-64h170.666666a32 32 0 0 1 0 64H426.666667z m-32 288a32 32 0 0 1 64 0v256a32 32 0 0 1-64 0V437.333333z m170.666666 0a32 32 0 0 1 64 0v256a32 32 0 0 1-64 0V437.333333z"/>
-                        </svg>
-                        删除选中
-                      </button>
-                      <button v-if="selectedFileCount > 0" class="toolbar-btn" @click="batchMoveSelected" title="把选中的文件/文件夹移动到指定目录">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>
-                        </svg>
-                        移动到…
-                      </button>
-                      <button v-if="selectedFileCount > 0" class="toolbar-btn" @click="clearFileSelection" title="取消选择">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                        取消选择
-                      </button>
-                    </div>
-                    <div v-if="fileLoading" class="loading-text" style="padding: 24px; text-align: center; border-top: 1px solid #f0f0f0;">加载文件列表中...</div>
-                    <div v-else-if="files.length === 0" class="loading-text" style="padding: 24px; text-align: center; border-top: 1px solid #f0f0f0;">无文件</div>
-                    <div v-else class="file-list">
-                      <div class="file-list-header" @click.prevent>
-                        <div class="file-item-check">
-                          <input type="checkbox" :checked="fileAllSelected" :indeterminate="fileSomeSelected" @click.stop @change="toggleSelectAllFiles" title="全选/取消全选" />
-                        </div>
-                        <div class="file-item-icon"></div>
-                        <div class="file-item-name file-sortable" :class="{ 'sort-active': fileSortKey === 'name' }" @click.stop="toggleFileSort('name')" title="按名称排序">名称 {{ fileSortKey === 'name' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
-                        <div class="file-item-size file-sortable" :class="{ 'sort-active': fileSortKey === 'size' }" @click.stop="toggleFileSort('size')" title="按大小排序">大小 {{ fileSortKey === 'size' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
-                        <div class="file-item-actions file-sortable" :class="{ 'sort-active': fileSortKey === 'time' }" @click.stop="toggleFileSort('time')" title="按修改时间排序">时间 {{ fileSortKey === 'time' ? (fileSortAsc ? '↑' : '↓') : '' }}</div>
-                      </div>
-                      <div v-for="file in sortedFiles" :key="file.path" class="file-item" @click="file.isDirectory && navigateTo(file.path)">
-                        <div class="file-item-check" @click.stop>
-                          <input type="checkbox" :checked="selectedFiles.has(file.path)" @change="toggleFileSelection(file.path)" title="选择该项" />
-                        </div>
-                        <div class="file-item-icon">{{ file.isDirectory ? '📁' : '📄' }}</div>
-                        <div class="file-item-name" :class="{ 'is-dir': file.isDirectory }">{{ file.name }}</div>
-                        <div class="file-item-size">
-                          <template v-if="!file.isDirectory">{{ formatBytes(Number(file.size)) }}</template>
-                          <template v-else-if="file.size">共 {{ file.size }} 项</template>
-                        </div>
-                        <div class="file-item-time">{{ file.mtime || '' }}</div>
-                        <div class="file-item-actions">
-                          <button v-if="previewKindOf(file) === 'image'" class="file-act-btn export" @click.stop="openImageViewer(file)" title="查看图片">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <rect x="3" y="3" width="18" height="18" rx="2"/>
-                              <circle cx="8.5" cy="8.5" r="1.5"/>
-                              <polyline points="21 15 16 10 5 21"/>
-                            </svg>
-                          </button>
-                          <button v-else-if="previewKindOf(file) === 'video'" class="file-act-btn export" @click.stop="openImageViewer(file)" title="播放视频">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <rect x="2" y="4" width="20" height="16" rx="2"/>
-                              <polygon points="10 9 15 12 10 15 10 9" fill="currentColor" stroke="none"/>
-                            </svg>
-                          </button>
-                          <button v-else-if="!file.isDirectory" class="file-act-btn export" disabled :title="viewDisabledReason(file)" style="opacity:0.35;">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <rect x="3" y="3" width="18" height="18" rx="2"/>
-                              <circle cx="8.5" cy="8.5" r="1.5"/>
-                              <polyline points="21 15 16 10 5 21"/>
-                            </svg>
-                          </button>
-                          <button v-if="isEditableTextFile(file)" class="file-act-btn export" @click.stop="openFileEditor(file)" title="编辑">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
-                            </svg>
-                          </button>
-                          <button v-else-if="!file.isDirectory" class="file-act-btn export" disabled :title="editDisabledReason(file)" style="opacity:0.35;">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
-                            </svg>
-                          </button>
-                          <button v-if="isSqliteFile(file)" class="file-act-btn export" @click.stop="openSqliteViewer(file)" title="查看数据库">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <ellipse cx="12" cy="5" rx="9" ry="3"/>
-                              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
-                              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
-                            </svg>
-                          </button>
-                          <button class="file-act-btn export" @click.stop="renameFile(file)" title="重命名/移动">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/>
-                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                            </svg>
-                          </button>
-                          <button class="file-act-btn export" @click.stop="exportFile(file)" title="导出">
-                            <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
-                              <path d="M853.333333 853.333333a42.666667 42.666667 0 0 1 0 85.333334H170.666667a42.666667 42.666667 0 0 1 0-85.333334h682.666666zM512 85.504a42.666667 42.666667 0 0 1 42.666667 42.666667v515.370666l204.373333-204.373333a42.666667 42.666667 0 0 1 63.914667 56.277333l-3.584 4.010667-277.376 277.546667a42.666667 42.666667 0 0 1-56.32 3.584l-4.010667-3.541334-277.12-276.650666a42.666667 42.666667 0 0 1 56.234667-63.957334l4.010666 3.541334L469.333333 644.096V128.170667a42.666667 42.666667 0 0 1 42.666667-42.666667z"/>
-                            </svg>
-                          </button>
-                          <button class="file-act-btn delete" @click.stop="deleteFile(file.path, file.isDirectory)" title="删除">
-                            <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
-                              <path d="M202.666667 256h-42.666667a32 32 0 0 1 0-64h704a32 32 0 0 1 0 64H266.666667v565.333333a53.333333 53.333333 0 0 0 53.333333 53.333334h384a53.333333 53.333333 0 0 0 53.333333-53.333334V352a32 32 0 0 1 64 0v469.333333c0 64.8-52.533333 117.333333-117.333333 117.333334H320c-64.8 0-117.333333-52.533333-117.333333-117.333334V256z m224-106.666667a32 32 0 0 1 0-64h170.666666a32 32 0 0 1 0 64H426.666667z m-32 288a32 32 0 0 1 64 0v256a32 32 0 0 1-64 0V437.333333z m170.666666 0a32 32 0 0 1 64 0v256a32 32 0 0 1-64 0V437.333333z"/>
-                            </svg>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TabFiles />
               
-              <div v-if="activeTab === 'keys'" class="keys-page">
-                <!-- 卡片1: 投屏控制 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="2" y="3" width="20" height="14" rx="2"/>
-                        <line x1="8" y1="21" x2="16" y2="21"/>
-                        <line x1="12" y1="17" x2="12" y2="21"/>
-                      </svg>
-                    </span>
-                    <span>投屏控制</span>
-                  </div>
-                  <div class="card-body">
-                    <button class="scrcpy-btn" @click="startScrcpy">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
-                        <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" stroke="none"/>
-                      </svg>
-                      启动投屏
-                    </button>
-                  </div>
-                </div>
+              <TabKeys />
 
-                <!-- 卡片2: 按键模拟 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="4" y="2" width="16" height="20" rx="2"/>
-                        <line x1="8" y1="6" x2="16" y2="6"/>
-                        <line x1="12" y1="6" x2="12" y2="2"/>
-                      </svg>
-                    </span>
-                    <span>按键模拟</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="key-grid">
-                      <button class="key-btn" @click="simulateKey('back')">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <polyline points="15 18 9 12 15 6"/>
-                        </svg>
-                        <span>返回</span>
-                      </button>
-                      <button class="key-btn" @click="simulateKey('home')">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <path d="M3 12l9-9 9 9"/><path d="M5 10v8a1 1 0 001 1h12a1 1 0 001-1v-8"/>
-                        </svg>
-                        <span>主页</span>
-                      </button>
-                      <button class="key-btn" @click="simulateKey('recent')">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <rect x="3" y="4" width="18" height="6" rx="1"/>
-                          <rect x="3" y="14" width="18" height="6" rx="1"/>
-                        </svg>
-                        <span>多任务</span>
-                      </button>
-                      <button class="key-btn" @click="simulateKey('power')">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 11-12.72 0"/>
-                        </svg>
-                        <span>锁屏</span>
-                      </button>
-                    </div>
-                    <button class="restart-btn" @click="restartDevice">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                        <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                      </svg>
-                      重启设备
-                    </button>
-                  </div>
-                </div>
+              <TabBatch />
 
-                <!-- 卡片3: 音量控制 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                        <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/>
-                      </svg>
-                    </span>
-                    <span>音量控制</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="volume-row">
-                      <button class="vol-btn" @click="volumeUp">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                          <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
-                        </svg>
-                        <span>音量+</span>
-                      </button>
-                      <button class="vol-btn mute-btn" @click="muteVolume">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                          <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
-                        </svg>
-                        <span>静音</span>
-                      </button>
-                      <button class="vol-btn" @click="volumeDown">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                          <line x1="22" y1="12" x2="16" y2="12"/>
-                        </svg>
-                        <span>音量-</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TabScript />
 
-              <div v-if="activeTab === 'batch'" class="batch-page">
-                <div class="batch-card">
-                  <div class="card-header batch-header">
-                    <div class="batch-header-left">
-                      <span class="card-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <rect x="3" y="3" width="7" height="7" rx="1"/>
-                          <rect x="14" y="3" width="7" height="7" rx="1"/>
-                          <rect x="3" y="14" width="7" height="7" rx="1"/>
-                          <rect x="14" y="14" width="7" height="7" rx="1"/>
-                        </svg>
-                      </span>
-                      <span>批量操作</span>
-                    </div>
-                    <span class="batch-selected-info">已选择 {{ selectedBatchCount }} 个设备</span>
-                  </div>
-                  <div class="batch-content">
-                    <!-- 上半部分：设备列表 (60%) -->
-                    <div class="batch-device-list">
-                      <div class="batch-list-header">
-                        <label class="batch-checkbox-label">
-                          <input type="checkbox" :checked="batchSelectAllChecked" @change="toggleAllBatchDevices" />
-                        </label>
-                        <span class="col-device-id">设备ID</span>
-                        <span class="col-model">
-                          型号
-                          <input type="text" v-model="batchModelFilter" class="model-filter-input" placeholder="筛选型号..." />
-                        </span>
-                        <span class="col-sn">SN号</span>
-                      </div>
-                      <div v-if="batchLoading" class="batch-loading">加载设备信息中...</div>
-                      <div v-else-if="batchFilteredDevices.length === 0" class="batch-empty">{{ batchDeviceInfos.length === 0 ? '暂无可用设备' : '无匹配设备' }}</div>
-                      <div v-else class="batch-list-body">
-                        <label v-for="device in batchFilteredDevices" :key="device.deviceId" class="batch-device-row" :class="{ 'is-selected': batchSelectedDevices.has(device.deviceId) }">
-                          <input type="checkbox" :checked="batchSelectedDevices.has(device.deviceId)" @change="toggleBatchDevice(device.deviceId)" />
-                          <span class="col-device-id" :title="device.deviceId">{{ device.deviceId }}</span>
-                          <span class="col-model">{{ device.model || '未知' }}</span>
-                          <span class="col-sn">{{ device.sn || '未知' }}</span>
-                        </label>
-                      </div>
-                    </div>
-                    <!-- 下半部分：操作按钮区 (40%) -->
-                    <div class="batch-action-area">
-                      <div class="batch-action-grid">
-                        <button class="batch-action-btn" @click="batchReboot" :disabled="batchRebootLoading">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
-                          </svg>
-                          <span>{{ batchRebootLoading ? '重启中...' : '批量重启' }}</span>
-                        </button>
-                        <button class="batch-action-btn" @click="batchInstallApp" :disabled="batchInstallLoading">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                            <polyline points="7 10 12 15 17 10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
-                          </svg>
-                          <span>{{ batchInstallLoading ? '安装中...' : '批量安装' }}</span>
-                        </button>
-                        <button class="batch-action-btn" @click="batchShellCommand" :disabled="batchShellLoading">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                            <polyline points="4 17 10 11 4 5"/>
-                            <line x1="12" y1="19" x2="20" y2="19"/>
-                          </svg>
-                          <span>{{ batchShellLoading ? '执行中...' : '批量Shell' }}</span>
-                        </button>
-                        <button class="batch-action-btn" @click="batchRemoteActive ? stopBatchRemote() : startBatchRemote()" :disabled="batchRemoteConnecting && !batchRemoteActive">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                            <rect x="2" y="4" width="20" height="14" rx="2"/>
-                            <line x1="8" y1="21" x2="16" y2="21"/>
-                            <line x1="12" y1="18" x2="12" y2="21"/>
-                          </svg>
-                          <span>{{ batchRemoteConnecting && !batchRemoteActive ? '连接中...' : batchRemoteActive ? '结束投屏' : '批量投屏' }}</span>
-                        </button>
-                        <button class="batch-action-btn" @click="batchKeyevent" :disabled="batchKeyLoading">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                            <rect x="4" y="2" width="16" height="20" rx="2"/>
-                            <line x1="8" y1="6" x2="16" y2="6"/>
-                            <line x1="12" y1="6" x2="12" y2="2"/>
-                          </svg>
-                          <span>{{ batchKeyLoading ? '执行中...' : '批量按键' }}</span>
-                        </button>
-                      </div>
+              <TabSerial />
 
-                      <!-- Shell 执行结果 -->
-                      <div v-if="showBatchShellResults && batchShellResults.length > 0" class="batch-shell-results">
-                        <div class="shell-results-header">
-                          <span>批量 Shell 执行结果</span>
-                          <button class="shell-close-btn" @click="showBatchShellResults = false">×</button>
-                        </div>
-                        <div class="shell-results-list">
-                          <div v-for="result in batchShellResults" :key="result.deviceId" class="shell-result-item">
-                            <div class="shell-result-device">
-                              <span class="shell-status-icon" :class="{ 'shell-success': result.success, 'shell-failed': !result.success }">
-                                {{ result.success ? '✓' : '✗' }}
-                              </span>
-                              <span class="shell-device-id">{{ result.deviceId }}</span>
-                            </div>
-                            <div v-if="result.stdout" class="shell-output-section">
-                              <div class="shell-output-label">标准输出:</div>
-                              <pre class="shell-output">{{ result.stdout }}</pre>
-                            </div>
-                            <div v-if="result.stderr" class="shell-output-section shell-error">
-                              <div class="shell-output-label">错误输出:</div>
-                              <pre class="shell-output shell-error-text">{{ result.stderr }}</pre>
-                            </div>
-                            <div v-if="!result.success && !result.stderr" class="shell-output-section shell-error">
-                              <div class="shell-output-label">执行失败</div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 批量投屏画面区（会话建立后显示） -->
-                <div v-if="batchRemoteActive || batchRemoteCards.length > 0" class="batch-remote-area">
-                  <div class="batch-remote-header">
-                    <span>批量投屏（主控画面操作同步到其他设备 · 单击从机画面或点「设为主控」切换主控）</span>
-                    <span class="batch-remote-status" :class="{ live: batchRemoteActive }">{{ batchRemoteWsStatus }}</span>
-                  </div>
-                  <div v-if="batchRemoteStatus" class="batch-remote-error">{{ batchRemoteStatus }}</div>
-                  <div class="batch-remote-grid" :style="{ gridTemplateColumns: `repeat(${batchRemoteGridCols}, 1fr)` }">
-                    <div
-                      v-for="card in batchRemoteCards"
-                      :key="card.deviceId"
-                      class="batch-remote-tile"
-                      :class="{ source: card.deviceId === batchRemoteSource, dead: !card.ready }"
-                    >
-                      <div class="batch-remote-tile-header">
-                        <span class="batch-remote-tile-name">
-                          {{ card.name }}
-                          <span class="batch-remote-tile-diag">
-                            idx{{ card.index }} · {{ card.frames }}帧{{ card.codec ? ' · ' + card.codec : '' }}{{ card.diag ? ' · ' + card.diag : '' }}
-                          </span>
-                        </span>
-                        <button
-                          class="batch-remote-tile-tag"
-                          :class="{ active: card.deviceId === batchRemoteSource }"
-                          :disabled="card.deviceId === batchRemoteSource"
-                          @click.stop="setBatchRemoteSource(card.deviceId)"
-                        >
-                          {{ card.deviceId === batchRemoteSource ? '★ 主控' : '设为主控' }}
-                        </button>
-                      </div>
-                      <!-- 画面容器：撑满卡片剩余空间，canvas 用 object-fit:contain 等比完整显示 -->
-                      <div class="batch-remote-tile-body">
-                        <canvas
-                          :ref="(el) => setBatchRemoteCanvasRef(el, card.index)"
-                          class="batch-remote-canvas"
-                          @pointerdown.stop="batchRemoteOnPointer($event, card)"
-                          @pointermove.stop="batchRemoteOnPointer($event, card)"
-                          @pointerup.stop="batchRemoteOnPointer($event, card)"
-                          @pointercancel.stop="batchRemoteOnPointer($event, card)"
-                        ></canvas>
-                        <div v-if="!card.ready" class="batch-remote-tile-loading">等待画面...</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="activeTab === 'script'" class="keys-page script-page">
-                <div class="script-layout" ref="scriptLayoutRef">
-                  <!-- 左：屏幕流 -->
-                  <div class="script-screen-panel" :style="{ width: scriptPreviewWidth ? scriptPreviewWidth + 'px' : '100%' }">
-                    <div class="script-screen-header">
-                      <span>屏幕预览</span>
-                      <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
-                      <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
-                      <span v-if="scriptKeyboardActive" class="script-kbd-tag" title="点击画面空白处可退出键盘接管">
-                        ⌨ 键盘已接管
-                        <button class="script-kbd-exit" @click.stop="scriptReleaseKeyboard">退出</button>
-                      </span>
-                      <label class="script-switch" :class="{ on: scriptShowMarkers }">
-                        <input type="checkbox" v-model="scriptShowMarkers" />
-                        <span class="script-switch-track"></span>
-                        <span class="script-switch-text">显示步骤</span>
-                      </label>
-                    </div>
-                    <div class="script-screen-body" ref="scriptScreenBodyRef">
-                      <canvas
-                        ref="scriptCanvasRef"
-                        class="script-canvas"
-                        :class="{
-                          recording: scriptRecording,
-                          'editing-markers': scriptShowMarkers && !scriptRecording,
-                          dragging: !!scriptDragging
-                        }"
-                        @pointerdown="scriptOnPointerDown"
-                        @pointermove="scriptOnPointerMove"
-                        @pointerup="scriptOnPointerUp"
-                        @pointercancel="scriptOnPointerCancel"
-                      ></canvas>
-                      <div v-if="!scriptStreaming" class="script-screen-placeholder">
-                        {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 右：控制区 -->
-                  <div class="script-side-panel" :class="{ 'two-col': scriptSideTwoCol }">
-                    <!-- 上：录制控制 + 添加设备动作步骤 -->
-                    <div class="script-section">
-                      <div class="script-screen-header"><span>步骤功能</span></div>
-                      <div class="script-record-row">
-                        <button class="script-record-btn" :class="{ active: scriptRecording }" @click="toggleRecording">
-                          {{ scriptRecording ? '■ 结束录制' : '● 开始录制' }}
-                        </button>
-                        <div v-if="scriptRecording" class="script-verify-switch">
-                          <span>画面校验</span>
-                          <el-switch v-model="scriptVerify" />
-                        </div>
-                      </div>
-                      <div class="script-add-steps">
-                        <span class="script-add-label">添加步骤</span>
-                        <button
-                          v-for="a in SCRIPT_GESTURE_STEPS"
-                          :key="a.type"
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          @click="addScriptGestureStep(a.type)"
-                        >{{ a.icon }} {{ a.label }}</button>
-                        <button
-                          v-for="a in SCRIPT_ADB_STEPS"
-                          :key="a.type"
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          @click="addScriptAdbStep(a.type)"
-                        >{{ a.icon }} {{ a.label }}</button>
-                        <button
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          title="新增等待组件步骤，在步骤参数里从已有模板图中手动选择"
-                          @click="addScriptWaitStep"
-                        >🖼 等待组件(选图)</button>
-                        <button
-                          class="script-add-btn"
-                          :class="{ cropping: scriptCropMode }"
-                          :disabled="!scriptStreaming || scriptRunning"
-                          title="开启后在画面上框住组件，松开保存为模板并添加等待步骤"
-                          @click="toggleCropMode"
-                        >{{ scriptCropMode ? '✕ 取消框选' : '👁 等待组件(框选)' }}</button>
-                        <button
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          title="按应用/组件/Shell 输出/设备时刻判断，并按成立与否跳转"
-                          @click="addScriptConditionStep"
-                        >🧭 判断步骤</button>
-                      </div>
-                    </div>
-
-                    <!-- 下：脚本列表 + 底部按钮 -->
-                    <div class="script-section script-list-section">
-                      <div class="script-list-header">
-                        <span>
-                          <el-tooltip placement="bottom-start">
-                            <template #content>
-                              <div class="script-help-content">{{ SCRIPT_VARIABLE_HELP }}</div>
-                            </template>
-                            <span class="script-help-icon">i</span>
-                          </el-tooltip>脚本步骤（{{ scriptSteps.length }}）</span>
-                        <div class="script-header-actions">
-                          <button
-                            class="script-mini-btn"
-                            @click="setAllIntervals"
-                            :disabled="scriptSteps.length === 0 || scriptRunning"
-                            title="把所有步骤的执行间隔统一设置为同一个值"
-                          >统一间隔</button>
-                          <button
-                            class="script-mini-btn"
-                            @click="openImportMenu"
-                            :disabled="scriptSaving || scriptRunning"
-                          >导入</button>
-                          <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
-                        </div>
-                      </div>
-                      <div class="script-steps-list">
-                        <div v-if="scriptSteps.length === 0" class="script-empty">
-                          录制模式下在左侧屏幕上操作即可记录步骤
-                        </div>
-                        <template v-for="group in scriptStepGroups" :key="group.key">
-                          <div class="script-step-group-header">{{ group.label }}（{{ group.items.length }}）</div>
-                          <div
-                            v-for="{ step, idx } in group.items"
-                            :key="idx"
-                            class="script-step-item"
-                          :class="{
-                            selected: scriptEditingStep === idx,
-                            'drag-over': scriptStepDragOver === idx && scriptStepDragFrom !== idx,
-                            dragging: scriptStepDragFrom === idx,
-                          }"
-                          draggable="true"
-                          @click="toggleStepEdit(idx)"
-                          @dragstart="onScriptStepDragStart(idx, $event)"
-                          @dragover="onScriptStepDragOver(idx, $event)"
-                          @dragleave="onScriptStepDragLeave(idx)"
-                          @drop="onScriptStepDrop(idx, $event)"
-                          @dragend="onScriptStepDragEnd"
-                        >
-                          <span class="script-step-idx">{{ idx + 1 }}</span>
-                          <span class="script-step-desc">{{ scriptStepLabel(step) }}</span>
-                          <span class="script-step-meta">{{ step.interval }}ms × {{ step.count }}次</span>
-                          <button class="script-step-del" @click.stop="removeScriptStep(idx)">×</button>
-
-                          <!-- 选中后展开该步的执行参数 -->
-                          <div v-if="scriptEditingStep === idx" class="script-step-config" @click.stop>
-                            <div v-if="step.type === 'input'" class="script-config-row">
-                              <span>输入内容</span>
-                              <el-input v-model="step.text" class="ep-config-input" />
-                            </div>
-                            <!-- 等待组件步骤的专属参数 -->
-                            <div v-if="step.type === 'waitFor'" class="script-config-row">
-                              <span>模板</span>
-                              <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
-                                <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
-                              </el-select>
-                            </div>
-                            <div v-if="step.type === 'waitFor' && step.template && scriptTemplatePreview" class="script-config-row script-template-preview-row">
-                              <img
-                                :key="scriptTemplatePreview"
-                                :src="scriptTemplatePreview"
-                                class="script-template-preview"
-                                alt="模板预览"
-                                @error="onScriptTemplatePreviewError"
-                              />
-                            </div>
-                            <div v-if="step.type === 'waitFor'" class="script-config-row">
-                              <span>匹配阈值</span>
-                              <el-input-number v-model="step.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
-                            </div>
-                            <div v-if="step.type === 'waitFor'" class="script-config-row">
-                              <span>超时(秒)</span>
-                              <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="600" controls-position="right" />
-                            </div>
-                            <!-- 判断步骤的专属参数 -->
-                            <template v-if="step.type === 'condition'">
-                              <div class="script-config-row">
-                                <span>判断类型</span>
-                                <el-select v-model="step.kind" class="ep-config-select" @change="onScriptConditionKindChange(step, $event)">
-                                  <el-option v-for="k in SCRIPT_CONDITION_KINDS" :key="k.kind" :value="k.kind" :label="k.label" />
-                                </el-select>
-                              </div>
-                              <div class="script-config-row">
-                                <span>条件取反</span>
-                                <el-switch v-model="step.negate" />
-                              </div>
-                              <div v-if="step.kind === 'appInstalled'" class="script-config-row">
-                                <span>应用包名</span>
-                                <el-input v-model="step.packageName" class="ep-config-input" placeholder="com.example.app" />
-                              </div>
-                              <div v-if="step.kind === 'template'" class="script-config-row">
-                                <span>模板</span>
-                                <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
-                                  <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
-                                </el-select>
-                                <button
-                                  class="script-add-btn"
-                                  :disabled="!scriptStreaming || scriptRunning"
-                                  title="在画面上框住组件，保存为模板并设为当前判断步骤的模板"
-                                  @click="startCropForCondition(step)"
-                                >📷 现截图</button>
-                              </div>
-                              <div v-if="step.kind === 'template'" class="script-config-row">
-                                <span>匹配阈值</span>
-                                <el-input-number v-model="step.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
-                              </div>
-                              <div v-if="step.kind === 'shell'" class="script-config-row">
-                                <span>Shell 命令</span>
-                                <el-input v-model="step.command" class="ep-config-input" placeholder="getprop ro.build.version.release" />
-                              </div>
-                              <div v-if="step.kind === 'shell'" class="script-config-row">
-                                <span>输出包含</span>
-                                <el-input v-model="step.expected" class="ep-config-input" placeholder="13" />
-                              </div>
-                              <div v-if="step.kind === 'time'" class="script-config-row">
-                                <span>目标时刻</span>
-                                <el-input v-model="step.targetTime" class="ep-config-input" placeholder="09:30 或 09:30:00" />
-                              </div>
-                              <div v-if="step.kind === 'time'" class="script-config-row">
-                                <span>等待上限(秒)</span>
-                                <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="86400" controls-position="right" />
-                              </div>
-                              <div class="script-config-row">
-                                <span>成立时</span>
-                                <el-select v-model="step.onTrue.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onTrue, idx)">
-                                  <el-option
-                                    v-for="a in SCRIPT_BRANCH_ACTIONS"
-                                    :key="a.action"
-                                    :value="a.action"
-                                    :label="a.label"
-                                    :disabled="a.action === 'goto' && scriptGotoTargets(idx).length === 0"
-                                  />
-                                </el-select>
-                              </div>
-                              <div v-if="step.onTrue.action === 'goto'" class="script-config-row">
-                                <span>跳到</span>
-                                <el-select v-model="step.onTrue.target" class="ep-config-select" placeholder="选择目标步骤">
-                                  <el-option v-for="n in scriptGotoTargets(idx)" :key="n" :value="n" :label="`第 ${n} 步：${scriptStepLabel(scriptSteps[n - 1])}`" />
-                                </el-select>
-                              </div>
-                              <div class="script-config-row">
-                                <span>不成立时</span>
-                                <el-select v-model="step.onFalse.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onFalse, idx)">
-                                  <el-option
-                                    v-for="a in SCRIPT_BRANCH_ACTIONS"
-                                    :key="a.action"
-                                    :value="a.action"
-                                    :label="a.label"
-                                    :disabled="a.action === 'goto' && scriptGotoTargets(idx).length === 0"
-                                  />
-                                </el-select>
-                              </div>
-                              <div v-if="step.onFalse.action === 'goto'" class="script-config-row">
-                                <span>跳到</span>
-                                <el-select v-model="step.onFalse.target" class="ep-config-select" placeholder="选择目标步骤">
-                                  <el-option v-for="n in scriptGotoTargets(idx)" :key="n" :value="n" :label="`第 ${n} 步：${scriptStepLabel(scriptSteps[n - 1])}`" />
-                                </el-select>
-                              </div>
-                            </template>
-                            <!-- 设备动作类步骤的专属参数 -->
-                            <div v-if="step.type === 'installApk'" class="script-config-row">
-                              <span>APK 文件</span>
-                              <el-select v-model="step.apkName" class="ep-config-select" placeholder="选择 APK" :loading="scriptApkLoading">
-                                <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
-                              </el-select>
-                            </div>
-                            <div v-if="step.type === 'deleteFolder'" class="script-config-row">
-                              <span>文件夹路径</span>
-                              <el-input v-model="step.path" class="ep-config-input" placeholder="/sdcard/xxx" />
-                            </div>
-                            <div v-if="step.type === 'startApp' || step.type === 'stopApp' || step.type === 'uninstallApp'" class="script-config-row">
-                              <span>应用</span>
-                              <el-select
-                                v-model="step.packageName"
-                                class="ep-config-select"
-                                placeholder="选择应用"
-                                filterable
-                                :loading="scriptAppLoading"
-                              >
-                                <el-option v-for="p in scriptAppPackages" :key="p" :value="p" :label="scriptAppNames[p] || p" />
-                              </el-select>
-                            </div>
-                            <div v-if="step.type === 'keyevent'" class="script-config-row">
-                              <span>按键</span>
-                              <el-select
-                                :model-value="scriptKeyPresetOf(step)"
-                                class="ep-config-select"
-                                @change="onScriptKeyPresetChange(step, $event)"
-                              >
-                                <el-option v-for="k in SCRIPT_COMMON_KEYS" :key="k.code" :value="String(k.code)" :label="`${k.name}（${k.code}）`" />
-                                <el-option value="custom" label="自定义键值..." />
-                              </el-select>
-                            </div>
-                            <div v-if="step.type === 'keyevent' && scriptKeyPresetOf(step) === 'custom'" class="script-config-row">
-                              <span>键值</span>
-                              <el-input-number v-model.number="step.keycode" class="ep-config-num" :min="0" :max="65535" controls-position="right" />
-                            </div>
-                            <div v-if="step.type === 'volume'" class="script-config-row">
-                              <span>音量动作</span>
-                              <el-select v-model="step.action" class="ep-config-select">
-                                <el-option value="up" label="音量+" />
-                                <el-option value="down" label="音量-" />
-                                <el-option value="mute" label="静音" />
-                              </el-select>
-                            </div>
-                            <div v-if="step.type === 'volume' && step.action === 'mute'" class="script-config-row">
-                              <span>音源</span>
-                              <el-select v-model="step.stream" class="ep-config-select">
-                                <el-option value="media" label="媒体" />
-                                <el-option value="ring" label="铃声" />
-                                <el-option value="alarm" label="闹钟" />
-                                <el-option value="notification" label="通知" />
-                              </el-select>
-                            </div>
-                            <div v-if="step.type === 'tts'" class="script-config-row">
-                              <span>朗读文本</span>
-                              <el-input v-model="step.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
-                            </div>
-                            <div class="script-config-row">
-                              <span>{{ step.type === 'condition' ? '轮询/步间(ms)' : '执行间隔(ms)' }}</span>
-                              <el-input-number v-model="step.interval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
-                            </div>
-                            <div v-if="step.type !== 'condition'" class="script-config-row">
-                              <span>执行次数</span>
-                              <el-input-number v-model="step.count" class="ep-config-num" :min="1" :max="99" controls-position="right" />
-                            </div>
-                            <div v-if="step.type === 'input'" class="script-config-hint">
-                              输入到设备当前聚焦的输入框，通常放在一次点击之后
-                            </div>
-                            <div v-else-if="step.type === 'waitFor'" class="script-config-hint">
-                              反复截屏搜索模板，组件出现才继续下一步；超时未出现判失败
-                            </div>
-                            <div v-else-if="step.type === 'condition'" class="script-config-hint">
-                              单次判断后按「成立/不成立」分支；时间条件按上面的间隔轮询设备时钟（当天目标时刻已过则立即成立），跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
-                            </div>
-                            <div v-else-if="step.type === 'tts'" class="script-config-hint">
-                              通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒
-                            </div>
-                            <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
-                              设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
-                            </div>
-                            <div v-else class="script-config-hint">
-                              开启「显示步骤」后可在画面上拖动该步骤的位置
-                            </div>
-                          </div>
-                          </div>
-                        </template>
-                      </div>
-                      <div class="script-actions">
-                        <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
-                        <button class="script-action-btn" @click="runCurrentSteps" :disabled="scriptRunning || scriptSaving">执行</button>
-                        <button v-if="scriptRunning" class="script-action-btn script-stop-btn" @click="stopScriptRun">停止</button>
-                        <button v-if="!scriptRunning" class="script-action-btn" @click="repeatRun" :disabled="scriptSaving">重复</button>
-                        <button class="script-action-btn" @click="exportScriptZip" :disabled="scriptExporting || scriptSaving" title="导出为 zip 包（脚本 + 引用的 APK/模板图），拷到其他电脑导入即可用">导出</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="activeTab === 'serial'" class="keys-page">
-                <!-- 模拟串口页 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2z"/>
-                      </svg>
-                    </span>
-                    <span>模拟串口</span>
-                    <span v-if="serialToolDeployed" class="monitor-live-tag">工具已就绪</span>
-                    <span v-else class="serial-tool-missing">工具未部署</span>
-                  </div>
-                  <div class="card-body">
-                    <!-- 方案切换 -->
-                    <div class="serial-scheme-group">
-                      <button
-                        class="serial-scheme-btn"
-                        :class="{ active: serialScheme === 'loop' }"
-                        @click="serialScheme = 'loop'"
-                      >串口写入</button>
-                      <button
-                        class="serial-scheme-btn"
-                        :class="{ active: serialScheme === 'pty' }"
-                        @click="serialScheme = 'pty'"
-                      >键盘模拟</button>
-                      <button
-                        class="serial-scheme-btn"
-                        :class="{ active: serialScheme === 'read' }"
-                        @click="serialScheme = 'read'"
-                      >串口会话</button>
-                    </div>
-                    <div class="serial-hint">
-                      串口写入：向设备串口发送数据，通过 UART 内部回环让读取该串口的程序收到。
-                      键盘模拟：把串口替换为 pty，向实体键盘协议注入按键帧。
-                      串口会话：通过探针 0x04 打开设备串口持续读、0x03 取增量、0x05 发送、0x07 关闭，需设备已 root 且串口节点可读写。
-                    </div>
-                  </div>
-                </div>
-
-                <!-- ============ 方案 A：串口写入 ============ -->
-                <template v-if="serialScheme === 'loop'">
-                <!-- 卡片: 串口选择 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="2" y="3" width="20" height="14" rx="2"/>
-                        <line x1="8" y1="21" x2="16" y2="21"/>
-                        <line x1="12" y1="17" x2="12" y2="21"/>
-                      </svg>
-                    </span>
-                    <span>串口设备</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="serial-row">
-                      <select v-model="serialDevice" class="serial-select" :disabled="serialPortsLoading">
-                        <option v-for="p in serialPorts" :key="p.device" :value="p.device">
-                          {{ p.device }}{{ p.majorMinor ? ` (${p.majorMinor})` : '' }}
-                        </option>
-                      </select>
-                      <button class="serial-mini-btn" @click="loadSerialPorts" :disabled="serialPortsLoading">刷新</button>
-                      <button
-                        class="serial-mini-btn"
-                        @click="deploySerialTool"
-                        :disabled="serialSending"
-                      >部署工具</button>
-                    </div>
-
-                    <div v-if="serialPortsLoading" class="loading-text">加载串口列表中...</div>
-                    <div v-else-if="serialPorts.length === 0" class="loading-text">该设备未发现串口节点</div>
-                  </div>
-                </div>
-
-                <!-- 卡片: 数据发送 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polyline points="4 17 10 11 4 5"/>
-                        <line x1="12" y1="19" x2="20" y2="19"/>
-                      </svg>
-                    </span>
-                    <span>数据发送</span>
-                  </div>
-                  <div class="card-body">
-                    <!-- 载荷配置 -->
-                    <div class="serial-row">
-                      <label class="serial-label">载荷类型</label>
-                      <div class="serial-mode-group">
-                        <button
-                          class="serial-mode-btn"
-                          :class="{ active: serialMode === 'text' }"
-                          @click="serialMode = 'text'"
-                        >文本</button>
-                        <button
-                          class="serial-mode-btn"
-                          :class="{ active: serialMode === 'hex' }"
-                          @click="serialMode = 'hex'"
-                        >HEX</button>
-                      </div>
-                      <label class="serial-label">波特率</label>
-                      <input
-                        type="text"
-                        v-model="serialBaud"
-                        class="serial-input serial-input-sm"
-                        placeholder="继承"
-                      />
-                      <label class="serial-label">结束符</label>
-                      <select v-model="serialEnd" class="serial-select serial-select-sm">
-                        <option value="none">无</option>
-                        <option value="cr">CR</option>
-                        <option value="lf">LF</option>
-                        <option value="crlf">CRLF</option>
-                      </select>
-                    </div>
-
-                    <div class="serial-row">
-                      <label class="serial-check">
-                        <input type="checkbox" v-model="serialLoop" />
-                        <span>开启 UART 内部回环（让读取该串口的程序收到数据）</span>
-                      </label>
-                    </div>
-
-                    <textarea
-                      v-model="serialPayload"
-                      class="serial-textarea"
-                      :placeholder="serialMode === 'hex' ? '例：01 03 00 00 或 5503050207' : '例：HELLO-1234，支持 \\r \\n \\t \\\\ \\0 \\xHH'"
-                      spellcheck="false"
-                    ></textarea>
-
-                    <div class="serial-actions">
-                      <button
-                        class="check-button"
-                        @click="sendSerialData"
-                        :disabled="serialSending || !selectedDevice"
-                      >{{ serialSending ? '发送中...' : '发送一次' }}</button>
-                      <button
-                        class="serial-stream-btn"
-                        :class="{ active: serialStreamRunning }"
-                        @click="serialStream(serialStreamRunning ? 'stop' : 'start')"
-                        :disabled="serialStreamBusy || !selectedDevice"
-                      >{{ serialStreamRunning ? '停止持续发送' : '开始持续发送' }}</button>
-                    </div>
-
-                    <div v-if="serialStreamRunning" class="serial-stream-state">
-                      持续发送运行中（pid {{ serialStreamPid }}）
-                    </div>
-                  </div>
-                </div>
-                </template>
-
-                <!-- ============ 方案 B：键盘模拟 ============ -->
-                <template v-else-if="serialScheme === 'pty'">
-                <!-- 卡片: pty 替换 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16"/>
-                        <path d="M4 20l4.586-4.586a2 2 0 012.828 0L16 20"/>
-                        <path d="M15 7h3a2 2 0 012 2v9a2 2 0 01-2 2h-3"/>
-                        <rect x="2" y="10" width="4" height="6" rx="1"/>
-                      </svg>
-                    </span>
-                    <span>键盘模拟 · pty 替换</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="serial-row">
-                      <label class="serial-label">目标串口</label>
-                      <input
-                        type="text"
-                        v-model="ptyDevice"
-                        class="serial-input serial-input-lg"
-                        placeholder="/dev/ttyS7"
-                      />
-                      <button class="serial-mini-btn" @click="loadPtyStatus" :disabled="ptyBusy">查询状态</button>
-                      <button class="serial-mini-btn" @click="deployPtyTools" :disabled="ptyBusy">部署工具</button>
-                    </div>
-
-                    <!-- pty 状态 -->
-                    <div class="pty-state">
-                      <span class="pty-state-item">
-                        节点类型：
-                        <b :class="ptyNodeType === 'pty' ? 'ok' : (ptyNodeType === 'serial' ? 'warn' : '')">
-                          {{ ptyNodeType === 'pty' ? 'pty（已替换）' : (ptyNodeType === 'serial' ? '真实串口' : '未知') }}
-                        </b>
-                      </span>
-                      <span class="pty-state-item">注入进程：{{ ptyRunning ? '运行中 ' + ptyPid : '未运行' }}</span>
-                      <span class="pty-state-item">App 持有：{{ ptyAppHolds ? '是' : '否' }}</span>
-                      <span v-if="ptyLeftover" class="pty-state-item err">残留挂载：{{ ptyLeftover }}</span>
-                    </div>
-
-                    <div class="serial-actions">
-                      <button
-                        class="serial-stream-btn"
-                        :class="{ active: ptyRunning }"
-                        @click="controlPty(ptyRunning ? 'stop' : 'start')"
-                        :disabled="ptyBusy || !selectedDevice"
-                      >{{ ptyBusy ? '处理中...' : (ptyRunning ? '停止 pty 替换' : '启动 pty 替换') }}</button>
-                    </div>
-
-                    <div class="serial-hint serial-hint-block">
-                      提示：pty 替换对已打开的串口无效，启动时会自动重启目标 App，
-                      让它重新打开串口拿到 pty。启动后再点按键注入不会重启 App。
-                      停止后设备节点自动恢复为真实串口。
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 卡片: 按键注入 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <rect x="2" y="6" width="20" height="12" rx="2"/>
-                        <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/>
-                      </svg>
-                    </span>
-                    <span>按键注入</span>
-                  </div>
-                  <div class="card-body">
-                    <!-- 序列显示 -->
-                    <div class="serial-seq-list">
-                      <span v-if="keySequence.length === 0" class="serial-seq-empty">
-                        点击下方按键即可依次加入序列，可重复点击同一个键
-                      </span>
-                      <span
-                        v-for="(k, idx) in keySequence"
-                        :key="idx"
-                        class="serial-seq-item"
-                      >
-                        <span class="serial-seq-idx">{{ idx + 1 }}</span>
-                        <span>{{ keyFunctionText(k) }}</span>
-                        <button class="serial-seq-del" @click="removeKeyAt(idx)">×</button>
-                      </span>
-                    </div>
-
-                    <div class="serial-key-grid">
-                      <button
-                        v-for="k in keyList"
-                        :key="k.name"
-                        class="serial-key-btn"
-                        :disabled="keyInjectBusy || !selectedDevice"
-                        @click="appendKey(k.name)"
-                        :title="`${k.desc || k.name} · 键值 ${k.value} · 帧 ${buildKeyFrame(k.value)}`"
-                      >
-                        <span class="serial-key-btn-label">{{ k.label || k.name }}</span>
-                        <span class="serial-key-btn-value">{{ k.desc || k.name }}</span>
-                      </button>
-                    </div>
-
-                    <div class="serial-actions">
-                      <button
-                        class="check-button"
-                        @click="applyKeys"
-                        :disabled="keyInjectBusy || !selectedDevice || keySequence.length === 0"
-                      >{{ keyInjectBusy ? '注入中...' : '注入序列' }}</button>
-                      <button
-                        class="serial-mini-btn"
-                        @click="clearKeySequence"
-                        :disabled="keyInjectBusy || keySequence.length === 0"
-                      >清空序列</button>
-                    </div>
-                  </div>
-                </div>
-                </template>
-
-                <!-- ============ 方案 C：串口会话 ============ -->
-                <template v-else-if="serialScheme === 'read'">
-                <!-- 卡片: 串口会话 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polyline points="4 17 10 11 4 5"/>
-                        <line x1="12" y1="19" x2="20" y2="19"/>
-                      </svg>
-                    </span>
-                    <span>串口会话</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="serial-row">
-                      <label class="serial-label">串口设备</label>
-                      <select v-model="serialDevice" class="serial-select" :disabled="serialPortsLoading">
-                        <option v-for="p in serialPorts" :key="p.device" :value="p.device">
-                          {{ p.device }}{{ p.majorMinor ? ` (${p.majorMinor})` : '' }}
-                        </option>
-                      </select>
-                      <button class="serial-mini-btn" @click="loadSerialPorts" :disabled="serialPortsLoading">刷新</button>
-                    </div>
-
-                    <div v-if="serialPortsLoading" class="loading-text">加载串口列表中...</div>
-                    <div v-else-if="serialPorts.length === 0" class="loading-text">该设备未发现串口节点</div>
-
-                    <div class="serial-row">
-                      <label class="serial-label">波特率</label>
-                      <select v-model="serialReadBaud" class="serial-select">
-                        <option value="1200">1200</option>
-                        <option value="2400">2400</option>
-                        <option value="4800">4800</option>
-                        <option value="9600">9600</option>
-                        <option value="19200">19200</option>
-                        <option value="38400">38400</option>
-                        <option value="57600">57600</option>
-                        <option value="115200">115200</option>
-                        <option value="230400">230400</option>
-                        <option value="460800">460800</option>
-                        <option value="921600">921600</option>
-                        <option value="1500000">1500000</option>
-                        <option value="3000000">3000000</option>
-                      </select>
-                      <label class="serial-label">校验位</label>
-                      <select v-model="serialReadParity" class="serial-select">
-                        <option value="none">None</option>
-                        <option value="odd">Odd</option>
-                        <option value="even">Even</option>
-                      </select>
-                      <label class="serial-label">数据位</label>
-                      <select v-model="serialReadDataBits" class="serial-select">
-                        <option value="5">5</option>
-                        <option value="6">6</option>
-                        <option value="7">7</option>
-                        <option value="8">8</option>
-                      </select>
-                      <label class="serial-label">停止位</label>
-                      <select v-model="serialReadStopBits" class="serial-select">
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                      </select>
-                      <label class="serial-label">显示</label>
-                      <select v-model="serialReadView" class="serial-select">
-                        <option value="hex">Hex</option>
-                        <option value="text">Txt</option>
-                      </select>
-                    </div>
-
-                    <div class="serial-row">
-                      <label class="serial-label">发送格式</label>
-                      <select v-model="serialSendMode" class="serial-select">
-                        <option value="text">Txt</option>
-                        <option value="hex">Hex</option>
-                      </select>
-                      <label class="serial-label">发送内容</label>
-                      <input v-model="serialSendPayload" class="serial-input" placeholder="Txt 原样 / Hex 如 01 0A FF" />
-                      <label class="serial-label">次数(0=持续)</label>
-                      <input type="number" min="0" max="10000" v-model="serialSendTimes" class="serial-input serial-input-sm" />
-                      <label class="serial-label">间隔(ms)</label>
-                      <input type="number" min="0" max="60000" v-model="serialSendInterval" class="serial-input serial-input-sm" />
-                    </div>
-
-                    <div class="serial-actions">
-                      <button
-                        class="check-button"
-                        @click="toggleSerialRead"
-                        :disabled="!selectedDevice"
-                      >{{ serialReading ? '关闭串口' : '打开串口并持续读' }}</button>
-                      <button
-                        class="serial-mini-btn"
-                        @click="sendSerialSessionData"
-                        :disabled="!selectedDevice || !serialSessionOpened"
-                      >发送</button>
-                      <button
-                        class="serial-mini-btn"
-                        @click="stopSerialSessionSend"
-                        :disabled="!selectedDevice || !serialSessionOpened"
-                      >停止循环发送</button>
-                    </div>
-
-                    <div class="serial-hint serial-hint-block">
-                      提示：打开串口后设备端后台持续读，页面轮询 0x03 取增量字节，按 Hex/Txt 原样追加到下方「执行日志」（最多保留最近 100 行），不做帧解析。
-                      发送支持 Txt/Hex、单次或按次数/间隔循环；循环由设备端后台线程执行，点「停止循环发送」结束。
-                      点「关闭串口」会停止读取与循环发送并关闭设备端会话；切换设备、切换方案或离开页面只停止页面轮询。
-                    </div>
-                  </div>
-                </div>
-                </template>
-
-                <!-- 卡片: 执行日志 -->
-                <div v-if="serialOutput || serialStreamLog || keyInjectOutput || ptyLog || serialMessage" class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polyline points="4 17 10 11 4 5"/>
-                        <line x1="12" y1="19" x2="20" y2="19"/>
-                      </svg>
-                    </span>
-                    <span>执行日志</span>
-                  </div>
-                  <div class="card-body">
-                    <div v-if="serialMessage" class="serial-msg" :class="serialMessageType">
-                      {{ serialMessage }}
-                    </div>
-                    <pre v-if="serialOutput" class="serial-output">{{ serialOutput }}</pre>
-                    <pre v-if="serialStreamLog" class="serial-output">{{ serialStreamLog }}</pre>
-                    <pre v-if="keyInjectOutput" class="serial-output">{{ keyInjectOutput }}</pre>
-                    <pre v-if="ptyLog" class="serial-output">{{ ptyLog }}</pre>
-                  </div>
-                </div>
-              </div>
-
-              <div v-if="activeTab === 'monitor'" class="keys-page">
-                <!-- 第一行: CPU 实时占用率与网络速率 -->
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                      </svg>
-                    </span>
-                    <span>CPU 占用率 / 网络速率</span>
-                    <div class="rate-view-switch">
-                      <button :class="{ active: rateViewMode === 'chart' }" @click="rateViewMode = 'chart'">折线图</button>
-                      <button :class="{ active: rateViewMode === 'top' }" @click="rateViewMode = 'top'">TOP进程</button>
-                    </div>
-                  </div>
-                  <div class="card-body">
-                    <template v-if="rateViewMode === 'chart'">
-                    <div class="rate-summary">
-                      <div class="rate-item">
-                        <span class="rate-label">CPU 占用率</span>
-                        <span class="rate-value cpu">{{ formatPercent(monitorRate?.cpu?.usagePercent) }}</span>
-                      </div>
-                      <div class="rate-item">
-                        <span class="rate-label">下载速率</span>
-                        <span class="rate-value down">{{ formatRate(activeNic?.rxBytesPerSec) }}</span>
-                      </div>
-                      <div class="rate-item">
-                        <span class="rate-label">上传速率</span>
-                        <span class="rate-value up">{{ formatRate(activeNic?.txBytesPerSec) }}</span>
-                      </div>
-                      <div class="rate-item">
-                        <span class="rate-label">累计收发</span>
-                        <span class="rate-value">
-                          ↓{{ formatBytes(activeNic?.rxBytes) }} / ↑{{ formatBytes(activeNic?.txBytes) }}
-                        </span>
-                      </div>
-                    </div>
-                    <div ref="rateChartEl" class="rate-chart" v-show="rateViewMode === 'chart'"></div>
-                    <div v-if="monitorRate && (!monitorRate.network || monitorRate.network.length === 0)" class="monitor-empty">
-                      暂无网络流量
-                    </div>
-                    </template>
-                    <template v-else>
-                      <div class="top-table-wrap">
-                        <table class="top-table">
-                          <thead>
-                            <tr>
-                              <th>PID</th>
-                              <th>用户</th>
-                              <th>状态</th>
-                              <th>CPU%</th>
-                              <th>内存%</th>
-                              <th>进程</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-if="topProcesses.length === 0">
-                              <td colspan="6" class="monitor-empty">{{ monitorLoading ? '加载中...' : (monitorError || '暂无数据') }}</td>
-                            </tr>
-                            <tr v-for="p in topProcesses" :key="p.pid">
-                              <td>{{ p.pid }}</td>
-                              <td>{{ p.user }}</td>
-                              <td>{{ p.stat }}</td>
-                              <td :class="{ 'top-cpu-high': p.cpuPercent >= 50 }">{{ p.cpuPercent }}%</td>
-                              <td>{{ p.memPercent }}%</td>
-                              <td class="top-cmd" :title="p.command">{{ p.command }}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </template>
-                  </div>
-                </div>
-
-                <!-- 第二行: 左右两列（CPU 频率 | 内存 / 磁盘） -->
-                <div class="monitor-row">
-                  <!-- CPU 频率 -->
-                  <div class="scrcpy-card" v-if="monitorSnapshot && monitorSnapshot.cpu && monitorSnapshot.cpu.cores.length > 0">
-                    <div class="card-header">
-                      <span class="card-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <rect x="4" y="4" width="16" height="16" rx="2"/>
-                          <line x1="4" y1="10" x2="20" y2="10"/>
-                          <line x1="10" y1="4" x2="10" y2="20"/>
-                        </svg>
-                      </span>
-                      <span>CPU 频率</span>
-                      <span class="monitor-freq-info">
-                        {{ monitorSnapshot.cpu.coreCount }} 核 · 最高 {{ formatFreq(monitorSnapshot.cpu.maxFreqKhz) }}
-                      </span>
-                    </div>
-                    <div class="card-body">
-                      <div ref="coreChartEl" class="core-chart"></div>
-                    </div>
-                  </div>
-
-                  <!-- 内存 / 磁盘 -->
-                  <div class="scrcpy-card">
-                    <div class="card-header">
-                      <span class="card-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                          <rect x="4" y="4" width="16" height="16" rx="2"/>
-                          <rect x="9" y="9" width="6" height="6"/>
-                          <line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>
-                          <line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>
-                          <line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/>
-                          <line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>
-                        </svg>
-                      </span>
-                      <span>内存 / 磁盘</span>
-                      <button class="card-action-btn" @click="refreshMonitor" :disabled="monitorLoading">
-                        {{ monitorLoading ? '刷新中...' : '刷新' }}
-                      </button>
-                    </div>
-                    <div class="card-body">
-                      <div v-if="monitorError" class="monitor-error">{{ monitorError }}</div>
-                      <div v-if="monitorSnapshot" class="monitor-usage">
-                        <div ref="snapshotChartEl" class="gauge-chart"></div>
-                        <div class="gauge-detail-row">
-                          <div class="gauge-detail">
-                            <div class="detail-title">内存</div>
-                            <template v-if="monitorSnapshot.memory">
-                              <span>已用 {{ formatBytes(monitorSnapshot.memory.usedBytes) }}</span>
-                              <span>可用 {{ formatBytes(monitorSnapshot.memory.availableBytes) }}</span>
-                              <span>总计 {{ formatBytes(monitorSnapshot.memory.totalBytes) }}</span>
-                              <span v-if="monitorSnapshot.memory.cachedBytes !== undefined">
-                                页缓存 {{ formatBytes(monitorSnapshot.memory.cachedBytes) }}
-                              </span>
-                            </template>
-                            <span v-else class="monitor-empty">内存数据不可用</span>
-                          </div>
-                          <div class="gauge-detail">
-                            <div class="detail-title">磁盘</div>
-                            <template v-if="monitorSnapshot.disk">
-                              <span>挂载点 {{ monitorSnapshot.disk.mountPoint }}</span>
-                              <span>已用 {{ formatBytes(monitorSnapshot.disk.usedBytes) }}</span>
-                              <span>可用 {{ formatBytes(monitorSnapshot.disk.availableBytes) }}</span>
-                              <span>总计 {{ formatBytes(monitorSnapshot.disk.totalBytes) }}</span>
-                            </template>
-                            <span v-else class="monitor-empty">该设备无 /data 分区，磁盘数据不可用</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div v-else-if="monitorLoading" class="loading-text">加载性能数据中...</div>
-                      <div v-else class="loading-text">暂无性能数据</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TabMonitor />
 
               <!-- 探针工具：心跳 / TTS / Shell / 截图 / 拍照 合并为一个功能区 -->
-              <div v-if="activeTab === 'probe'" class="keys-page">
-                <div class="scrcpy-card">
-                  <div class="card-header">
-                    <span class="card-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-                      </svg>
-                    </span>
-                    <span>探针工具</span>
-                  </div>
-                  <div class="card-body">
-                    <div class="probe-actions">
-                      <button
-                        class="check-button"
-                        @click="sendProbeHeartbeat"
-                        :disabled="probeDisabled"
-                      >{{ probeBusy === 'heartbeat' ? '检测中...' : '探针心跳' }}</button>
-                      <button
-                        class="check-button"
-                        @click="playProbeTts"
-                        :disabled="probeDisabled"
-                      >{{ probeBusy === 'tts' ? '朗读中...' : '远程 TTS' }}</button>
-                      <button
-                        class="check-button"
-                        @click="runProbeShell"
-                        :disabled="probeDisabled"
-                      >{{ probeBusy === 'shell' ? '执行中...' : 'Shell 命令' }}</button>
-                      <button
-                        class="check-button"
-                        @click="doProbeCapture('screenshot')"
-                        :disabled="probeDisabled"
-                      >{{ probeBusy === 'screenshot' ? '截屏中...' : '屏幕截图' }}</button>
-                      <button
-                        class="check-button"
-                        @click="onProbePhoto"
-                        :disabled="probeDisabled"
-                      >{{ probeBusy === 'photo' ? '拍照中...' : '摄像头拍照' }}</button>
-                    </div>
-                    <div class="serial-row">
-                      <label class="serial-check">
-                        <input type="checkbox" v-model="probeShellRoot" />
-                        <span>Shell 以 root 执行（su 0，需设备已 root）</span>
-                      </label>
-                    </div>
-                    <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
-                    <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除。
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TabProbe />
             </div>
           </div>
         </div>
