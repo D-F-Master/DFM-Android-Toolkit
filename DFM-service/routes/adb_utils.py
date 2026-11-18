@@ -389,9 +389,10 @@ def get_device_info(request: DeviceIdRequest):
         "sn": props.get('ro.serialno', 'Unknown'),
         "wifiMac": wifi_mac,
         "ethMac": eth_mac,
-        "certName": _installed_cert_names(device_id),
-        "proxyStatus": _proxy_status(device_id)
     }
+    cert_name, proxy_status = _cert_and_proxy(device_id)
+    info["certName"] = cert_name
+    info["proxyStatus"] = proxy_status
     
     return {"code": 200, "message": "success", "data": info}
 
@@ -2428,38 +2429,39 @@ def _cert_subject_cn(pem_text: str) -> Optional[str]:
     return None
 
 
-def _installed_cert_names(device_id: str) -> str:
-    """读取设备「信任的凭据 → 用户」里的证书名称（subject CN），无证书返回「无导入证书」"""
-    ls_result = execute_adb_command(
-        f"adb -s {device_id} shell ls {CERT_USER_DIR}", timeout=10
+def _cert_and_proxy(device_id: str) -> tuple:
+    """
+    一次 adb 调用同时读取导入证书名称与代理状态，避免多次 shell 往返拖慢设备信息加载。
+
+    返回 (cert_name, proxy_status)：无证书为「无导入证书」，代理未开启为「未开启」。
+    """
+    script = (
+        "echo PROXY=$(settings get global http_proxy); "
+        f"for f in {CERT_USER_DIR}/*; do "
+        "[ -f $f ] && echo ===CERT=== && cat $f && echo ===END===; "
+        "done"
     )
-    if not ls_result["success"]:
-        return "无导入证书"
-    names = []
-    for line in ls_result.get("stdout", "").splitlines():
-        file_name = line.strip()
-        if not re.fullmatch(r"[0-9a-fA-F]{8}\.\d+", file_name):
-            continue
-        cat_result = execute_adb_command(
-            f"adb -s {device_id} shell cat {CERT_USER_DIR}/{file_name}", timeout=10
-        )
-        if not cat_result["success"]:
-            continue
-        name = _cert_subject_cn(cat_result.get("stdout", "")) or file_name
-        if name not in names:
-            names.append(name)
-    return "、".join(names) if names else "无导入证书"
-
-
-def _proxy_status(device_id: str) -> str:
-    """读取全局 http_proxy：未设置/null/:0 为「未开启」，否则「已开启」"""
     result = execute_adb_command(
-        f"adb -s {device_id} shell settings get global http_proxy", timeout=10
+        f'adb -s {device_id} shell "{script}"', timeout=15
     )
-    value = result.get("stdout", "").strip() if result["success"] else ""
-    if not value or value in ("null", ":0"):
-        return "未开启"
-    return "已开启"
+    output = result.get("stdout", "") if result["success"] else ""
+
+    proxy_status = "未开启"
+    for line in output.splitlines():
+        if line.startswith("PROXY="):
+            value = line[len("PROXY="):].strip()
+            if value and value not in ("null", ":0"):
+                proxy_status = "已开启"
+            break
+
+    names = []
+    for block in output.split("===CERT===")[1:]:
+        pem = block.split("===END===", 1)[0]
+        name = _cert_subject_cn(pem)
+        if name and name not in names:
+            names.append(name)
+    cert_name = "、".join(names) if names else "无导入证书"
+    return cert_name, proxy_status
 
 
 @router.post("/device/cert/install")

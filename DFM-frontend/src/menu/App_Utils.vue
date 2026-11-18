@@ -1481,10 +1481,6 @@ provide('app-utils', { API_BASE, IMAGE_EXTS, SCRIPT_COMMON_KEYS, TAB_ITEMS, VIDE
   min-width: 0;
 }
 
-:deep(.info-item-2col:nth-last-child(-n+2)) {
-  border-bottom: none;
-}
-
 :deep(.info-label) {
   display: block;
   font-size: 11px;
