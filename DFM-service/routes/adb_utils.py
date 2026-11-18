@@ -383,9 +383,10 @@ def get_device_info(request: DeviceIdRequest):
         "wifiMac": wifi_mac,
         "ethMac": eth_mac,
     }
-    cert_name, proxy_status = _cert_and_proxy(device_id)
+    cert_name, proxy_status, proxy_address = _cert_and_proxy(device_id)
     info["certName"] = cert_name
     info["proxyStatus"] = proxy_status
+    info["proxyAddress"] = proxy_address
     
     return {"code": 200, "message": "success", "data": info}
 
@@ -2426,7 +2427,7 @@ def _cert_and_proxy(device_id: str) -> tuple:
     """
     一次 adb 调用同时读取导入证书名称与代理状态，避免多次 shell 往返拖慢设备信息加载。
 
-    返回 (cert_name, proxy_status)：无证书为「无导入证书」，代理未开启为「未开启」。
+    返回 (cert_name, proxy_status, proxy_address)：无证书为「无导入证书」，代理未开启为「未开启」且地址为空。
     """
     script = (
         "echo PROXY=$(settings get global http_proxy); "
@@ -2440,11 +2441,13 @@ def _cert_and_proxy(device_id: str) -> tuple:
     output = result.get("stdout", "") if result["success"] else ""
 
     proxy_status = "未开启"
+    proxy_address = ""
     for line in output.splitlines():
         if line.startswith("PROXY="):
             value = line[len("PROXY="):].strip()
             if value and value not in ("null", ":0"):
                 proxy_status = "已开启"
+                proxy_address = value
             break
 
     names = []
@@ -2454,7 +2457,7 @@ def _cert_and_proxy(device_id: str) -> tuple:
         if name and name not in names:
             names.append(name)
     cert_name = "、".join(names) if names else "无导入证书"
-    return cert_name, proxy_status
+    return cert_name, proxy_status, proxy_address
 
 
 @router.post("/device/cert/install")
