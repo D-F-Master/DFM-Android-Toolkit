@@ -81,5 +81,6 @@
   "com.common.demo": "Demo_SDK_AS",
   "com.yqsh.myweb": "MyWeb",
   "com.yqsh.appstore": "一起生活应用商店",
-  "com.example.usbmulticam": "USB 多路摄像头"
+  "com.example.usbmulticam": "USB 多路摄像头",
+  "com.embarcadero.SC": "SC"
 }

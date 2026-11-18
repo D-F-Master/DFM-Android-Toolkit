@@ -31,12 +31,12 @@ const MENU_ITEMS = [
   },
   {
     key: 'jarDiff',
-    label: 'jar包对比工具',
+    label: 'jar包工具',
     icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M2 3a1 1 0 00-1 1v1a1 1 0 001 1h16a1 1 0 001-1V4a1 1 0 00-1-1H2z"/><path fill-rule="evenodd" d="M2 7.5h16l-.86 9.02A2 2 0 0115.15 18.5H4.85a2 2 0 01-1.99-1.98L2 7.5zM8 10a1 1 0 011 1v1a1 1 0 001 1h.5a1 1 0 110 2H10a3 3 0 01-3-3v-1a1 1 0 011-1z" clip-rule="evenodd"/></svg>'
   },
   {
     key: 'mcpService',
-    label: 'MCP服务管理工具',
+    label: 'MCP管理工具',
     icon: '<svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M2 5a2 2 0 012-2h3.5l1.5 2H16a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V5z"/></svg>'
   }
 ];
