@@ -388,7 +388,9 @@ def get_device_info(request: DeviceIdRequest):
         "unlockStatus": unlock_status,
         "sn": props.get('ro.serialno', 'Unknown'),
         "wifiMac": wifi_mac,
-        "ethMac": eth_mac
+        "ethMac": eth_mac,
+        "certName": _installed_cert_names(device_id),
+        "proxyStatus": _proxy_status(device_id)
     }
     
     return {"code": 200, "message": "success", "data": info}
@@ -2388,6 +2390,76 @@ def _cert_fingerprint(pem_text: str):
     if der is None:
         return None
     return hashlib.sha256(der).hexdigest()
+
+
+def _cert_subject_cn(pem_text: str) -> Optional[str]:
+    """从 PEM 证书解析 subject CN（OID 2.5.4.3），解析失败返回 None"""
+    _, subject_der = _parse_cert_der(pem_text)
+    if not subject_der:
+        return None
+    try:
+        # subject = SEQUENCE(30) of SET(31) of AttributeTypeAndValue SEQUENCE(30) { OID(06), value }
+        tag, seq_start, seq_end, _ = _read_der_tlv(subject_der, 0)
+        if tag != 0x30:
+            return None
+        offset = seq_start
+        while offset < seq_end:
+            set_tag, set_start, set_end, set_next = _read_der_tlv(subject_der, offset)
+            offset = set_next
+            if set_tag != 0x31:
+                continue
+            inner = set_start
+            while inner < set_end:
+                atv_tag, atv_start, _, atv_next = _read_der_tlv(subject_der, inner)
+                inner = atv_next
+                if atv_tag != 0x30:
+                    continue
+                oid_tag, oid_start, oid_end, val_offset = _read_der_tlv(subject_der, atv_start)
+                if oid_tag != 0x06 or subject_der[oid_start:oid_end] != b"\x55\x04\x03":
+                    continue
+                val_tag, val_start, val_end, _ = _read_der_tlv(subject_der, val_offset)
+                raw = subject_der[val_start:val_end]
+                # BMPString 为 UTF-16BE，其余常见字符串类型都是 UTF-8/ASCII 兼容
+                if val_tag == 0x1E:
+                    return raw.decode("utf-16-be", errors="replace")
+                return raw.decode("utf-8", errors="replace")
+    except (IndexError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _installed_cert_names(device_id: str) -> str:
+    """读取设备「信任的凭据 → 用户」里的证书名称（subject CN），无证书返回「无导入证书」"""
+    ls_result = execute_adb_command(
+        f"adb -s {device_id} shell ls {CERT_USER_DIR}", timeout=10
+    )
+    if not ls_result["success"]:
+        return "无导入证书"
+    names = []
+    for line in ls_result.get("stdout", "").splitlines():
+        file_name = line.strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{8}\.\d+", file_name):
+            continue
+        cat_result = execute_adb_command(
+            f"adb -s {device_id} shell cat {CERT_USER_DIR}/{file_name}", timeout=10
+        )
+        if not cat_result["success"]:
+            continue
+        name = _cert_subject_cn(cat_result.get("stdout", "")) or file_name
+        if name not in names:
+            names.append(name)
+    return "、".join(names) if names else "无导入证书"
+
+
+def _proxy_status(device_id: str) -> str:
+    """读取全局 http_proxy：未设置/null/:0 为「未开启」，否则「已开启」"""
+    result = execute_adb_command(
+        f"adb -s {device_id} shell settings get global http_proxy", timeout=10
+    )
+    value = result.get("stdout", "").strip() if result["success"] else ""
+    if not value or value in ("null", ":0"):
+        return "未开启"
+    return "已开启"
 
 
 @router.post("/device/cert/install")

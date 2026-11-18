@@ -454,6 +454,20 @@ const clearProxy = async () => {
                           {{ deviceInfo.ethMac || '未知' }}
                         </span>
                       </div>
+                      <div class="info-item-2col">
+                        <span class="info-label">导入证书名称</span>
+                        <span class="info-value copyable-value"
+                          :class="{ disabled: !deviceInfo.certName || deviceInfo.certName === '无导入证书' }"
+                          @click="copyToClipboard(deviceInfo.certName, '导入证书名称')"
+                          title="点击复制"
+                        >
+                          {{ deviceInfo.certName || '无导入证书' }}
+                        </span>
+                      </div>
+                      <div class="info-item-2col">
+                        <span class="info-label">代理状态</span>
+                        <span class="info-value">{{ deviceInfo.proxyStatus || '未开启' }}</span>
+                      </div>
                     </div>
                     <div v-else class="loading-text">加载设备信息中...</div>
                   </div>
