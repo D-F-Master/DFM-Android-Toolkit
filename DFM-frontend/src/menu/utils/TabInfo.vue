@@ -279,7 +279,7 @@ const copyDeviceInfo = async () => {
 // ===== 设置全局 HTTP 代理（抓包用，即时生效）=====
 const proxyDialogVisible = ref(false)
 const proxyHost = ref('')
-const proxyPort = ref('')
+const proxyPort = ref('9000')
 const proxyBusy = ref(false)
 const PROXY_HOST_KEY = 'dfm_device_proxy_host'
 const PROXY_PORT_KEY = 'dfm_device_proxy_port'
@@ -300,10 +300,10 @@ const openProxyDialog = () => {
   }
   try {
     proxyHost.value = localStorage.getItem(PROXY_HOST_KEY) || '192.168.0.48'
-    proxyPort.value = localStorage.getItem(PROXY_PORT_KEY) || ''
+    proxyPort.value = localStorage.getItem(PROXY_PORT_KEY) || '9000'
   } catch (e) {
     proxyHost.value = '192.168.0.48'
-    proxyPort.value = ''
+    proxyPort.value = '9000'
   }
   proxyDialogVisible.value = true
 }
@@ -575,7 +575,7 @@ const clearProxy = async () => {
                     </label>
                     <label class="proxy-field">
                       <span>端口</span>
-                      <input v-model="proxyPort" type="number" class="proxy-input" placeholder="例如 8888" min="1" max="65535">
+                      <input v-model="proxyPort" type="number" class="proxy-input" placeholder="例如 9000" min="1" max="65535">
                     </label>
                   </div>
                   <div class="proxy-modal-footer">
