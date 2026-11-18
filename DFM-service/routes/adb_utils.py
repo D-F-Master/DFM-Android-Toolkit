@@ -318,40 +318,34 @@ def get_devices():
 def get_device_info(request: DeviceIdRequest):
     device_id = request.deviceId
     
-    # 检查设备连接状态
-    devices_result = execute_adb_command("adb devices")
-    device_status = "离线"
-    if devices_result["success"]:
-        lines = devices_result["stdout"].split('\n')
-        for line in lines[1:]:
-            if line.strip().startswith(device_id):
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    status = parts[1]
-                    if status == "device":
-                        device_status = "在线"
-                    elif status == "unauthorized":
-                        device_status = "未授权"
-                    else:
-                        device_status = "离线"
-                break
-
-    # 一次 getprop 获取所有属性（原为 13 次独立命令，合并后大幅降低耗时）
+    # 一次 shell 拿全部属性 + 两块网卡 MAC，避免每条命令各起一次 adb 进程。
+    # 设备在线状态由前端用已有的设备列表推导，这里不再额外执行 adb devices。
     props = {}
-    props_result = execute_adb_command(f"adb -s {device_id} shell getprop")
+    wifi_mac = ""
+    eth_mac = ""
+    props_result = execute_adb_command(
+        f'adb -s {device_id} shell "getprop; echo ===MAC===; '
+        'cat /sys/class/net/wlan0/address 2>/dev/null; '
+        'cat /sys/class/net/eth0/address 2>/dev/null"',
+        timeout=10,
+    )
     if props_result["success"]:
-        props = _parse_getprop_output(props_result["stdout"])
+        prop_text, _, mac_text = props_result["stdout"].partition("===MAC===")
+        props = _parse_getprop_output(prop_text)
+        mac_lines = [line.strip() for line in mac_text.splitlines() if line.strip()]
+        if len(mac_lines) > 0:
+            wifi_mac = mac_lines[0]
+        if len(mac_lines) > 1:
+            eth_mac = mac_lines[1]
+
+    # 少数设备 sysfs 路径不同：仅当上面读到的 MAC 无效时才回退到原多方法探测链
+    if not _is_valid_mac(wifi_mac):
+        wifi_mac = _get_mac(device_id, "wlan")
+    if not _is_valid_mac(eth_mac):
+        eth_mac = _get_mac(device_id, "eth")
 
     # 获取内核版本
     kernel_result = execute_adb_command(f"adb -s {device_id} shell cat /proc/version")
-
-    # MAC 地址：先从 getprop 结果读取，缺失/无效再走多方法 fallback 链
-    wifi_mac = props.get('ro.boot.wifimacaddr', '')
-    if not _is_valid_mac(wifi_mac):
-        wifi_mac = _get_mac(device_id, "wlan")
-    eth_mac = props.get('ro.boot.ethmacaddr', '')
-    if not _is_valid_mac(eth_mac):
-        eth_mac = _get_mac(device_id, "eth")
 
     # 处理内核版本，只提取关键信息
     kernel_version = "Unknown"
@@ -375,7 +369,6 @@ def get_device_info(request: DeviceIdRequest):
     unlock_status = unlock_status_map.get(unlock_raw, unlock_raw)
 
     info = {
-        "status": device_status,
         "model": props.get('ro.product.model', 'Unknown'),
         "version": props.get('ro.build.version.release', 'Unknown'),
         "manufacturer": props.get('ro.product.manufacturer', 'Unknown'),
