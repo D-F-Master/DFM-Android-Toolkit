@@ -12,7 +12,7 @@ import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const ctx = inject<any>('app-utils')!
-const { API_BASE, activeTab, deviceInfo, files, formatBytes, hideProgressNotification, loading, selectedDevice, showConfirm, showMessage, showNotification, showProgressNotification } = ctx
+const { API_BASE, activeTab, deviceInfo, fetchDeviceInfo, files, formatBytes, hideProgressNotification, loading, selectedDevice, showConfirm, showMessage, showNotification, showProgressNotification } = ctx
 const showDeviceLogs = async () => {
   if (!selectedDevice.value) return
 
@@ -284,6 +284,15 @@ const proxyBusy = ref(false)
 const PROXY_HOST_KEY = 'dfm_device_proxy_host'
 const PROXY_PORT_KEY = 'dfm_device_proxy_port'
 
+// 代理状态展示：已开启时带上实际代理地址
+const proxyStatusText = computed(() => {
+  const status = deviceInfo.value?.proxyStatus || '未开启'
+  if (status === '已开启' && deviceInfo.value?.proxyAddress) {
+    return `${status}（${deviceInfo.value.proxyAddress}）`
+  }
+  return status
+})
+
 const openProxyDialog = () => {
   if (!selectedDevice.value) {
     showMessage('请先选择设备')
@@ -336,6 +345,7 @@ const applyProxy = async () => {
       const applied = response.data.data?.proxy || `${host}:${port}`
       showNotification(`代理已设置：${applied}`, 'success')
       proxyDialogVisible.value = false
+      if (selectedDevice.value) fetchDeviceInfo(selectedDevice.value)
     } else {
       showNotification('设置代理失败: ' + (response.data.message || '未知错误'), 'error')
     }
@@ -357,6 +367,7 @@ const clearProxy = async () => {
     if (response.data.code === 200) {
       showNotification('代理已清除（全局 http_proxy 已复位）', 'success')
       proxyDialogVisible.value = false
+      if (selectedDevice.value) fetchDeviceInfo(selectedDevice.value)
     } else {
       showNotification('清除代理失败: ' + (response.data.message || '未知错误'), 'error')
     }
@@ -466,7 +477,7 @@ const clearProxy = async () => {
                       </div>
                       <div class="info-item-2col">
                         <span class="info-label">代理状态</span>
-                        <span class="info-value">{{ deviceInfo.proxyStatus || '未开启' }}</span>
+                        <span class="info-value">{{ proxyStatusText }}</span>
                       </div>
                     </div>
                     <div v-else class="loading-text">加载设备信息中...</div>
