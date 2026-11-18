@@ -680,16 +680,16 @@ const startScriptStream = () => {
   if (!selectedDevice.value) return
   // 存活检测：旧连接引用还在但已不是 OPEN（close 事件异步未触发、或后端 session 已死），
   // 直接强制清理，否则这里 return 会导致切设备/重连时画面永久卡死
-  if (scriptWs && scriptWs.readyState !== WebSocket.OPEN && scriptWs.readyState !== WebSocket.CONNECTING) {
-    try { scriptWs.close() } catch { /* ignore */ }
-    scriptWs = null
+  if (scriptWs.value && scriptWs.value.readyState !== WebSocket.OPEN && scriptWs.value.readyState !== WebSocket.CONNECTING) {
+    try { scriptWs.value.close() } catch { /* ignore */ }
+    scriptWs.value = null
   }
-  if (scriptWs) return
+  if (scriptWs.value) return
 
   scriptWsStatus.value = '连接中'
   const wsUrl = API_BASE.value.replace(/^http/, 'ws') + '/ws/remote'
   const thisWs = new WebSocket(wsUrl)
-  scriptWs = thisWs
+  scriptWs.value = thisWs
   thisWs.binaryType = 'arraybuffer'
   thisWs.onopen = () => {
     // 连上了就重置重连计数
@@ -719,8 +719,8 @@ const startScriptStream = () => {
   thisWs.onclose = () => {
     // 只有当前连接断开才算真断开：切设备时旧 ws 的 close 是异步触发的，
     // 可能晚于新 ws 创建，不能把新连接的引用/状态误清掉
-    if (scriptWs === thisWs) {
-      scriptWs = null
+    if (scriptWs.value === thisWs) {
+      scriptWs.value = null
       scriptStreaming.value = false
       // 主动停流（切页签/切设备）不重连；其余（网络波动、后端报错）自动重连
       if (shouldStreamBeActive()) {
@@ -757,10 +757,10 @@ const stopScriptStream = () => {
   // 主动停流：抑制自动重连
   scriptManualStop = true
   if (scriptReconnectTimer) { clearTimeout(scriptReconnectTimer); scriptReconnectTimer = null }
-  if (scriptWs) {
-    try { scriptWs.send(JSON.stringify({ type: 'stop' })) } catch { /* ignore */ }
-    try { scriptWs.close() } catch { /* ignore */ }
-    scriptWs = null
+  if (scriptWs.value) {
+    try { scriptWs.value.send(JSON.stringify({ type: 'stop' })) } catch { /* ignore */ }
+    try { scriptWs.value.close() } catch { /* ignore */ }
+    scriptWs.value = null
   }
   if (scriptDecoder) {
     try { scriptDecoder.close() } catch { /* ignore */ }
@@ -790,14 +790,14 @@ const startStallWatch = () => {
   if (scriptStallTimer) return
   scriptLastDataAt = Date.now()
   scriptStallTimer = setInterval(() => {
-    if (!scriptWs || !scriptStreaming.value) {
+    if (!scriptWs.value || !scriptStreaming.value) {
       scriptLastDataAt = Date.now()
       return
     }
     if (Date.now() - scriptLastDataAt > 10000) {
       // 数据流卡死：显示提示并强断，onclose 会触发自动重连
       scriptWsStatus.value = '画面超过 10 秒无数据，重连中...'
-      try { scriptWs.close() } catch { /* ignore */ }
+      try { scriptWs.value.close() } catch { /* ignore */ }
     }
   }, 2000)
 }
@@ -858,8 +858,8 @@ const canvasPoint = (ev: PointerEvent) => {
 
 // 非录制模式下把触控事件直接同步到设备（走 mirror 通道，同批量投屏）
 const scriptSendTouch = (action: number, p: { x: number; y: number }) => {
-  if (scriptWs && scriptWs.readyState === WebSocket.OPEN) {
-    scriptWs.send(JSON.stringify({
+  if (scriptWs.value && scriptWs.value.readyState === WebSocket.OPEN) {
+    scriptWs.value.send(JSON.stringify({
       type: 'mirror',
       event: {
         kind: 'touch', action,

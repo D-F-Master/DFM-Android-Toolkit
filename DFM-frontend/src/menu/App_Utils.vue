@@ -250,7 +250,7 @@ const scriptOpConfig = ref<Record<'tap' | 'swipe' | 'longpress', { interval: num
   swipe: { interval: 500, count: 1 },
   longpress: { interval: 500, count: 1 },
 })
-let scriptWs: WebSocket | null = null
+const scriptWs = ref<WebSocket | null>(null)
 const scriptStepLabel = (step: any): string => {
   if (step.type === 'tap') return `点击 (${step.x1}, ${step.y1})`
   if (step.type === 'longpress') return `长按 (${step.x1}, ${step.y1}) ${step.duration}ms`
@@ -304,8 +304,8 @@ const scriptKeyName = (keycode: number | string | undefined): string => {
 
 const scriptSendText = (text: string) => {
   if (!text) return
-  if (scriptWs && scriptWs.readyState === WebSocket.OPEN) {
-    scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'text', text } }))
+  if (scriptWs.value && scriptWs.value.readyState === WebSocket.OPEN) {
+    scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'text', text } }))
   }
 }
 
@@ -415,11 +415,11 @@ const scriptOnKeyDown = (ev: KeyboardEvent) => {
 
 // 特殊键：走 key 通道（后端 inject_keycode）
 const scriptSendKey = (name: 'backspace' | 'enter') => {
-  if (!scriptWs || scriptWs.readyState !== WebSocket.OPEN) return
+  if (!scriptWs.value || scriptWs.value.readyState !== WebSocket.OPEN) return
   // Android KeyEvent：BACKSPACE=67，ENTER=66
   const code = name === 'backspace' ? 67 : 66
-  scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 0 } }))
-  scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 1 } }))
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 0 } }))
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 1 } }))
 }
 
 
