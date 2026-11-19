@@ -2435,9 +2435,13 @@ def _cert_and_proxy(device_id: str) -> tuple:
         "[ -f $f ] && echo ===CERT=== && cat $f && echo ===END===; "
         "done"
     )
-    result = execute_adb_command(
-        f'adb -s {device_id} shell "{script}"', timeout=15
-    )
+    prefix = _root_prefix(device_id)
+    if prefix:
+        # 非 root 设备：整段脚本交给 su 执行，否则 for/cat 仍在 shell 用户下读不到证书目录
+        command = f"adb -s {device_id} shell \"{prefix}sh -c '{script}'\""
+    else:
+        command = f'adb -s {device_id} shell "{script}"'
+    result = execute_adb_command(command, timeout=15)
     output = result.get("stdout", "") if result["success"] else ""
 
     proxy_status = "未开启"
