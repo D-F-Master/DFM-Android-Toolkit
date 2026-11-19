@@ -40,16 +40,23 @@
 | `0x05` | CMD_SERIAL_SEND | PC → 设备 | `{"mode":"text","payload":"AT","times":1,"interval":500}` | 单次/循环发送或 `{stop:true}` 停止，见 `DFM-probe/接口文档.md` |
 | `0x06` | CMD_ACK | 设备 → PC | 无 | ACK 确认帧，见「ACK 确认」 |
 | `0x07` | CMD_SERIAL_CLOSE | PC → 设备 | `{}` | 停读线程与循环线程、关串口，见 `DFM-probe/接口文档.md` |
-| `0x80`、`0x81`、`0x82`、`0x83`、`0x84`、`0x85`、`0x87` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
+| `0x08` | CMD_SHELL | PC → 设备 | `{"command":"ls /sdcard","root":false,"timeout":30}` | 设备端执行 shell 并回传输出，见 `DFM-probe/接口文档.md` |
+| `0x09` | CMD_SCREENSHOT | PC → 设备 | `{}` | `screencap` 截屏存设备端，见 `DFM-probe/接口文档.md` |
+| `0x0A` | CMD_CAMERA | PC → 设备 | `{}` 或 `{"cameraId":"0"}` | camera2 无预览拍照存设备端，见 `DFM-probe/接口文档.md` |
+| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 跳转系统无障碍设置页，见 `DFM-probe/接口文档.md` |
+| `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe/接口文档.md` |
+| `0x80` ~ `0x85`、`0x87` ~ `0x8C` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
 | `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
 
-`0x00`、`0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x07` 为业务帧，**要求 ACK**；`0x80`、`0x81`、`0x82`、`0x83`、`0x84`、`0x85`、`0x87`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
+`0x00`、`0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x07`、`0x08`、`0x09`、`0x0A`、`0x0B`、`0x0C` 为业务帧，**要求 ACK**；`0x80` ~ `0x85`、`0x87` ~ `0x8C`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
 
 > 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
 > 设备端不再有关闭连接的命令字，连接由 PC 侧主动关闭，服务常驻监听。
 > `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
 > `0x03` / `0x83`、`0x04` / `0x84`、`0x05` / `0x85`、`0x07` / `0x87` 为串口会话命令字/响应字：
 > 设备端打开串口后持续读并缓冲，`0x03` 取增量，不做帧解析，Hex/Txt 原样显示。
+> `0x08` / `0x88`、`0x09` / `0x89`、`0x0A` / `0x8A`、`0x0B` / `0x8B`、`0x0C` / `0x8C` 为
+> shell 执行 / 屏幕截图 / 摄像头拍照 / 无障碍设置页跳转 / 无障碍组件树命令字/响应字。
 
 
 

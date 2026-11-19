@@ -116,7 +116,12 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 | `0x05` | CMD_SERIAL_SEND | PC→设备 | `{"mode":"text","payload":"AT","times":1,"interval":500}` 或 `{"stop":true}` | 统一信封，`data` 为 `{mode,bytes,times,interval,loop}` 或 `{stopped}` |
 | `0x06` | CMD_ACK | 设备→PC | 无 | 无（通知类） |
 | `0x07` | CMD_SERIAL_CLOSE | PC→设备 | `{}` | 统一信封，`data` 为 `{"closed":bool}` |
-| `0x80`、`0x81`、`0x82`、`0x83`、`0x84`、`0x85`、`0x87` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
+| `0x08` | CMD_SHELL | PC→设备 | `{"command":"ls /sdcard","root":false,"timeout":30}` | 统一信封，`data` 为 `{stdout,stderr,exit,truncated}` |
+| `0x09` | CMD_SCREENSHOT | PC→设备 | `{}` | 统一信封，`data` 为 `{path,size,via}` |
+| `0x0A` | CMD_CAMERA | PC→设备 | `{}` 或 `{"cameraId":"0"}` | 统一信封，`data` 为 `{path,size,cameraId,width,height}` |
+| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC→设备 | `{}` | 统一信封，`data` 为 `{"started":true}` |
+| `0x0C` | CMD_ACCESSIBILITY_TREE | PC→设备 | `{}` | 统一信封，`data` 为 `{package,nodeCount,truncated,root}`（节点上限 150） |
+| `0x80` ~ `0x85`、`0x87` ~ `0x8C` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
 | `0xFF` | CMD_ERROR | 设备→PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 无（通知类） |
 
 > 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
@@ -153,6 +158,12 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 需设备已 root 且串口节点可读写；`stty` 配置失败或 `open` 被拒回 `500 serial cmd failed`，
 参数越界回 `400`。Android 设备 `stty` 是否支持 `csN` / `parenb` / `parodd` / `cstopb` 选项、
 `RandomAccessFile.read` 阻塞时 `0x07` 的关闭行为均未真机验证；参数规范见 `接口文档.md`「3.4」。
+
+shell / 截屏 / 拍照（`0x08` / `0x09` / `0x0A`）与无障碍（`0x0B` / `0x0C`）由设备端 APK 直接实现：
+`0x0B` 跳转系统无障碍设置页（返回 `{started:true}`）；`0x0C` 经 `DfmAccessibilityService` 返回
+当前窗口组件树 `{package, nodeCount, truncated, root}`，节点上限 150，需先在设置页手动启用
+「DFM Probe」无障碍服务，未启用回 `500 accessibility service not enabled`。
+参数规范见 `接口文档.md`「3.5」~「3.9」。
 
 ## 联调测试
 

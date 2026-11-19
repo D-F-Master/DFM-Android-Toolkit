@@ -98,6 +98,8 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `0x08` | CMD_SHELL | `{"command":"...","root":false,"timeout":30}` | 统一信封，`data` 为 `{stdout,stderr,exit,truncated}` | 设备端执行 shell 并回传输出（root 经 `su 0 sh -c`），见 §4.5 |
 | `0x09` | CMD_SCREENSHOT | `{}`（无必填字段） | 统一信封，`data` 为 `{path,size,via}` | `screencap` 截屏存应用外部目录（直连被拒自动回退 `su`），见 §4.5 |
 | `0x0A` | CMD_CAMERA | `{}` 或 `{"cameraId":"0"}` | 统一信封，`data` 为 `{path,size,cameraId,width,height}` | camera2 无预览拍照存应用外部目录（需 PC 端 pm grant + GhostActivity），见 §4.5 |
+| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"started":true}}` | 跳转系统无障碍设置页，由用户手动启用「DFM Probe」服务，见 §4.6 |
+| `0x0C` | CMD_ACCESSIBILITY_TREE | `{}`（无必填字段） | 统一信封，`data` 为 `{package,nodeCount,truncated,root}` | 返回无障碍服务采集的当前窗口组件树（节点上限 150，超出置 truncated），见 §4.6 |
 | 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开 |
 
 > 旧版 `0x01`~`0x05`、`0x07`（PING / ECHO / TTS / INFO / QUIT / DEVICE_INFO）业务命令字已全部删除，
@@ -106,9 +108,9 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 > `0x03` / `0x83` 为串口读取（取会话增量）命令字/响应字；`0x04` / `0x84`、`0x05` / `0x85`、
 > `0x07` / `0x87` 为新增的串口会话打开 / 发送 / 关闭命令字/响应字。
 > `0x08` / `0x88`、`0x09` / `0x89`、`0x0A` / `0x8A` 为 v2.5 新增的 shell 执行 / 屏幕截图 / 摄像头拍照
-> 命令字/响应字。
+> 命令字/响应字。`0x0B` / `0x8B`、`0x0C` / `0x8C` 为 v2.6 新增的无障碍设置页跳转 / 组件树命令字/响应字。
 
-设备→PC 的通知类命令字：`0x06` ACK、`0x80` ~ `0x85` / `0x87` ~ `0x8A` 数据响应帧、`0xFF` 错误帧。
+设备→PC 的通知类命令字：`0x06` ACK、`0x80` ~ `0x85` / `0x87` ~ `0x8C` 数据响应帧、`0xFF` 错误帧。
 业务执行抛出未预期异常时回 `{"code":500,"message":"execute failed: ...","data":null}`，不会崩服务。
 
 ### 4.3 设备详细信息采集（`0x02`）
@@ -175,6 +177,21 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   app 无需存储权限；PC 经 adb（root）读取，前端经 `/api/device/files/base64` 拉回预览。
 - **真机验证**（2026-11-15，rk3568_r Android 11）：心跳 / shell 应用与 root 身份 / 空白命令 400 /
   截图（via=su, PNG 800x1280）/ 拍照（GhostActivity 窗口内，JPEG 1920x1080 745KB）全部通过。
+
+### 4.6 无障碍设置页 / 组件树（`0x0B` / `0x0C`，v2.6）
+
+- **`0x0B CMD_ACCESSIBILITY_SETTINGS`**：`startActivity(Settings.ACTION_ACCESSIBILITY_SETTINGS)` +
+  `FLAG_ACTIVITY_NEW_TASK` 把系统无障碍设置页拉到前台，返回 `{started:true}`。probe 无界面，
+  无障碍权限无法静默授予，只能由用户在设置页手动启用。
+- **`0x0C CMD_ACCESSIBILITY_TREE`**：经新增的 `DfmAccessibilityService`（manifest 注册
+  `BIND_ACCESSIBILITY_SERVICE` + `res/xml/accessibility_service_config.xml`，`canRetrieveWindowContent=true`）
+  取 `rootInActiveWindow` 递归序列化，返回 `{package, nodeCount, truncated, root}`；
+  节点字段 `{class, text, desc, id, bounds, clickable, scrollable, enabled, children}`。
+  节点数上限 150（`MAX_TREE_NODES`），达到上限停止展开并置 `truncated:true`，防止响应超出单帧 65535。
+- **前置条件**：`0x0C` 需设备端已启用「DFM Probe」无障碍服务（先发 `0x0B` 跳设置页手动启用），
+  未启用回 `500 accessibility service not enabled`；无活动窗口回 `500 no active window for accessibility`。
+- **调用方式**：前端「探针工具 → 无障碍设置页 / 无障碍组件树」按钮，走 `POST /api/probe/message`
+  发 `cmd:11` / `cmd:12`；组件树在页面结果区按层级缩进显示。
 
 ### 4.2 系统 TTS 朗读
 
