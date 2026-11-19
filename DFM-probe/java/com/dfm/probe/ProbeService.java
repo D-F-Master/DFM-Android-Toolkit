@@ -1079,7 +1079,7 @@ public class ProbeService extends Service {
         return data;
     }
 
-    /** CMD_ACCESSIBILITY_TREE (0x0C)：返回当前活动窗口组件树（需无障碍服务已启用）。 */
+    /** CMD_ACCESSIBILITY_TREE (0x0C)：返回当前活动窗口组件树（需无障碍服务已启用），成功/失败均回统一信封。 */
     private JSONObject accessibilityTree() throws Exception {
         DfmAccessibilityService svc = DfmAccessibilityService.instance();
         if (svc == null) {
@@ -1097,7 +1097,7 @@ public class ProbeService extends Service {
         data.put("nodeCount", Math.min(count.get(), MAX_TREE_NODES));
         data.put("truncated", count.get() > MAX_TREE_NODES);
         data.put("root", rootNode);
-        return data;
+        return ok(data);
     }
 
     /** 递归序列化无障碍节点：超过 MAX_TREE_NODES 停止展开（该子树返回 null，不计入 children）。 */
