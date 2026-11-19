@@ -1138,25 +1138,31 @@ def rename_file(request: RenameRequest):
     if not request.path or not request.newPath:
         return {"code": 400, "message": "path and newPath are required", "data": None}
 
-    # 同名视为无操作
-    if request.path == request.newPath:
+    # 相对新名按源文件所在目录解析，避免 adb shell 把它落到只读的根目录 /
+    new_path = request.newPath
+    if not new_path.startswith("/"):
+        head, _, _ = request.path.rpartition("/")
+        new_path = head.rstrip("/") + "/" + new_path
+
+    # 同名视为无操作（含相对名解析后与源文件同名的情况）
+    if request.path == new_path:
         return {"code": 200, "message": "success", "data": None}
 
     # 源路径与目标路径都要做顶层保护（防止把 /system 移走或覆盖）
-    for p in (request.path, request.newPath):
+    for p in (request.path, new_path):
         normalized = p.rstrip("/") or "/"
         if normalized in PROTECTED_DELETE_PATHS:
             return {"code": 400, "message": f"拒绝操作顶层目录 {normalized}（保护性拦截）", "data": None}
 
     # 目标已存在时 mv 会直接覆盖，先检查拒绝，避免误覆盖
     exists = execute_adb_command(
-        f"adb -s {request.deviceId} shell test -e {_shell_quote(request.newPath)} && echo Y"
+        f"adb -s {request.deviceId} shell test -e {_shell_quote(new_path)} && echo Y"
     )
     if (exists.get("stdout") or "").strip().endswith("Y"):
         return {"code": 400, "message": "目标路径已存在，请换一个名字", "data": None}
 
     result = execute_adb_command(
-        f"adb -s {request.deviceId} shell mv {_shell_quote(request.path)} {_shell_quote(request.newPath)}"
+        f"adb -s {request.deviceId} shell mv {_shell_quote(request.path)} {_shell_quote(new_path)}"
     )
     if result["success"]:
         return {"code": 200, "message": "success", "data": None}
