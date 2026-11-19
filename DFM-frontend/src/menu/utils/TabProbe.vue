@@ -208,6 +208,59 @@ const onProbePhoto = async () => {
     probeBusy.value = '';
   }
 };
+
+// 探针工具：跳转无障碍设置页（0x0B），由用户在设备上手动启用「DFM Probe」无障碍服务
+const openProbeAccessibility = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'accessibility-settings';
+  probeResult.value = '正在打开无障碍设置页...';
+  try {
+    await probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x0B, data: {} }, 60000);
+    probeResult.value = '已请求打开无障碍设置页，请在设备上启用「DFM Probe」无障碍服务后再获取组件树';
+    showMessage('已打开无障碍设置页', '无障碍设置');
+  } catch (e: any) {
+    const text = `打开失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '无障碍设置');
+  } finally {
+    probeBusy.value = '';
+  }
+};
+
+// 把 0x0C 返回的 {package,nodeCount,truncated,root} 缩进为多行文本
+const formatAccessibilityTree = (info: any) => {
+  const lines: string[] = [`包名 ${info.package || '未知'} · 节点 ${info.nodeCount || 0}${info.truncated ? '（超出上限已截断）' : ''}`];
+  const walk = (node: any, depth: number) => {
+    if (!node) return;
+    const attrs: string[] = [];
+    if (node.clickable) attrs.push('可点击');
+    if (node.scrollable) attrs.push('可滚动');
+    if (!node.enabled) attrs.push('禁用');
+    const label = [node.class, node.text, node.desc].filter(Boolean).join(' · ');
+    lines.push(`${'  '.repeat(depth)}${label || '(无文本)'}${node.id ? ` [${node.id}]` : ''}${node.bounds ? ` @${node.bounds}` : ''}${attrs.length ? ` (${attrs.join('/')})` : ''}`);
+    (node.children || []).forEach((c: any) => walk(c, depth + 1));
+  };
+  walk(info.root, 0);
+  return lines.join('\n');
+};
+
+// 探针工具：获取无障碍组件树（0x0C），需设备已启用「DFM Probe」无障碍服务
+const getProbeAccessibilityTree = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'accessibility-tree';
+  probeResult.value = '正在读取组件树...';
+  try {
+    const info = await probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x0C, data: {} });
+    probeResult.value = formatAccessibilityTree(info);
+    showMessage(`组件树读取完成（${info.package || '未知包名'}，${info.nodeCount || 0} 节点）`, '无障碍组件树');
+  } catch (e: any) {
+    const text = `获取失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '无障碍组件树');
+  } finally {
+    probeBusy.value = '';
+  }
+};
 </script>
 
 <template>
@@ -248,6 +301,16 @@ const onProbePhoto = async () => {
                         @click="onProbePhoto"
                         :disabled="probeDisabled"
                       >{{ probeBusy === 'photo' ? '拍照中...' : '摄像头拍照' }}</button>
+                      <button
+                        class="check-button"
+                        @click="openProbeAccessibility"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'accessibility-settings' ? '打开中...' : '无障碍设置页' }}</button>
+                      <button
+                        class="check-button"
+                        @click="getProbeAccessibilityTree"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'accessibility-tree' ? '读取中...' : '无障碍组件树' }}</button>
                     </div>
                     <div class="serial-row">
                       <label class="serial-check">
@@ -257,7 +320,7 @@ const onProbePhoto = async () => {
                     </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除；组件树需先在设备上启用「DFM Probe」无障碍服务（0x0B 跳设置页）。
                     </div>
                   </div>
                 </div>
