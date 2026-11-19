@@ -2460,6 +2460,17 @@ def _cert_and_proxy(device_id: str) -> tuple:
     return cert_name, proxy_status, proxy_address
 
 
+def _device_is_root(device_id: str) -> bool:
+    """判断设备上 adb 是否已是 root 身份（与 serial.py 一致）"""
+    result = execute_adb_command(f"adb -s {device_id} shell id -u", timeout=10)
+    return result["success"] and result.get("stdout", "").strip() == "0"
+
+
+def _root_prefix(device_id: str) -> str:
+    """返回提权前缀：root 设备返回空串，否则用 su 0（与 serial.py 一致）"""
+    return "" if _device_is_root(device_id) else "su 0 "
+
+
 @router.post("/device/cert/install")
 async def install_ca_cert(
     deviceId: str = Form(..., description="设备序列号"),
@@ -2490,7 +2501,7 @@ async def install_ca_cert(
     def _install() -> dict:
         warnings = []
 
-        # 1. 设备在线，且 adb 已 root
+        # 1. 设备在线；非 root 设备用 su 提权（与 serial.py 的 _root_prefix 一致）
         id_result = execute_adb_command(f"adb -s {deviceId} shell id", timeout=10)
         if not id_result["success"]:
             return {
@@ -2498,19 +2509,14 @@ async def install_ca_cert(
                 "message": f"设备不在线或 adb shell 执行失败：{id_result.get('error', '未知错误')}",
                 "data": None,
             }
-        if not re.search(r"\buid=0\b", id_result.get("stdout", "")):
-            return {
-                "code": 500,
-                "message": "当前 adb 不是 root，无法写入 /data/misc/user/0/cacerts-added",
-                "data": None,
-            }
+        root_prefix = _root_prefix(deviceId)
 
         # 2. 同指纹跳过；哈希已被别的证书占用时按 .1/.2 递增，不覆盖
         file_name = None
         for index in range(100):
             candidate = f"{cert_hash}.{index}"
             cat_result = execute_adb_command(
-                f"adb -s {deviceId} shell cat {CERT_USER_DIR}/{candidate}", timeout=10
+                f"adb -s {deviceId} shell {root_prefix}cat {CERT_USER_DIR}/{candidate}", timeout=10
             )
             if not cat_result["success"] or not cat_result.get("stdout", "").strip():
                 file_name = candidate
@@ -2537,12 +2543,12 @@ async def install_ca_cert(
         try:
             commands = [
                 (f'adb -s {deviceId} push "{tmp_path}" "{CERT_TMP_REMOTE}"', UPLOAD_TIMEOUT),
-                (f"adb -s {deviceId} shell mkdir -p {CERT_USER_DIR}", 10),
-                (f"adb -s {deviceId} shell cp {CERT_TMP_REMOTE} {CERT_USER_DIR}/{file_name}", 10),
-                (f"adb -s {deviceId} shell chown system:system {CERT_USER_DIR}", 10),
-                (f"adb -s {deviceId} shell chown system:system {CERT_USER_DIR}/{file_name}", 10),
-                (f"adb -s {deviceId} shell chmod 755 {CERT_USER_DIR}", 10),
-                (f"adb -s {deviceId} shell chmod 644 {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {deviceId} shell {root_prefix}mkdir -p {CERT_USER_DIR}", 10),
+                (f"adb -s {deviceId} shell {root_prefix}cp {CERT_TMP_REMOTE} {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {deviceId} shell {root_prefix}chown system:system {CERT_USER_DIR}", 10),
+                (f"adb -s {deviceId} shell {root_prefix}chown system:system {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {deviceId} shell {root_prefix}chmod 755 {CERT_USER_DIR}", 10),
+                (f"adb -s {deviceId} shell {root_prefix}chmod 644 {CERT_USER_DIR}/{file_name}", 10),
             ]
             for command, timeout in commands:
                 result = execute_adb_command(command, timeout=timeout)
@@ -2555,9 +2561,9 @@ async def install_ca_cert(
 
             # 部分 ROM 没有 restorecon / 不接收该广播，失败只记 warning，不回滚已写入的证书
             optional_commands = [
-                (f"adb -s {deviceId} shell restorecon -R {CERT_USER_DIR}", "restorecon"),
+                (f"adb -s {deviceId} shell {root_prefix}restorecon -R {CERT_USER_DIR}", "restorecon"),
                 (
-                    f"adb -s {deviceId} shell am broadcast -a {CERT_TRUST_STORE_CHANGED}",
+                    f"adb -s {deviceId} shell {root_prefix}am broadcast -a {CERT_TRUST_STORE_CHANGED}",
                     "TRUST_STORE_CHANGED 广播",
                 ),
             ]
@@ -2571,7 +2577,7 @@ async def install_ca_cert(
 
         # 4. ls -lZ 校验：期望 -rw-r--r-- 1 system system
         ls_result = execute_adb_command(
-            f"adb -s {deviceId} shell ls -lZ {CERT_USER_DIR}", timeout=10
+            f"adb -s {deviceId} shell {root_prefix}ls -lZ {CERT_USER_DIR}", timeout=10
         )
         ls_output = ls_result.get("stdout", "") if ls_result["success"] else ""
         cert_line = next(
