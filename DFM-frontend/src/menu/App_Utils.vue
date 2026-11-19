@@ -2894,6 +2894,8 @@ button.batch-remote-tile-tag.active,
   overflow: hidden;
   /* 面板高度稳定，内部 canvas 不随内容波动 */
   min-width: 0;
+  /* 定位右缘拖拽热区（.script-width-handle） */
+  position: relative;
 }
 
 :deep(.script-screen-header) {
@@ -3009,21 +3011,22 @@ button.batch-remote-tile-tag.active,
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
 }
 
-/* ===== 预览宽度调节控件 ===== */
-:deep(.script-width-ctrl) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #888;
+/* ===== 预览宽度拖拽热区 ===== */
+:deep(.script-width-handle) {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
   user-select: none;
+  z-index: 2;
 }
 
-:deep(.script-width-ctrl input[type='range']) {
-  width: 90px;
-  accent-color: #4caf50;
-  cursor: pointer;
+:deep(.script-width-handle:hover),
+:deep(.script-width-handle.dragging) {
+  background: rgba(76, 175, 80, 0.35);
 }
 
 :deep(.script-screen-body) {
@@ -4230,10 +4233,6 @@ button.batch-remote-tile-tag.active,
 
   :deep(.script-switch.on .script-switch-track) {
     background: #66bb6a;
-  }
-
-  :deep(.script-width-ctrl) {
-    color: #999;
   }
 
   :deep(.serial-key-btn) {

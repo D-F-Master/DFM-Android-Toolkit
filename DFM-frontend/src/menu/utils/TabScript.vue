@@ -26,12 +26,33 @@ const scriptPreviewEffWidth = computed(() => {
   if (scriptPreviewWidth.value <= 0) return 0
   return Math.max(120, Math.round(scriptPreviewWidth.value * scriptPreviewScale.value / 100))
 })
-const onScriptPreviewScaleInput = (ev: Event) => {
-  const v = Number((ev.target as HTMLInputElement).value)
-  if (!Number.isFinite(v) || v < 40 || v > 160) return
-  scriptPreviewScale.value = v
-  localStorage.setItem('dfm_script_preview_scale', String(v))
+// 面板右缘拖拽调宽：按下时记录起点，拖动按像素差换算回比例（热区 6px，1:1 像素跟随）
+let scriptWidthDrag: { startX: number; startScale: number; autoW: number } | null = null
+const scriptWidthDragging = ref(false)
+const applyPreviewScale = (v: number) => {
+  const clamped = Math.min(160, Math.max(40, v))
+  if (scriptPreviewScale.value === clamped) return
+  scriptPreviewScale.value = clamped
+  localStorage.setItem('dfm_script_preview_scale', String(clamped))
   syncScriptSideLayout()
+}
+const onScriptWidthHandleDown = (ev: PointerEvent) => {
+  if (ev.button !== 0 || scriptPreviewWidth.value <= 0) return
+  ev.preventDefault()
+  scriptWidthDrag = { startX: ev.clientX, startScale: scriptPreviewScale.value, autoW: scriptPreviewWidth.value }
+  scriptWidthDragging.value = true
+  ;(ev.target as HTMLElement).setPointerCapture(ev.pointerId)
+}
+const onScriptWidthHandleMove = (ev: PointerEvent) => {
+  if (!scriptWidthDrag) return
+  const dx = ev.clientX - scriptWidthDrag.startX
+  applyPreviewScale(Math.round(scriptWidthDrag.startScale + dx / scriptWidthDrag.autoW * 100))
+}
+const onScriptWidthHandleUp = (ev: PointerEvent) => {
+  if (!scriptWidthDrag) return
+  scriptWidthDrag = null
+  scriptWidthDragging.value = false
+  try { (ev.target as HTMLElement).releasePointerCapture(ev.pointerId) } catch { /* ignore */ }
 }
 let scriptPreviewObserver: ResizeObserver | null = null
 const scriptWsStatus = ref('未连接')
@@ -1534,18 +1555,6 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         <span class="script-switch-track"></span>
                         <span class="script-switch-text">显示步骤</span>
                       </label>
-                      <label class="script-width-ctrl" title="调整预览面板宽度：100% 为按画面比例自适应的默认宽度">
-                        <span>宽度</span>
-                        <input
-                          type="range"
-                          min="40"
-                          max="160"
-                          step="10"
-                          :value="scriptPreviewScale"
-                          @input="onScriptPreviewScaleInput"
-                        />
-                        <span>{{ scriptPreviewScale }}%</span>
-                      </label>
                     </div>
                     <div class="script-screen-body" ref="scriptScreenBodyRef">
                       <canvas
@@ -1565,6 +1574,16 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
                       </div>
                     </div>
+                    <!-- 右缘拖拽热区：按住左右拖动调整面板宽度 -->
+                    <div
+                      class="script-width-handle"
+                      :class="{ dragging: scriptWidthDragging }"
+                      title="拖动调整预览宽度"
+                      @pointerdown="onScriptWidthHandleDown"
+                      @pointermove="onScriptWidthHandleMove"
+                      @pointerup="onScriptWidthHandleUp"
+                      @pointercancel="onScriptWidthHandleUp"
+                    ></div>
                   </div>
 
                   <!-- 右：控制区 -->
