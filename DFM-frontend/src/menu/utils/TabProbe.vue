@@ -209,15 +209,20 @@ const onProbePhoto = async () => {
   }
 };
 
-// 探针工具：跳转无障碍设置页（0x0B），由用户在设备上手动启用「DFM Probe」无障碍服务
+// 探针工具：无障碍权限检测（0x0B），未启用才在设备上打开设置页，已启用直接提示
 const openProbeAccessibility = async () => {
   if (!probeReady()) return;
   probeBusy.value = 'accessibility-settings';
-  probeResult.value = '正在打开无障碍设置页...';
+  probeResult.value = '正在检测无障碍权限...';
   try {
-    await probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x0B, data: {} }, 60000);
-    probeResult.value = '已请求打开无障碍设置页，请在设备上启用「DFM Probe」无障碍服务后再获取组件树';
-    showMessage('已打开无障碍设置页', '无障碍设置');
+    const info = await probePost('/api/probe/message', { deviceId: selectedDevice.value, cmd: 0x0B, data: {} }, 60000);
+    if (info.enabled) {
+      probeResult.value = '设备已启用「DFM Probe」无障碍服务，无需打开设置页';
+      showMessage('无障碍权限已开启', '无障碍设置');
+    } else {
+      probeResult.value = '已在设备上打开无障碍设置页，请手动启用「DFM Probe」无障碍服务后再获取组件树';
+      showMessage('已打开无障碍设置页', '无障碍设置');
+    }
   } catch (e: any) {
     const text = `打开失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
     probeResult.value = text;
