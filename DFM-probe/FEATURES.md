@@ -98,7 +98,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `0x08` | CMD_SHELL | `{"command":"...","root":false,"timeout":30}` | 统一信封，`data` 为 `{stdout,stderr,exit,truncated}` | 设备端执行 shell 并回传输出（root 经 `su 0 sh -c`），见 §4.5 |
 | `0x09` | CMD_SCREENSHOT | `{}`（无必填字段） | 统一信封，`data` 为 `{path,size,via}` | `screencap` 截屏存应用外部目录（直连被拒自动回退 `su`），见 §4.5 |
 | `0x0A` | CMD_CAMERA | `{}` 或 `{"cameraId":"0"}` | 统一信封，`data` 为 `{path,size,cameraId,width,height}` | camera2 无预览拍照存应用外部目录（需 PC 端 pm grant + GhostActivity），见 §4.5 |
-| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"started":true}}` | 跳转系统无障碍设置页，由用户手动启用「DFM Probe」服务，见 §4.6 |
+| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"enabled":bool,"started":bool}}` | 未启用无障碍服务时跳转系统设置页，已启用直接返回不跳页，见 §4.6 |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | `{}`（无必填字段） | 统一信封，`data` 为 `{package,nodeCount,truncated,root}` | 返回无障碍服务采集的当前窗口组件树（节点上限 150，超出置 truncated），见 §4.6 |
 | 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开 |
 
@@ -180,9 +180,10 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 
 ### 4.6 无障碍设置页 / 组件树（`0x0B` / `0x0C`，v2.6）
 
-- **`0x0B CMD_ACCESSIBILITY_SETTINGS`**：`startActivity(Settings.ACTION_ACCESSIBILITY_SETTINGS)` +
-  `FLAG_ACTIVITY_NEW_TASK` 把系统无障碍设置页拉到前台，返回 `{started:true}`。probe 无界面，
-  无障碍权限无法静默授予，只能由用户在设置页手动启用。
+- **`0x0B CMD_ACCESSIBILITY_SETTINGS`**：先检测 `DfmAccessibilityService` 是否已启用——未启用才
+  `startActivity(Settings.ACTION_ACCESSIBILITY_SETTINGS)` + `FLAG_ACTIVITY_NEW_TASK` 把系统无障碍设置页
+  拉到前台（`{enabled:false, started:true}`）；已启用不跳页（`{enabled:true, started:false}`）。
+  probe 无界面，无障碍权限无法静默授予，只能由用户在设置页手动启用。
 - **`0x0C CMD_ACCESSIBILITY_TREE`**：经新增的 `DfmAccessibilityService`（manifest 注册
   `BIND_ACCESSIBILITY_SERVICE` + `res/xml/accessibility_service_config.xml`，`canRetrieveWindowContent=true`）
   取 `rootInActiveWindow` 递归序列化，返回 `{package, nodeCount, truncated, root}`；
