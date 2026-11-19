@@ -181,6 +181,7 @@ const importCaCert = async () => {
           }
           resultMessage = lines.join('\n')
         }
+        if (selectedDevice.value) fetchDeviceInfo(selectedDevice.value)
       } else {
         resultMessage = '导入证书失败: ' + (response.data.message || '未知错误')
         resultVariant = 'error'
