@@ -1061,13 +1061,20 @@ public class ProbeService extends Service {
         return dir;
     }
 
-    /** CMD_ACCESSIBILITY_SETTINGS (0x0B)：跳转系统无障碍设置页，由用户手动启用 DFM Probe。 */
+    /** CMD_ACCESSIBILITY_SETTINGS (0x0B)：无障碍服务未启用时跳转系统设置页，已启用则直接返回不跳页。 */
     private JSONObject openAccessibilitySettings() throws Exception {
+        JSONObject data = new JSONObject();
+        boolean enabled = DfmAccessibilityService.instance() != null;
+        data.put("enabled", enabled);
+        if (enabled) {
+            Log.i(TAG, "accessibility service already enabled, skip settings page");
+            data.put("started", false);
+            return data;
+        }
         Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
         Log.i(TAG, "accessibility settings page requested");
-        JSONObject data = new JSONObject();
         data.put("started", true);
         return data;
     }
