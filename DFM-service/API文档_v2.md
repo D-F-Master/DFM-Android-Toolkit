@@ -3,7 +3,7 @@
 ## 基础信息
 
 - **服务地址**: `http://localhost:3000`
-- **版本**: 2.0.0
+- **版本**: 2.0.3
 - **框架**: FastAPI
 - **启动命令**: `python main.py`
 - **自动文档**: 启动后可访问 `http://localhost:3000/docs` 查看 Swagger UI

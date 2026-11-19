@@ -60,7 +60,7 @@ const sections = [
     key: 'about',
     title: '关于',
     items: [
-      { type: 'static', label: 'DFM-Android-Toolkit', desc: '版本 2.0.0 · 仅供学习和内部使用' },
+      { type: 'static', label: 'DFM-Android-Toolkit', desc: '版本 2.0.3 · 仅供学习和内部使用' },
     ],
   },
 ] as const;
@@ -191,7 +191,7 @@ onBeforeUnmount(() => {
                 </select>
 
                 <!-- 静态信息 -->
-                <span v-else class="setting-static">v2.0.0</span>
+                <span v-else class="setting-static">v2.0.3</span>
               </div>
             </div>
           </div>

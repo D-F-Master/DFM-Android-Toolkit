@@ -28,8 +28,8 @@ DFM-desktop/
 │   └── make-icon.ps1        # 从 DFM-frontend/logo.png 生成 256x256 图标
 ├── update-server/           # 更新服务（零依赖，部署在你的服务器上）
 └── release/                 # 打包产物（gitignore）
-    ├── DFM-Android-Toolkit Setup 2.0.0.exe   # NSIS 安装包
-    ├── DFM-Android-Toolkit Setup 2.0.0.exe.blockmap
+    ├── DFM-Android-Toolkit Setup 2.0.3.exe   # NSIS 安装包
+    ├── DFM-Android-Toolkit Setup 2.0.3.exe.blockmap
     └── latest.yml                            # 更新清单
 ```
 

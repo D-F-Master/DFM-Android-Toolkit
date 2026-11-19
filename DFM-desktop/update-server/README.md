@@ -16,8 +16,8 @@ update-server/
 ├── server.js          # 服务本体
 └── data/updates/      # 更新文件目录（首次启动自动创建）
     ├── latest.yml                                 # electron-builder 打包时生成
-    ├── DFM-Android-Toolkit-Setup-2.0.0.exe        # 安装包
-    └── DFM-Android-Toolkit-Setup-2.0.0.exe.blockmap  # 增量更新用（如有）
+    ├── DFM-Android-Toolkit-Setup-2.0.3.exe        # 安装包
+    └── DFM-Android-Toolkit-Setup-2.0.3.exe.blockmap  # 增量更新用（如有）
 ```
 
 ## 发布新版本流程
