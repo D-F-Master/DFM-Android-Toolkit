@@ -15,6 +15,7 @@ import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
 import android.graphics.ImageFormat;
+import android.graphics.Rect;
 import android.hardware.input.InputManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
@@ -24,11 +25,13 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 import android.util.Size;
 import android.view.InputDevice;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -56,6 +59,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -86,6 +90,8 @@ public class ProbeService extends Service {
     private static final int CMD_SHELL = 0x08;
     private static final int CMD_SCREENSHOT = 0x09;
     private static final int CMD_CAMERA = 0x0A;
+    private static final int CMD_ACCESSIBILITY_SETTINGS = 0x0B;
+    private static final int CMD_ACCESSIBILITY_TREE = 0x0C;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -94,6 +100,9 @@ public class ProbeService extends Service {
 
     /** shell 输出（stdout / stderr 各自）按字节截断的上限，防止响应 JSON 超出单帧 65535。 */
     private static final int MAX_SHELL_OUTPUT = 10000;
+
+    /** 0x0C 组件树序列化的节点数上限，超出后停止展开并置 truncated，防止响应超出单帧 65535。 */
+    private static final int MAX_TREE_NODES = 150;
 
     /** 监听状态必须 static：系统每 60 秒把后台服务按 app idle 停掉（ onDestroy ），但进程仍存活；
      *  监听线程挂在 static 字段上即可跨服务生命周期继续 accept，端口不中断。 */
@@ -337,7 +346,8 @@ public class ProbeService extends Service {
                     && cmd != CMD_DEVICE_INFO && cmd != CMD_SERIAL_READ
                     && cmd != CMD_SERIAL_OPEN && cmd != CMD_SERIAL_SEND
                     && cmd != CMD_SERIAL_CLOSE
-                    && cmd != CMD_SHELL && cmd != CMD_SCREENSHOT && cmd != CMD_CAMERA;
+                    && cmd != CMD_SHELL && cmd != CMD_SCREENSHOT && cmd != CMD_CAMERA
+                    && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -428,6 +438,17 @@ public class ProbeService extends Service {
             } catch (IllegalArgumentException e) {
                 Log.w(TAG, "cmd param error: " + e);
                 return fail(400, e.getMessage());
+            } catch (Exception e) {
+                Log.w(TAG, "cmd 0x" + Integer.toHexString(cmd) + " failed: " + e);
+                return fail(500, "cmd failed: " + e);
+            }
+        }
+        if (cmd == CMD_ACCESSIBILITY_SETTINGS || cmd == CMD_ACCESSIBILITY_TREE) {
+            try {
+                if (cmd == CMD_ACCESSIBILITY_SETTINGS) {
+                    return ok(openAccessibilitySettings());
+                }
+                return accessibilityTree();
             } catch (Exception e) {
                 Log.w(TAG, "cmd 0x" + Integer.toHexString(cmd) + " failed: " + e);
                 return fail(500, "cmd failed: " + e);
@@ -1038,6 +1059,73 @@ public class ProbeService extends Service {
             throw new Exception("cannot create files dir: " + dir);
         }
         return dir;
+    }
+
+    /** CMD_ACCESSIBILITY_SETTINGS (0x0B)：跳转系统无障碍设置页，由用户手动启用 DFM Probe。 */
+    private JSONObject openAccessibilitySettings() throws Exception {
+        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+        Log.i(TAG, "accessibility settings page requested");
+        JSONObject data = new JSONObject();
+        data.put("started", true);
+        return data;
+    }
+
+    /** CMD_ACCESSIBILITY_TREE (0x0C)：返回当前活动窗口组件树（需无障碍服务已启用）。 */
+    private JSONObject accessibilityTree() throws Exception {
+        DfmAccessibilityService svc = DfmAccessibilityService.instance();
+        if (svc == null) {
+            return fail(500, "accessibility service not enabled (先经 0x0B 跳设置页手动启用 DFM Probe)");
+        }
+        AccessibilityNodeInfo root = svc.getRootInActiveWindow();
+        if (root == null) {
+            return fail(500, "no active window for accessibility");
+        }
+        AtomicInteger count = new AtomicInteger(0);
+        JSONObject rootNode = serializeNode(root, count);
+        JSONObject data = new JSONObject();
+        CharSequence pkg = root.getPackageName();
+        data.put("package", pkg == null ? "" : pkg.toString());
+        data.put("nodeCount", Math.min(count.get(), MAX_TREE_NODES));
+        data.put("truncated", count.get() > MAX_TREE_NODES);
+        data.put("root", rootNode);
+        return data;
+    }
+
+    /** 递归序列化无障碍节点：超过 MAX_TREE_NODES 停止展开（该子树返回 null，不计入 children）。 */
+    private JSONObject serializeNode(AccessibilityNodeInfo node, AtomicInteger count) throws Exception {
+        if (count.incrementAndGet() > MAX_TREE_NODES) {
+            return null;
+        }
+        JSONObject o = new JSONObject();
+        CharSequence cls = node.getClassName();
+        o.put("class", cls == null ? "" : cls.toString());
+        CharSequence text = node.getText();
+        o.put("text", text == null ? "" : text.toString());
+        CharSequence desc = node.getContentDescription();
+        o.put("desc", desc == null ? "" : desc.toString());
+        CharSequence id = node.viewIdResourceName;
+        o.put("id", id == null ? "" : id.toString());
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        o.put("bounds", bounds.left + "," + bounds.top + "," + bounds.right + "," + bounds.bottom);
+        o.put("clickable", node.isClickable());
+        o.put("scrollable", node.isScrollable());
+        o.put("enabled", node.isEnabled());
+        JSONArray children = new JSONArray();
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) {
+                continue;
+            }
+            JSONObject c = serializeNode(child, count);
+            if (c != null) {
+                children.put(c);
+            }
+        }
+        o.put("children", children);
+        return o;
     }
 
     /** 设备端只保持一个串口会话：OPEN 后常驻，直到 CLOSE 或服务销毁。 */

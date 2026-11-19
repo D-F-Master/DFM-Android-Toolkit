@@ -40,6 +40,20 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!-- 无障碍服务：需用户在系统无障碍设置里手动启用（0x0B 跳转该页），启用后 0x0C 可读组件树 -->
+        <service
+            android:name=".DfmAccessibilityService"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
         <!-- 拍照辅助：PC 端 am start 拉起，透明不交互，停留 15s 自动退出（见 GhostActivity） -->
         <activity
             android:name=".GhostActivity"
