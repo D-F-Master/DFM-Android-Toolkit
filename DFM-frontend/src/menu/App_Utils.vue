@@ -3009,6 +3009,23 @@ button.batch-remote-tile-tag.active,
   box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
 }
 
+/* ===== 预览宽度调节控件 ===== */
+:deep(.script-width-ctrl) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #888;
+  user-select: none;
+}
+
+:deep(.script-width-ctrl input[type='range']) {
+  width: 90px;
+  accent-color: #4caf50;
+  cursor: pointer;
+}
+
 :deep(.script-screen-body) {
   flex: 1;
   display: flex;
@@ -4213,6 +4230,10 @@ button.batch-remote-tile-tag.active,
 
   :deep(.script-switch.on .script-switch-track) {
     background: #66bb6a;
+  }
+
+  :deep(.script-width-ctrl) {
+    color: #999;
   }
 
   :deep(.serial-key-btn) {

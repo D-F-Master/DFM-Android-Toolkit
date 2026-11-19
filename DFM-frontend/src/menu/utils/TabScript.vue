@@ -18,6 +18,21 @@ const scriptScreenBodyRef = ref<HTMLElement | null>(null)
 const scriptLayoutRef = ref<HTMLElement | null>(null)
 const scriptPreviewWidth = ref(0)
 const scriptSideTwoCol = ref(false)
+// 用户手动调整的预览宽度比例（100 = 按高度自适应的默认宽度），localStorage 持久化
+const storedPreviewScale = Number(localStorage.getItem('dfm_script_preview_scale'))
+const scriptPreviewScale = ref(Number.isFinite(storedPreviewScale) && storedPreviewScale >= 40 && storedPreviewScale <= 160 ? storedPreviewScale : 100)
+// 生效宽度：自适应宽度 × 用户比例；未挂载（自适应宽为 0）时仍为 0，模板回退 100%
+const scriptPreviewEffWidth = computed(() => {
+  if (scriptPreviewWidth.value <= 0) return 0
+  return Math.max(120, Math.round(scriptPreviewWidth.value * scriptPreviewScale.value / 100))
+})
+const onScriptPreviewScaleInput = (ev: Event) => {
+  const v = Number((ev.target as HTMLInputElement).value)
+  if (!Number.isFinite(v) || v < 40 || v > 160) return
+  scriptPreviewScale.value = v
+  localStorage.setItem('dfm_script_preview_scale', String(v))
+  syncScriptSideLayout()
+}
 let scriptPreviewObserver: ResizeObserver | null = null
 const scriptWsStatus = ref('未连接')
 const scriptVerify = ref(false)
@@ -46,9 +61,9 @@ let scriptMeta = { width: 1080, height: 2340 }
 // 620px 是两列下限：每列不窄于现在一列时的 300px（含 10px 间距），沿用原 1600px 媒体查询的取值。
 const syncScriptSideLayout = () => {
   const layout = scriptLayoutRef.value
-  if (!layout || layout.clientWidth <= 0 || scriptPreviewWidth.value <= 0) return
+  if (!layout || layout.clientWidth <= 0 || scriptPreviewEffWidth.value <= 0) return
   // -12 对应 .script-layout 的 gap；预览面板宽度含左右各 1px 边框
-  const free = layout.clientWidth - scriptPreviewWidth.value - 12
+  const free = layout.clientWidth - scriptPreviewEffWidth.value - 12
   const twoCol = free >= 620
   if (scriptSideTwoCol.value !== twoCol) scriptSideTwoCol.value = twoCol
 }
@@ -1505,7 +1520,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
               <div v-if="activeTab === 'script'" class="keys-page script-page">
                 <div class="script-layout" ref="scriptLayoutRef">
                   <!-- 左：屏幕流 -->
-                  <div class="script-screen-panel" :style="{ width: scriptPreviewWidth ? scriptPreviewWidth + 'px' : '100%' }">
+                  <div class="script-screen-panel" :style="{ width: scriptPreviewEffWidth ? scriptPreviewEffWidth + 'px' : '100%' }">
                     <div class="script-screen-header">
                       <span>屏幕预览</span>
                       <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
@@ -1518,6 +1533,18 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         <input type="checkbox" v-model="scriptShowMarkers" />
                         <span class="script-switch-track"></span>
                         <span class="script-switch-text">显示步骤</span>
+                      </label>
+                      <label class="script-width-ctrl" title="调整预览面板宽度：100% 为按画面比例自适应的默认宽度">
+                        <span>宽度</span>
+                        <input
+                          type="range"
+                          min="40"
+                          max="160"
+                          step="10"
+                          :value="scriptPreviewScale"
+                          @input="onScriptPreviewScaleInput"
+                        />
+                        <span>{{ scriptPreviewScale }}%</span>
                       </label>
                     </div>
                     <div class="script-screen-body" ref="scriptScreenBodyRef">
