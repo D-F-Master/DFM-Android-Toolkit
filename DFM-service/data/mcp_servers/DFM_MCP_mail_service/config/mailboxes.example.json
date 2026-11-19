@@ -1,0 +1,26 @@
+[
+  {
+    "id": "personal",
+    "name": "个人邮箱",
+    "email": "your_email@qq.com",
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "imap_host": "imap.qq.com",
+    "imap_port": 993,
+    "password": "***REPLACE_WITH_AUTH_CODE***",
+    "use_ssl_smtp": true,
+    "use_ssl_imap": true
+  },
+  {
+    "id": "work",
+    "name": "工作邮箱",
+    "email": "your_email@company.com",
+    "smtp_host": "smtp.exmail.qq.com",
+    "smtp_port": 465,
+    "imap_host": "imap.exmail.qq.com",
+    "imap_port": 993,
+    "password": "***REPLACE_WITH_AUTH_CODE***",
+    "use_ssl_smtp": true,
+    "use_ssl_imap": true
+  }
+]

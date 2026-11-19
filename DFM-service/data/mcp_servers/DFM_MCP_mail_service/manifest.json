@@ -1,0 +1,26 @@
+{
+  "name": "DFM_MCP_mail_service",
+  "version": "0.1.0",
+  "description": "邮件 MCP 服务：绑定邮箱、通过 SMTP 发送邮件、通过 IMAP 读取邮件",
+  "entry": "server:server",
+  "requirements": "requirements.txt",
+  "tools": [
+    {
+      "name": "list_bound_mailboxes",
+      "description": "返回已配置的邮箱列表（不含密码）"
+    },
+    {
+      "name": "add_bound_mailbox",
+      "description": "新增一个邮箱账号配置并持久化到 config/mailboxes.json"
+    },
+    {
+      "name": "send_email",
+      "description": "通过 SMTP 发送邮件；需先绑定邮箱并配置真实凭据"
+    },
+    {
+      "name": "read_email",
+      "description": "通过 IMAP 读取邮箱邮件列表（仅元数据）"
+    }
+  ],
+  "port": 3010
+}
