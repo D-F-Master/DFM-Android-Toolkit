@@ -1105,7 +1105,7 @@ public class ProbeService extends Service {
         o.put("text", text == null ? "" : text.toString());
         CharSequence desc = node.getContentDescription();
         o.put("desc", desc == null ? "" : desc.toString());
-        CharSequence id = node.viewIdResourceName;
+        CharSequence id = node.getViewIdResourceName();
         o.put("id", id == null ? "" : id.toString());
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
