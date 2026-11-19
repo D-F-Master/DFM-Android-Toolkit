@@ -251,7 +251,7 @@ const openFileEditor = async (file: { path: string; name: string; size?: string 
     }
 
     editorInitialContent.value = content
-    editorTarget = { remotePath: file.path }
+    editorTarget.value = { remotePath: file.path }
   } catch (error: any) {
     console.error('打开文件编辑失败:', error)
     editorLoadError.value = `无法读取文件: ${error.message}（可能是权限不足或二进制文件）`

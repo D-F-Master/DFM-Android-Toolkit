@@ -546,10 +546,10 @@ const editorLoading = ref(false)
 const editorLoadError = ref('')
 const editorSaving = ref(false)
 // 当前编辑的目标信息（远端路径、本地临时路径）
-let editorTarget: { remotePath: string; localPath: string } | null = null
+const editorTarget = ref<{ remotePath: string; localPath: string } | null>(null)
 
 const handleEditorSave = async (newContent: string) => {
-  if (!selectedDevice.value || !editorTarget) return
+  if (!selectedDevice.value || !editorTarget.value) return
   editorSaving.value = true
   try {
     // 3. 用字符串构造 File 走现有上传接口，覆盖回原路径
@@ -557,7 +557,7 @@ const handleEditorSave = async (newContent: string) => {
     const formData = new FormData()
     formData.append('file', blob, editorFileName.value)
     formData.append('deviceId', selectedDevice.value)
-    const dir = editorTarget.remotePath.substring(0, editorTarget.remotePath.lastIndexOf('/') + 1) || '/'
+    const dir = editorTarget.value.remotePath.substring(0, editorTarget.value.remotePath.lastIndexOf('/') + 1) || '/'
     formData.append('remotePath', dir)
 
     const response = await axios.post(
@@ -568,7 +568,7 @@ const handleEditorSave = async (newContent: string) => {
     if (response.data.code === 200) {
       showMessage('保存成功，已覆盖设备上的文件')
       editorVisible.value = false
-      editorTarget = null
+      editorTarget.value = null
       fetchFiles(selectedDevice.value, currentPath.value)
     } else {
       showMessage('保存失败: ' + (response.data.message || '未知错误'))
@@ -583,7 +583,7 @@ const handleEditorSave = async (newContent: string) => {
 
 const handleEditorClose = () => {
   editorVisible.value = false
-  editorTarget = null
+  editorTarget.value = null
 }
 
 // ==================== 图片在线查看 ====================
