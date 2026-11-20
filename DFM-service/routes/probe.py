@@ -43,6 +43,11 @@ _locks_lock = threading.Lock()
 _device_locks = {}
 _seq_by_device = {}
 
+# 连接复用池：device_id -> {"device_id","conn","reader","host","port","forward_port"}
+# 命中时直接在旧连接上发帧，省去重复广播 / forward / 建连
+_pool_lock = threading.Lock()
+_conn_pool = {}
+
 
 class ProbeRequest(BaseModel):
     deviceId: str
@@ -250,28 +255,108 @@ def _suppress_notification(device_id: str) -> list:
     return results
 
 
+def _close_pool_entry(entry: dict) -> None:
+    """关闭池条目持有的连接并回收其 forward 端口。"""
+    try:
+        entry["conn"].close()
+    except Exception:
+        pass
+    fp = entry.get("forward_port")
+    if fp is not None:
+        try:
+            _adb(entry["device_id"], "forward", "--remove", f"tcp:{fp}")
+        except Exception as e:
+            logger.warning(f"adb forward --remove failed: {e}")
+
+
+def _drop_pooled(device_id: str) -> None:
+    """丢弃指定设备的复用连接（install 重启 APK、连接失效时调用）。"""
+    with _pool_lock:
+        entry = _conn_pool.pop(device_id, None)
+    if entry is not None:
+        _close_pool_entry(entry)
+
+
+def _probe_via_pool(device_id: str, cmd: int, request: dict, payload: bytes):
+    """尝试复用池中连接完成一次请求，省去重复广播 / forward / 建连。
+
+    命中且成功 → 连接放回池中并返回响应 dict；
+    未命中或复用失败（连接失效 / ACK 超时）→ 关闭旧连接返回 None，由调用方走完整重建路径。
+    仅可在该设备的锁内调用。
+    """
+    with _pool_lock:
+        entry = _conn_pool.pop(device_id, None)
+    if entry is None:
+        return None
+    conn = entry["conn"]
+    reader = entry["reader"]
+    logger.info(f"probe pool device={device_id} 复用连接 {entry['host']}:{entry['port']}")
+    try:
+        seq = _next_seq(device_id)
+        frame = pack_frame(seq, cmd, payload)
+        frames = {"tx": frame.hex(" ").upper(), "ack": "", "rx": ""}
+        got_ack, pending, ack_raw = recv_ack(reader, conn, seq, cmd, frame)
+        frames["ack"] = ack_raw.hex(" ").upper()
+        if not got_ack and pending is None:
+            _close_pool_entry(entry)
+            logger.info(f"probe pool device={device_id} 复用失败（ACK 超时），转重建")
+            return None
+        response, rx_raw = recv_response(reader, seq, cmd, pending)
+        frames["rx"] = rx_raw.hex(" ").upper()
+        with _pool_lock:
+            _conn_pool[device_id] = entry
+        return {
+            "connected": True,
+            "deviceId": device_id,
+            "seq": seq,
+            "cmd": cmd,
+            "request": request,
+            "response": response,
+            "frame": frames["tx"],
+            "frames": frames,
+            "host": entry["host"],
+            "port": entry["port"],
+            "reused": True,
+        }
+    except Exception:
+        _close_pool_entry(entry)
+        logger.info(f"probe pool device={device_id} 复用失败（连接异常），转重建")
+        return None
+
+
 def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
     """对指定设备发一帧业务帧并取回响应。
 
     adb 只负责安装、启动广播与 USB 端口映射；业务数据全部走设备 21104 上的帧协议。
     同一设备的请求串行化，避免帧序与 forward 端口互相干扰。
+    install=True 时强制重建连接（APK 被覆盖安装，旧进程与连接全部失效）。
     """
     with _device_lock(device_id):
-        return _run_probe(device_id, install, cmd, data)
+        request = data if data is not None else {}
+        try:
+            payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError) as e:
+            return {"connected": False, "reason": f"数据区序列化失败: {e}"}
+        if len(payload) > 65535:
+            return {"connected": False, "reason": f"数据区超过 65535 字节: {len(payload)}"}
+        if not install:
+            pooled = _probe_via_pool(device_id, cmd, request, payload)
+            if pooled is not None:
+                return pooled
+        return _run_probe(device_id, install, cmd, request, payload)
 
 
-def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
+def _run_probe(device_id: str, install: bool, cmd: int, request: dict, payload: bytes) -> dict:
     conn = None
     forward_port = None
     try:
+        # install 重启 APK 会杀掉旧进程与连接，先丢弃池中旧连接
+        if install:
+            _drop_pooled(device_id)
         rc, out, err = _adb(device_id, "get-state")
         if rc != 0 or out != "device":
+            _drop_pooled(device_id)
             return {"connected": False, "reason": f"设备不在线: {err or out}"}
-
-        request = data if data is not None else {}
-        payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
-        if len(payload) > 65535:
-            return {"connected": False, "reason": f"数据区超过 65535 字节: {len(payload)}"}
 
         if install:
             apk_path = get_probe_apk_path()
@@ -330,6 +415,19 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
         response, rx_raw = recv_response(reader, seq, cmd, pending)
         frames["rx"] = rx_raw.hex(" ").upper()
 
+        # 请求成功，连接放入复用池（后续同设备请求直接在此连接上发帧）
+        with _pool_lock:
+            _conn_pool[device_id] = {
+                "device_id": device_id,
+                "conn": conn,
+                "reader": reader,
+                "host": host,
+                "port": port,
+                "forward_port": forward_port,
+            }
+        conn = None
+        forward_port = None
+
         return {
             "connected": True,
             "deviceId": device_id,
@@ -341,6 +439,7 @@ def _run_probe(device_id: str, install: bool, cmd: int, data: dict) -> dict:
             "frames": frames,
             "host": host,
             "port": port,
+            "reused": False,
         }
     except Exception as e:
         return {"connected": False, "reason": f"{type(e).__name__}: {e}"}

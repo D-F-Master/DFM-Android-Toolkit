@@ -1166,26 +1166,39 @@ def _eval_condition(device_id: str, step: dict, base_w: int, base_h: int, stop_e
         timeout = float(step.get("timeout", 3600))
         poll = max(0.1, float(step.get("interval", 1000)) / 1000)
         deadline = time.monotonic() + timeout
-        now_text = "未知"
-        while True:
-            if stop_event is not None and stop_event.is_set():
-                raise _ScriptStopped()
-            clock = execute_adb_command(f'adb -s {device_id} shell date "+%H:%M:%S"', timeout=15)
-            m = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', (clock.get("stdout") or ""))
-            if m and int(m.group(1)) <= 23 and int(m.group(2)) <= 59 and int(m.group(3)) <= 59:
-                now_text = m.group(0)
-                now_sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
-                if now_sec >= target_sec:
-                    ok = True
-                    reason = f"设备时间 {now_text} 已到 {target_time}"
-                    break
-            if time.monotonic() >= deadline:
-                reason = f"设备时间 {now_text} 未到 {target_time}（等待 {timeout:g}s 超时）"
-                break
-            if stop_event is not None:
-                stop_event.wait(poll)
+        # 只读一次设备时钟，按本地单调时钟推算剩余等待，不再每轮起 adb 进程
+        clock = execute_adb_command(f'adb -s {device_id} shell date "+%H:%M:%S"', timeout=15)
+        m = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', (clock.get("stdout") or ""))
+        if not (m and int(m.group(1)) <= 23 and int(m.group(2)) <= 59 and int(m.group(3)) <= 59):
+            ok = False
+            reason = f"读取设备时间失败: {((clock.get('stdout') or '') + ' ' + (clock.get('error') or '')).strip()[:120]}"
+        else:
+            now_text = m.group(0)
+            now_sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            # 读取耗时计入：读取那一刻距目标还差 target_sec - now_sec 秒，扣除已流逝的 elapsed
+            elapsed = time.monotonic() - (deadline - timeout)
+            wait_sec = (target_sec - now_sec) - elapsed
+            if wait_sec <= 0:
+                ok = True
+                reason = f"设备时间 {now_text} 已到 {target_time}"
+            elif wait_sec > timeout:
+                ok = False
+                reason = f"设备时间 {now_text} 未到 {target_time}（需等 {wait_sec:.1f}s 超过 timeout {timeout:g}s）"
             else:
-                time.sleep(poll)
+                remaining = wait_sec
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        raise _ScriptStopped()
+                    if remaining <= 0:
+                        break
+                    step_wait = min(poll, remaining)
+                    if stop_event is not None:
+                        stop_event.wait(step_wait)
+                    else:
+                        time.sleep(step_wait)
+                    remaining -= step_wait
+                ok = True
+                reason = f"设备时间 {now_text} 已到 {target_time}（本地等待 {wait_sec:.1f}s）"
     else:
         reason = f"未知判断类型: {kind}"
 
