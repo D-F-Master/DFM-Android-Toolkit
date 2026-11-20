@@ -29,12 +29,15 @@
     { "type": "volume",      "action": "up", "stream": "media" },
     { "type": "reboot" },
     { "type": "tts",         "text": "开始测试" },
+    { "type": "accClick",    "id": "com.x:id/btn", "text": "登录", "desc": "" },
     { "type": "condition", "kind": "appInstalled", "packageName": "com.x" }
   ]
 }
 
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
-TTS 步骤走探针帧协议（0x01）；其余注入类步骤走 scrcpy 会话。判断步骤（condition）
+TTS 步骤走探针帧协议（0x01）；accClick 步骤走探针 0x0C 取无障碍组件树，按
+id/text/desc 匹配节点后 adb input tap 其 bounds 中心；其余注入类步骤走 scrcpy
+会话。判断步骤（condition）
 求一次条件后按真/假分支动作（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，
 走 adb 或截屏，不占会话。
 
@@ -140,7 +143,7 @@ INJECT_STEP_TYPES = ("tap", "swipe", "longpress", "input")
 # 设备动作类步骤：走 adb 命令或探针帧（不依赖 scrcpy 会话）
 ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
-    "keyevent", "volume", "reboot", "tts",
+    "keyevent", "volume", "reboot", "tts", "accClick",
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
@@ -296,6 +299,19 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
             return f"第 {idx} 步的朗读文本过长（单帧上限 65535 字节）"
         return ""
 
+    if step_type == "accClick":
+        # 按无障碍组件树匹配节点后点击其中心：id/text/desc 至少填一项（多条件同时满足）
+        filled = 0
+        for field in ("id", "text", "desc"):
+            value = step.get(field)
+            if value is not None and str(value).strip():
+                if len(str(value)) > 200:
+                    return f"第 {idx} 步的 {field} 匹配条件过长（上限 200 字符）"
+                filled += 1
+        if filled == 0:
+            return f"第 {idx} 步的无障碍点击需填写 id/text/desc 至少一项匹配条件"
+        return ""
+
     return ""
 
 
@@ -418,7 +434,7 @@ def _normalize_steps(steps) -> List[dict]:
                 "interval": step.get("interval", 0),
                 "count": step.get("count", 1),
             }
-            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text"):
+            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             normalized.append(item)
@@ -993,6 +1009,57 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             if not isinstance(response, dict) or response.get("code") != 200:
                 message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
                 raise RuntimeError(f"TTS 朗读失败: {message}")
+
+        elif stype == "accClick":
+            # 无障碍点击：经探针 0x0C 取组件树，按 id/text/desc 匹配节点后点击其中心
+            from routes.probe import run_probe
+
+            _acc_id = str(step.get("id", "") or "").strip()
+            _acc_text = str(step.get("text", "") or "").strip()
+            _acc_desc = str(step.get("desc", "") or "").strip()
+            d = run_probe(device_id, False, 0x0C, {})
+            if not d.get("connected"):
+                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
+            response = d.get("response") or {}
+            if not isinstance(response, dict) or response.get("code") != 200:
+                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                raise RuntimeError(f"获取无障碍组件树失败: {message}")
+            root = ((response.get("data") or {}).get("root")) if isinstance(response.get("data"), dict) else None
+
+            def _match(node: dict) -> bool:
+                # 填了哪个条件就参与哪个条件，全部同时满足才算命中
+                if _acc_id and node.get("id") != _acc_id:
+                    return False
+                if _acc_text and _acc_text not in str(node.get("text") or ""):
+                    return False
+                if _acc_desc and _acc_desc not in str(node.get("desc") or ""):
+                    return False
+                return True
+
+            def _find(node: dict):
+                if _match(node):
+                    return node
+                for child in node.get("children") or []:
+                    hit = _find(child)
+                    if hit is not None:
+                        return hit
+                return None
+
+            target = _find(root) if isinstance(root, dict) else None
+            if target is None:
+                cond = "、".join(f"{k}={v}" for k, v in (("id", _acc_id), ("text", _acc_text), ("desc", _acc_desc)) if v)
+                raise RuntimeError(f"无障碍树未找到节点（{cond}）；请确认设备已启用无障碍权限且目标界面在前台")
+            bounds = str(target.get("bounds") or "")
+            m = re.match(r"^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$", bounds)
+            if not m:
+                raise RuntimeError(f"节点 bounds 无效: {bounds or '（空）'}")
+            l, t, r, b = (int(g) for g in m.groups())
+            if r <= l or b <= t:
+                raise RuntimeError(f"节点 bounds 无效: {bounds}")
+            cx, cy = (l + r) // 2, (t + b) // 2
+            result = execute_adb_command(f"adb -s {device_id} shell input tap {cx} {cy}", timeout=30)
+            if not result["success"]:
+                raise RuntimeError((result.get("error") or "accClick tap failed").strip())
 
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
