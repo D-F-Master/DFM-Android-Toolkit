@@ -182,6 +182,16 @@ class RemoteHub:
             try:
                 frame = session.frame_queue.get(timeout=1.0)
             except Exception:
+                # 队列空（画面静态无新帧）：发应用层心跳帧（kind=3，前端仅作
+                # 存活喂狗、不解码），让前端能区分“静态画面”与“连接已断”
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self.ws.send_bytes(bytes([0, 3])),
+                        self._loop,
+                    )
+                    fut.result(timeout=5)
+                except Exception:
+                    pass  # ws 已断：endpoint finally 会清理会话，此处忽略
                 continue
             if frame["kind"] == "closed":
                 break

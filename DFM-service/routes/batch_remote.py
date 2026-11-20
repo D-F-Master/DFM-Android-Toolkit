@@ -193,7 +193,7 @@ class DeviceSession:
                 f"send_dummy_byte=false send_device_meta=true send_codec_meta=true "
                 f"send_frame_meta=true "
                 f"video_codec=h264 max_size=1280 "
-                f"video_bit_rate=8000000 max_fps=60 stay_awake=true"
+                f"video_bit_rate=8000000 max_fps=30 stay_awake=true"
             )
             self._server_proc = subprocess.Popen(
                 shell_cmd, shell=True,
