@@ -1137,6 +1137,8 @@ const runProbe = async (deviceId: string, install: boolean, silent = false) => {
     const res = await axios.post(`${API_BASE.value}${url}`, { deviceId }, { timeout: 200000 });
     const d = res.data;
     const ok = d?.code === 200 && d?.data?.connected === true;
+    // 后端报「设备忙」（探针正被 tts/accClick 等长任务占用）时心跳不改判在线状态，绿点保持原样
+    if (d?.data?.busy) return;
     setProbeState(deviceId, { status: ok ? 'ok' : 'fail', message: d?.message || '通讯失败' });
   } catch (e: any) {
     setProbeState(deviceId, { status: 'fail', message: e?.message || '请求失败' });
