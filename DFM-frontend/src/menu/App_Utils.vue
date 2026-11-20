@@ -3076,45 +3076,15 @@ button.batch-remote-tile-tag.active,
   font-size: 14px;
 }
 
-/* 组件树悬浮面板：预览区右上角覆盖展示，随「显示组件树」开关每秒刷新 */
-:deep(.script-tree-panel) {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  max-width: 62%;
-  max-height: 62%;
-  display: flex;
-  flex-direction: column;
-  background: rgba(255, 255, 255, 0.94);
-  border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  padding: 8px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  overflow: hidden;
-  z-index: 5;
-}
-
-:deep(.script-tree-head) {
-  flex-shrink: 0;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 4px;
-}
-
-:deep(.script-tree-lines) {
-  overflow: auto;
-  min-height: 0;
-}
-
-:deep(.script-tree-line) {
-  white-space: nowrap;
-  color: #444;
-}
-
+/* 组件树获取失败：预览头部小标签（框画在画面 canvas 上，失败不打扰画面） */
 :deep(.script-tree-error) {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #ffebee;
   color: #c62828;
-  white-space: pre-wrap;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: default;
 }
 
 :deep(.script-side-panel) {
@@ -4276,19 +4246,8 @@ button.batch-remote-tile-tag.active,
     background: #66bb6a;
   }
 
-  :deep(.script-tree-panel) {
-    background: rgba(40, 44, 54, 0.94);
-  }
-
-  :deep(.script-tree-head) {
-    color: #ddd;
-  }
-
-  :deep(.script-tree-line) {
-    color: #bbb;
-  }
-
   :deep(.script-tree-error) {
+    background: #3a2426;
     color: #ef9a9a;
   }
 
