@@ -300,6 +300,7 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
 
     if step_type == "accClick":
         # 按无障碍组件树匹配节点后点击其中心：id/text/desc 至少填一项（多条件同时满足）
+        # 录制步骤带 x/y 兜底坐标：动态文本（时间组件等）回放时匹配不到，按坐标兜底点击
         filled = 0
         for field in ("id", "text", "desc"):
             value = step.get(field)
@@ -308,7 +309,8 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
                     return f"第 {idx} 步的 {field} 匹配条件过长（上限 200 字符）"
                 filled += 1
         if filled == 0:
-            return f"第 {idx} 步的无障碍点击需填写 id/text/desc 至少一项匹配条件"
+            if step.get("x") is None or step.get("y") is None:
+                return f"第 {idx} 步的无障碍点击需填写 id/text/desc 至少一项匹配条件"
         return ""
 
     return ""
@@ -443,7 +445,7 @@ def _normalize_steps(steps) -> List[dict]:
                 "interval": step.get("interval", 0),
                 "count": step.get("count", 1),
             }
-            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc"):
+            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc", "x", "y"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             normalized.append(item)
@@ -1039,7 +1041,26 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             response = d.get("response") or {}
             if not isinstance(response, dict) or response.get("code") != 200:
                 message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
-                raise RuntimeError(f"无障碍点击失败: {message}")
+                # 树中匹配失败且录制时带了点击坐标（x/y 为录制基准分辨率下的设备坐标）：
+                # 动态文本（如时间组件）回放时会变，按录制坐标换算到当前会话分辨率兜底点击
+                _acc_x = step.get("x")
+                _acc_y = step.get("y")
+                if isinstance(_acc_x, (int, float)) and isinstance(_acc_y, (int, float)):
+                    _bw = int(step.get("_base_w") or 0)
+                    _bh = int(step.get("_base_h") or 0)
+                    _sw = int(step.get("_screen_w") or 0)
+                    _sh = int(step.get("_screen_h") or 0)
+                    if _bw > 0 and _bh > 0 and _sw > 0 and _sh > 0:
+                        _cx = int(round(_acc_x * _sw / _bw))
+                        _cy = int(round(_acc_y * _sh / _bh))
+                        execute_adb_command(
+                            f'adb -s {device_id} shell input tap {_cx} {_cy}',
+                            timeout=30,
+                        )
+                    else:
+                        raise RuntimeError(f"无障碍点击失败: {message}；录制坐标缺少基准分辨率，无法兜底")
+                else:
+                    raise RuntimeError(f"无障碍点击失败: {message}")
 
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
@@ -1336,7 +1357,14 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         _exec_wait_step(device_id, step, base_w, base_h, stop_event)
                 # 设备动作类步骤走 adb 命令或探针帧（不依赖 scrcpy 会话），count 在函数内部循环
                 elif stype in ADB_STEP_TYPES:
-                    _exec_adb_step(device_id, step, count, round_no)
+                    # 传入录制基准分辨率：accClick 兜底坐标换算用（缺省 0 时兜底不可用）
+                    _exec_adb_step(
+                        device_id,
+                        {**step, "_base_w": int(script.get("videoWidth") or 0), "_base_h": int(script.get("videoHeight") or 0),
+                         "_screen_w": w, "_screen_h": h},
+                        count,
+                        round_no,
+                    )
                 # 判断步骤：求一次条件，按真/假分支动作决定下一步
                 elif stype in CONDITION_STEP_TYPES:
                     base_w = int(script.get("videoWidth") or 0) or w
