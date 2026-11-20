@@ -1119,28 +1119,6 @@ const addScriptWaitStep = () => {
   scriptEditingStep.value = scriptSteps.value.length - 1
 }
 
-// 步骤按类别分组显示；序号仍是全局执行顺序，分组只影响展示
-const SCRIPT_STEP_GROUPS: Array<{ key: string; label: string; types: string[] }> = [
-  { key: 'gesture', label: '手势操作', types: ['tap', 'longpress', 'swipe', 'input'] },
-  { key: 'wait', label: '等待与判断', types: ['waitFor', 'condition'] },
-  { key: 'device', label: '设备动作', types: SCRIPT_ADB_STEPS.map(a => a.type) },
-]
-const scriptStepGroups = computed(() => {
-  const groups = SCRIPT_STEP_GROUPS.map(g => ({
-    ...g,
-    items: scriptSteps.value
-      .map((step, idx) => ({ step, idx }))
-      .filter(it => g.types.includes(it.step.type as string)),
-  })).filter(g => g.items.length > 0)
-  // 未知类型步骤（如导入脚本带新类型）不落任何组会从界面消失，兜底放进「其他」
-  const known = new Set(SCRIPT_STEP_GROUPS.flatMap(g => g.types))
-  const others = scriptSteps.value
-    .map((step, idx) => ({ step, idx }))
-    .filter(it => !known.has(it.step.type as string))
-  if (others.length > 0) groups.push({ key: 'other', label: '其他', types: [], items: others })
-  return groups
-})
-
 // 添加判断步骤（单次求值 + 真/假分支）
 const addScriptConditionStep = () => {
   addScriptStep({
@@ -1503,6 +1481,39 @@ const runCurrentSteps = async () => {
   }
 }
 
+// 单步执行：只跑这一步（repeat 固定 1），用于验证某一步是否满足需求
+const runScriptStep = async (idx: number) => {
+  if (!selectedDevice.value) {
+    showMessage('请先选择设备', '提示')
+    return
+  }
+  if (scriptRunning.value) {
+    showNotification('已有脚本在执行中', 'error')
+    return
+  }
+  const step = scriptSteps.value[idx]
+  if (!step) return
+  scriptRunning.value = true
+  try {
+    const response = await axios.post(`${API_BASE.value}/api/device/script/run-steps`, {
+      deviceId: selectedDevice.value,
+      steps: [step],
+      repeat: 1,
+      videoWidth: scriptMeta.width,
+      videoHeight: scriptMeta.height,
+    }, { timeout: 600000 })
+    if (response.data.code !== 200) {
+      showNotification(`步骤 ${idx + 1} 执行失败：${response.data.message || '执行失败'}`, 'error')
+      return
+    }
+    showNotification(`步骤 ${idx + 1} 执行通过`, 'success')
+  } catch (error: any) {
+    showNotification(`步骤 ${idx + 1} 执行失败: ` + (error?.response?.data?.message || error.message), 'error')
+  } finally {
+    scriptRunning.value = false
+  }
+}
+
 // 停止当前设备上正在执行的脚本
 const stopScriptRun = async () => {
   if (!selectedDevice.value) return
@@ -1691,40 +1702,48 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         </div>
                       </div>
                       <div class="script-add-steps">
-                        <span class="script-add-label">添加步骤</span>
-                        <button
-                          v-for="a in SCRIPT_GESTURE_STEPS"
-                          :key="a.type"
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          @click="addScriptGestureStep(a.type)"
-                        >{{ a.icon }} {{ a.label }}</button>
-                        <button
-                          v-for="a in SCRIPT_ADB_STEPS"
-                          :key="a.type"
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          @click="addScriptAdbStep(a.type)"
-                        >{{ a.icon }} {{ a.label }}</button>
-                        <button
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          title="新增等待组件步骤，在步骤参数里从已有模板图中手动选择"
-                          @click="addScriptWaitStep"
-                        >🖼 等待组件(选图)</button>
-                        <button
-                          class="script-add-btn"
-                          :class="{ cropping: scriptCropMode }"
-                          :disabled="!scriptStreaming || scriptRunning"
-                          title="开启后在画面上框住组件，松开保存为模板并添加等待步骤"
-                          @click="toggleCropMode"
-                        >{{ scriptCropMode ? '✕ 取消框选' : '👁 等待组件(框选)' }}</button>
-                        <button
-                          class="script-add-btn"
-                          :disabled="scriptRunning"
-                          title="按应用/组件/Shell 输出/设备时刻判断，并按成立与否跳转"
-                          @click="addScriptConditionStep"
-                        >🧭 判断步骤</button>
+                        <div class="script-add-row">
+                          <span class="script-add-label">手势操作</span>
+                          <button
+                            v-for="a in SCRIPT_GESTURE_STEPS"
+                            :key="a.type"
+                            class="script-add-btn"
+                            :disabled="scriptRunning"
+                            @click="addScriptGestureStep(a.type)"
+                          >{{ a.icon }} {{ a.label }}</button>
+                        </div>
+                        <div class="script-add-row">
+                          <span class="script-add-label">设备动作</span>
+                          <button
+                            v-for="a in SCRIPT_ADB_STEPS"
+                            :key="a.type"
+                            class="script-add-btn"
+                            :disabled="scriptRunning"
+                            @click="addScriptAdbStep(a.type)"
+                          >{{ a.icon }} {{ a.label }}</button>
+                        </div>
+                        <div class="script-add-row">
+                          <span class="script-add-label">等待与判断</span>
+                          <button
+                            class="script-add-btn"
+                            :disabled="scriptRunning"
+                            title="新增等待组件步骤，在步骤参数里从已有模板图中手动选择"
+                            @click="addScriptWaitStep"
+                          >🖼 等待组件(选图)</button>
+                          <button
+                            class="script-add-btn"
+                            :class="{ cropping: scriptCropMode }"
+                            :disabled="!scriptStreaming || scriptRunning"
+                            title="开启后在画面上框住组件，松开保存为模板并添加等待步骤"
+                            @click="toggleCropMode"
+                          >{{ scriptCropMode ? '✕ 取消框选' : '👁 等待组件(框选)' }}</button>
+                          <button
+                            class="script-add-btn"
+                            :disabled="scriptRunning"
+                            title="按应用/组件/Shell 输出/设备时刻判断，并按成立与否跳转"
+                            @click="addScriptConditionStep"
+                          >🧭 判断步骤</button>
+                        </div>
                       </div>
                     </div>
 
@@ -1757,12 +1776,10 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         <div v-if="scriptSteps.length === 0" class="script-empty">
                           录制模式下在左侧屏幕上操作即可记录步骤
                         </div>
-                        <template v-for="group in scriptStepGroups" :key="group.key">
-                          <div class="script-step-group-header">{{ group.label }}（{{ group.items.length }}）</div>
-                          <div
-                            v-for="{ step, idx } in group.items"
-                            :key="idx"
-                            class="script-step-item"
+                        <div
+                          v-for="(step, idx) in scriptSteps"
+                          :key="idx"
+                          class="script-step-item"
                           :class="{
                             selected: scriptEditingStep === idx,
                             'drag-over': scriptStepDragOver === idx && scriptStepDragFrom !== idx,
@@ -1779,6 +1796,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                           <span class="script-step-idx">{{ idx + 1 }}</span>
                           <span class="script-step-desc">{{ scriptStepLabel(step) }}</span>
                           <span class="script-step-meta">{{ step.interval }}ms × {{ step.count }}次</span>
+                          <button class="script-step-run" :disabled="scriptRunning" title="只执行这一步，验证是否满足需求" @click.stop="runScriptStep(idx)">▶</button>
                           <button class="script-step-del" @click.stop="removeScriptStep(idx)">×</button>
 
                           <!-- 选中后展开该步的执行参数 -->
@@ -1983,7 +2001,6 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                             </div>
                           </div>
                           </div>
-                        </template>
                       </div>
                       <div class="script-actions">
                         <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
