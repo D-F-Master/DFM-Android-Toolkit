@@ -473,7 +473,8 @@ def probe_message(req: ProbeMessageRequest):
     命令字接受 0~255 任意值，供页面「自定义发送」填写；设备端已登记的
     0x00 心跳 / 0x01 TTS / 0x02 设备详细信息 / 0x03 串口读取 / 0x04 打开串口会话 /
     0x05 串口发送 / 0x07 关闭串口会话 / 0x08 shell 命令执行 / 0x09 截屏 /
-    0x0A 摄像头拍照 / 0x0B 跳转无障碍设置页 / 0x0C 无障碍组件树返回业务应答，
+    0x0A 摄像头拍照 / 0x0B 跳转无障碍设置页 / 0x0C 无障碍组件树返回业务应答 /
+    0x0D 无障碍点击（设备端按 id/text/desc 匹配节点并执行 ACTION_CLICK），
     其余命令字由设备端回 0xFF CMD_ERROR。
     """
     return _result(req.deviceId, False, req.cmd, req.data)

@@ -29,15 +29,14 @@
     { "type": "volume",      "action": "up", "stream": "media" },
     { "type": "reboot" },
     { "type": "tts",         "text": "开始测试" },
-    { "type": "accClick",    "id": "com.x:id/btn", "text": "登录", "desc": "" },
-    { "type": "condition", "kind": "appInstalled", "packageName": "com.x" }
+    { "type": "accClick",    "id": "com.x:id/btn", "text": "登录", "desc": "" },    { "type": "condition", "kind": "appInstalled", "packageName": "com.x" }
   ]
 }
 
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
-TTS 步骤走探针帧协议（0x01）；accClick 步骤走探针 0x0C 取无障碍组件树，按
-id/text/desc 匹配节点后 adb input tap 其 bounds 中心；其余注入类步骤走 scrcpy
-会话。判断步骤（condition）
+TTS 步骤走探针帧协议（0x01）；accClick 步骤走探针 0x0D，设备端在无障碍组件树
+中按 id/text/desc 匹配节点并直接执行 ACTION_CLICK（不走坐标注入）；其余注入类
+步骤走 scrcpy 会话。判断步骤（condition）
 求一次条件后按真/假分支动作（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，
 走 adb 或截屏，不占会话。
 
@@ -1011,55 +1010,26 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
                 raise RuntimeError(f"TTS 朗读失败: {message}")
 
         elif stype == "accClick":
-            # 无障碍点击：经探针 0x0C 取组件树，按 id/text/desc 匹配节点后点击其中心
+            # 无障碍点击：经探针 0x0D 让设备端直接对匹配节点执行 ACTION_CLICK（不走坐标注入）
             from routes.probe import run_probe
 
             _acc_id = str(step.get("id", "") or "").strip()
             _acc_text = str(step.get("text", "") or "").strip()
             _acc_desc = str(step.get("desc", "") or "").strip()
-            d = run_probe(device_id, False, 0x0C, {})
+            _acc_data = {}
+            if _acc_id:
+                _acc_data["id"] = _acc_id
+            if _acc_text:
+                _acc_data["text"] = _acc_text
+            if _acc_desc:
+                _acc_data["desc"] = _acc_desc
+            d = run_probe(device_id, False, 0x0D, _acc_data)
             if not d.get("connected"):
                 raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
             response = d.get("response") or {}
             if not isinstance(response, dict) or response.get("code") != 200:
                 message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
-                raise RuntimeError(f"获取无障碍组件树失败: {message}")
-            root = ((response.get("data") or {}).get("root")) if isinstance(response.get("data"), dict) else None
-
-            def _match(node: dict) -> bool:
-                # 填了哪个条件就参与哪个条件，全部同时满足才算命中
-                if _acc_id and node.get("id") != _acc_id:
-                    return False
-                if _acc_text and _acc_text not in str(node.get("text") or ""):
-                    return False
-                if _acc_desc and _acc_desc not in str(node.get("desc") or ""):
-                    return False
-                return True
-
-            def _find(node: dict):
-                if _match(node):
-                    return node
-                for child in node.get("children") or []:
-                    hit = _find(child)
-                    if hit is not None:
-                        return hit
-                return None
-
-            target = _find(root) if isinstance(root, dict) else None
-            if target is None:
-                cond = "、".join(f"{k}={v}" for k, v in (("id", _acc_id), ("text", _acc_text), ("desc", _acc_desc)) if v)
-                raise RuntimeError(f"无障碍树未找到节点（{cond}）；请确认设备已启用无障碍权限且目标界面在前台")
-            bounds = str(target.get("bounds") or "")
-            m = re.match(r"^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$", bounds)
-            if not m:
-                raise RuntimeError(f"节点 bounds 无效: {bounds or '（空）'}")
-            l, t, r, b = (int(g) for g in m.groups())
-            if r <= l or b <= t:
-                raise RuntimeError(f"节点 bounds 无效: {bounds}")
-            cx, cy = (l + r) // 2, (t + b) // 2
-            result = execute_adb_command(f"adb -s {device_id} shell input tap {cx} {cy}", timeout=30)
-            if not result["success"]:
-                raise RuntimeError((result.get("error") or "accClick tap failed").strip())
+                raise RuntimeError(f"无障碍点击失败: {message}")
 
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
