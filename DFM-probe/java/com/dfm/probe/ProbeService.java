@@ -1079,11 +1079,13 @@ public class ProbeService extends Service {
         return data;
     }
 
-    /** CMD_ACCESSIBILITY_TREE (0x0C)：返回当前活动窗口组件树（需无障碍服务已启用），成功/失败均回统一信封。 */
+    /** CMD_ACCESSIBILITY_TREE (0x0C)：返回当前活动窗口组件树（需无障碍服务已启用）；未启用时保底拉起设置页并回明确应答。 */
     private JSONObject accessibilityTree() throws Exception {
         DfmAccessibilityService svc = DfmAccessibilityService.instance();
         if (svc == null) {
-            return fail(500, "accessibility service not enabled (先经 0x0B 跳设置页手动启用 DFM Probe)");
+            // 保底：无障碍权限缺失时不只报错，直接把设置页拉到前台，让用户就地启用
+            openAccessibilitySettings();
+            return fail(500, "accessibility service not enabled (已在设备上打开无障碍设置页，请启用 DFM Probe 后重试)");
         }
         AccessibilityNodeInfo root = svc.getRootInActiveWindow();
         if (root == null) {

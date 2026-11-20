@@ -189,8 +189,9 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   取 `rootInActiveWindow` 递归序列化，返回 `{package, nodeCount, truncated, root}`；
   节点字段 `{class, text, desc, id, bounds, clickable, scrollable, enabled, children}`。
   节点数上限 150（`MAX_TREE_NODES`），达到上限停止展开并置 `truncated:true`，防止响应超出单帧 65535。
-- **前置条件**：`0x0C` 需设备端已启用「DFM Probe」无障碍服务（先发 `0x0B` 跳设置页手动启用），
-  未启用回 `500 accessibility service not enabled`；无活动窗口回 `500 no active window for accessibility`。
+- **前置条件**：`0x0C` 需设备端已启用「DFM Probe」无障碍服务；未启用时保底自动拉起无障碍设置页
+  （同 `0x0B`），并回 `500 accessibility service not enabled (已在设备上打开无障碍设置页…)`；
+  无活动窗口回 `500 no active window for accessibility`。
 - **调用方式**：前端「探针工具 → 无障碍设置页 / 无障碍组件树」按钮，走 `POST /api/probe/message`
   发 `cmd:11` / `cmd:12`；组件树在页面结果区按层级缩进显示。
 

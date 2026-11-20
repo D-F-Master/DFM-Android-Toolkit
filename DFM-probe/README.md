@@ -161,8 +161,8 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 
 shell / 截屏 / 拍照（`0x08` / `0x09` / `0x0A`）与无障碍（`0x0B` / `0x0C`）由设备端 APK 直接实现：
 `0x0B` 检测无障碍服务、未启用时跳转系统设置页（返回 `{enabled, started}`）；`0x0C` 经 `DfmAccessibilityService` 返回
-当前窗口组件树 `{package, nodeCount, truncated, root}`，节点上限 150，需先在设置页手动启用
-「DFM Probe」无障碍服务，未启用回 `500 accessibility service not enabled`。
+当前窗口组件树 `{package, nodeCount, truncated, root}`，节点上限 150；未启用无障碍服务时同样会
+自动拉起设置页并回 `500 accessibility service not enabled`，启用「DFM Probe」后重试即可。
 参数规范见 `接口文档.md`「3.5」~「3.9」。
 
 ## 联调测试
