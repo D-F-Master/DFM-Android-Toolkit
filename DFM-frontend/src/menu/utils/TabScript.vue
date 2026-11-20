@@ -1654,12 +1654,12 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                       <label class="script-switch" :class="{ on: scriptShowTree }">
                         <input type="checkbox" v-model="scriptShowTree" />
                         <span class="script-switch-track"></span>
-                        <span class="script-switch-text">显示组件树</span>
+                        <span class="script-switch-text">组件树</span>
                       </label>
                       <label class="script-switch" :class="{ on: scriptShowMarkers }">
                         <input type="checkbox" v-model="scriptShowMarkers" />
                         <span class="script-switch-track"></span>
-                        <span class="script-switch-text">显示步骤</span>
+                        <span class="script-switch-text">步骤</span>
                       </label>
                     </div>
                     <div class="script-screen-body" ref="scriptScreenBodyRef">
@@ -2003,7 +2003,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
                             </div>
                             <div v-else class="script-config-hint">
-                              开启「显示步骤」后可在画面上拖动该步骤的位置
+                              开启「步骤」后可在画面上拖动该步骤的位置
                             </div>
                           </div>
                           </div>
