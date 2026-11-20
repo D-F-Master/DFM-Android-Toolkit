@@ -1,6 +1,20 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+// ws 库收到非法 WebSocket 帧（如对端发送保留状态码 1005 的关闭帧）时，会在该连接
+// 实例上 emit 'error'。vite 6.4.2 对 vite-ping 探测连接不挂 error 监听（上游 main
+// 亦未修，vitejs/vite#11991 只修了 TCP socket 级），导致整个 dev server 进程崩溃。
+// 进程级兜底：只放行 ws 帧协议类错误（ws 已自行关闭该连接，不影响其他客户端），
+// 其余错误保持原有崩溃行为。
+process.on('uncaughtException', (err) => {
+  if (err && typeof err.code === 'string' && err.code.startsWith('WS_ERR_')) {
+    console.warn(`[vite] ignored websocket protocol error: ${err.message}`)
+    return
+  }
+  console.error(err)
+  process.exit(1)
+})
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [vue()],
