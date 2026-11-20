@@ -324,14 +324,46 @@ def _probe_via_pool(device_id: str, cmd: int, request: dict, payload: bytes):
         return None
 
 
+def _heartbeat_precheck(device_id: str):
+    """业务命令发送前的心跳预检：探针不在线/卡死时快速失败，不等响应超时。
+
+    返回 None 表示探针在线（可继续执行业务命令）；
+    返回 dict 表示探针无响应，调用方直接把该结果返回给前端。
+    心跳走与业务帧相同的停等确认：池内复用失败（ACK 超时/连接异常）即判不在线；
+    池中无连接时走一次完整冷启动心跳（get-state/广播/forward/建连，约 0.5~4s），
+    成功后连接已入池，后续业务命令直接复用。
+    """
+    request = {}
+    payload = b"{}"
+    with _pool_lock:
+        has_pooled = device_id in _conn_pool
+    if has_pooled:
+        if _probe_via_pool(device_id, CMD_HEARTBEAT, request, payload) is not None:
+            return None
+        return {"connected": False, "reason": "探针不在线（心跳无响应，连接已失效）"}
+    cold = _run_probe(device_id, False, CMD_HEARTBEAT, request, payload)
+    if cold.get("connected"):
+        return None
+    return {"connected": False, "reason": f"探针不在线（{cold.get('reason', '心跳失败')}）"}
+
+
 def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
     """对指定设备发一帧业务帧并取回响应。
 
     adb 只负责安装、启动广播与 USB 端口映射；业务数据全部走设备 21104 上的帧协议。
-    同一设备的请求串行化，避免帧序与 forward 端口互相干扰。
+    同一设备的请求串行化，避免帧序与 forward 端口互相干扰；等待锁最多 5 秒，
+    超时返回「设备忙」（前一个请求可能卡在长耗时命令上）。
     install=True 时强制重建连接（APK 被覆盖安装，旧进程与连接全部失效）。
+    业务命令（非心跳、非安装）发送前先做心跳预检，探针不在线时快速失败。
     """
-    with _device_lock(device_id):
+    lock = _device_lock(device_id)
+    if not lock.acquire(timeout=5.0):
+        result = {"connected": False, "reason": "设备忙（上一个探针请求尚未结束）"}
+        if cmd == CMD_HEARTBEAT:
+            # 心跳被长任务挡住不算探针离线：带 busy 标记，前端跳过状态刷新
+            result["busy"] = True
+        return result
+    try:
         request = data if data is not None else {}
         try:
             payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
@@ -339,11 +371,18 @@ def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dic
             return {"connected": False, "reason": f"数据区序列化失败: {e}"}
         if len(payload) > 65535:
             return {"connected": False, "reason": f"数据区超过 65535 字节: {len(payload)}"}
+        # 心跳本身就是在线检测、安装是探针死亡后的恢复手段，两者豁免预检
+        if not install and cmd != CMD_HEARTBEAT:
+            pre = _heartbeat_precheck(device_id)
+            if pre is not None:
+                return pre
         if not install:
             pooled = _probe_via_pool(device_id, cmd, request, payload)
             if pooled is not None:
                 return pooled
         return _run_probe(device_id, install, cmd, request, payload)
+    finally:
+        lock.release()
 
 
 def _run_probe(device_id: str, install: bool, cmd: int, request: dict, payload: bytes) -> dict:
