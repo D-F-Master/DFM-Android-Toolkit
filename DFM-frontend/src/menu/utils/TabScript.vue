@@ -894,6 +894,13 @@ const canvasPoint = (ev: PointerEvent) => {
   }
 }
 
+// 右键 = 返回键：注入 Android BACK（keycode=4）按下+抬起（对齐 scrcpy 桌面版行为）
+const scriptSendBack = () => {
+  if (!scriptWs.value || scriptWs.value.readyState !== WebSocket.OPEN) return
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: 4, action: 0 } }))
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: 4, action: 1 } }))
+}
+
 // 非录制模式下把触控事件直接同步到设备（走 mirror 通道，同批量投屏）
 const scriptSendTouch = (action: number, p: { x: number; y: number }) => {
   if (scriptWs.value && scriptWs.value.readyState === WebSocket.OPEN) {
@@ -917,6 +924,13 @@ const scriptReleaseKeyboard = () => {
 const scriptOnPointerDown = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   ev.preventDefault()
+
+  // 右键 = 返回键：注入 BACK，不当作触摸（对齐 scrcpy 桌面版）
+  if (ev.button === 2) {
+    scriptSendBack()
+    return
+  }
+
   const p = canvasPoint(ev)
 
   // 框选模板模式：拖框裁剪画面当作「等待组件出现」的模板，不注入设备
@@ -1672,6 +1686,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         @pointermove="scriptOnPointerMove"
                         @pointerup="scriptOnPointerUp"
                         @pointercancel="scriptOnPointerCancel"
+                        @contextmenu.prevent
                       ></canvas>
                       <div v-if="!scriptStreaming" class="script-screen-placeholder">
                         {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
