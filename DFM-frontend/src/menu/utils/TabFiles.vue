@@ -500,49 +500,50 @@ const batchMoveSelected = () => {
   )
 }
 
-// 批量复制选中的文件/文件夹到指定目录（保留原件）
+// 复制选中的文件/文件夹（剪贴板式：记住来源，进入目标目录后点「复制到此处」粘贴）
+const copyClipboard = ref<string[]>([])
 const batchCopySelected = () => {
   if (!selectedDevice.value || selectedFileCount.value === 0) return
+  copyClipboard.value = [...selectedFiles.value]
+  showMessage(`已复制 ${copyClipboard.value.length} 项，请进入目标目录后点击「复制到此处」`)
+}
 
-  const paths = [...selectedFiles.value]
-  showPrompt(
-    `输入目标目录路径（如 /sdcard/DCIM），选中的 ${paths.length} 项将复制到该目录下（保留原件）`,
-    async (destDir: string) => {
-      const dir = (destDir || '').trim()
-      if (!dir) {
-        showMessage('目标目录不能为空')
-        return
-      }
-      const base = dir.replace(/\/+$/, '')
-      let okCount = 0
-      const failed: string[] = []
-      for (const p of paths) {
-        const name = p.substring(p.lastIndexOf('/') + 1)
-        try {
-          const response = await axios.post(`${API_BASE.value}/api/device/files/copy`, {
-            deviceId: selectedDevice.value,
-            path: p,
-            newPath: `${base}/${name}`
-          })
-          if (response.data.code === 200) {
-            okCount++
-          } else {
-            failed.push(`${name}: ${response.data.message || '未知错误'}`)
-          }
-        } catch (error: any) {
-          failed.push(`${name}: ${error.message || '网络异常'}`)
-        }
-      }
-      if (failed.length === 0) {
-        showMessage(`已复制 ${okCount} 项到 ${base}`)
+// 把剪贴板里的文件/文件夹复制到当前目录（保留原件）
+const pasteCopiedFiles = async () => {
+  if (!selectedDevice.value || copyClipboard.value.length === 0) return
+
+  const base = currentPath.value.replace(/\/+$/, '')
+  const paths = copyClipboard.value
+  if (paths.every(p => p.substring(0, p.lastIndexOf('/')) === base)) {
+    showMessage('目标目录与来源目录相同，无需复制')
+    return
+  }
+  let okCount = 0
+  const failed: string[] = []
+  for (const p of paths) {
+    const name = p.substring(p.lastIndexOf('/') + 1)
+    try {
+      const response = await axios.post(`${API_BASE.value}/api/device/files/copy`, {
+        deviceId: selectedDevice.value,
+        path: p,
+        newPath: `${base}/${name}`
+      })
+      if (response.data.code === 200) {
+        okCount++
       } else {
-        showMessage(`复制完成 ${okCount}/${paths.length}，失败：\n${failed.join('\n')}`, '复制结果')
+        failed.push(`${name}: ${response.data.message || '未知错误'}`)
       }
-      fetchFiles(selectedDevice.value, currentPath.value)
-    },
-    currentPath.value,
-    '复制到目录'
-  )
+    } catch (error: any) {
+      failed.push(`${name}: ${error.message || '网络异常'}`)
+    }
+  }
+  if (failed.length === 0) {
+    showMessage(`已复制 ${okCount} 项到 ${base}`)
+  } else {
+    showMessage(`复制完成 ${okCount}/${paths.length}，失败：\n${failed.join('\n')}`, '复制结果')
+  }
+  copyClipboard.value = []
+  fetchFiles(selectedDevice.value, currentPath.value)
 }
 
 </script>
@@ -612,11 +613,17 @@ const batchCopySelected = () => {
                         </svg>
                         移动到…
                       </button>
-                      <button v-if="selectedFileCount > 0" class="toolbar-btn" @click="batchCopySelected" title="把选中的文件/文件夹复制到指定目录（保留原件）">
+                      <button v-if="selectedFileCount > 0" class="toolbar-btn" @click="batchCopySelected" title="复制选中的文件/文件夹，进入目标目录后粘贴">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                           <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                         </svg>
-                        复制到…
+                        复制
+                      </button>
+                      <button v-if="copyClipboard.length > 0" class="toolbar-btn" @click="pasteCopiedFiles" title="把已复制的文件/文件夹粘贴到当前目录">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                        </svg>
+                        复制到此处 ({{ copyClipboard.length }})
                       </button>
                       <button v-if="selectedFileCount > 0" class="toolbar-btn" @click="clearFileSelection" title="取消选择">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
