@@ -683,6 +683,9 @@ const scriptHandleBinary = (buf: ArrayBuffer) => {
   const cv = scriptCanvasRef.value
   if (!cv) return
 
+  // kind=3：后端应用层心跳（画面静态无新帧时每秒一拍），仅喂狗不解码
+  if (kind === 3) return
+
   if (kind === 1) {
     scriptCodecConfig = payload
     if (scriptDecoder) {
@@ -832,6 +835,8 @@ const startStallWatch = () => {
   if (scriptStallTimer) return
   scriptLastDataAt = Date.now()
   scriptStallTimer = setInterval(() => {
+    // 窗口失焦/最小化时浏览器暂停数据流，期间的"无数据"不是断流，跳过判定
+    if (document.hidden) return
     if (!scriptWs.value || !scriptStreaming.value) {
       scriptLastDataAt = Date.now()
       return
@@ -846,6 +851,13 @@ const startStallWatch = () => {
 
 const stopStallWatch = () => {
   if (scriptStallTimer) { clearInterval(scriptStallTimer); scriptStallTimer = null }
+}
+
+// 窗口从失焦/最小化恢复时喂狗，防止误判断流
+const scriptOnVisibilityChange = () => {
+  if (!document.hidden && scriptWs.value && scriptStreaming.value) {
+    scriptLastDataAt = Date.now()
+  }
 }
 
 // 进入/离开 Tab 时开关屏幕流
@@ -1765,10 +1777,14 @@ const scriptDrawTree = (ctx: CanvasRenderingContext2D) => {
 onMounted(() => {
   window.addEventListener('keydown', scriptOnKeyDown)
   document.addEventListener('pointerdown', scriptOnDocPointerDown, true)
+  // 窗口重新可见时立即喂狗：失焦期间 stall 检测被跳过，恢复瞬间先把
+  // lastDataAt 拉到当前，避免用停更的旧时间误判 10 秒无数据强断
+  document.addEventListener('visibilitychange', scriptOnVisibilityChange)
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', scriptOnKeyDown)
   document.removeEventListener('pointerdown', scriptOnDocPointerDown, true)
+  document.removeEventListener('visibilitychange', scriptOnVisibilityChange)
   scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch(); stopScriptTreePolling()
 })
 
