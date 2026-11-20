@@ -2928,30 +2928,6 @@ button.batch-remote-tile-tag.active,
   animation: capturePulse 1.2s ease-in-out infinite;
 }
 
-/* 键盘接管提示：点过画面后出现，提示可直接敲键盘打字 */
-:deep(.script-kbd-tag) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: #e8f5e9;
-  color: #2e7d32;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-:deep(.script-kbd-exit) {
-  padding: 0 4px;
-  border: none;
-  background: transparent;
-  color: #2e7d32;
-  font-size: 11px;
-  font-family: inherit;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
 /* ===== 画面步骤标记开关 ===== */
 :deep(.script-switch) {
   display: inline-flex;
@@ -3049,6 +3025,12 @@ button.batch-remote-tile-tag.active,
   height: auto;
   object-fit: contain;
   cursor: pointer;
+}
+
+/* 键盘接管中：画面预览边框变绿（录制中的红色边框优先级更高，放它前面） */
+:deep(.script-canvas.keyboard-active) {
+  outline: 2px solid #4caf50;
+  outline-offset: -2px;
 }
 
 :deep(.script-canvas.recording) {

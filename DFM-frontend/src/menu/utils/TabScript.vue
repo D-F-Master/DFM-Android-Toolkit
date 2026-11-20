@@ -1647,10 +1647,6 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                       <span>屏幕预览</span>
                       <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
                       <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
-                      <span v-if="scriptKeyboardActive" class="script-kbd-tag" title="点击画面空白处可退出键盘接管">
-                        ⌨ 键盘已接管
-                        <button class="script-kbd-exit" @click.stop="scriptReleaseKeyboard">退出</button>
-                      </span>
                       <label class="script-switch" :class="{ on: scriptShowTree }">
                         <input type="checkbox" v-model="scriptShowTree" />
                         <span class="script-switch-track"></span>
@@ -1668,6 +1664,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         class="script-canvas"
                         :class="{
                           recording: scriptRecording,
+                          'keyboard-active': scriptKeyboardActive,
                           'editing-markers': scriptShowMarkers && !scriptRecording,
                           dragging: !!scriptDragging
                         }"
