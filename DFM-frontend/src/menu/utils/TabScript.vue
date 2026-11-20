@@ -1096,34 +1096,25 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
     })
   } else if (elapsed < SCRIPT_LONGPRESS_MS) {
     // 快速点按：组件树开启且命中带 id/text/desc 的节点 → 记无障碍点击（执行时走探针 0x0D）
-    // 存储策略：desc > 文本 > id；文本/desc 在当前界面重复时补 resource-id 区分（多节点同文本用 id 定位）；
-    // 动态文本（如时间组件）回放时会变，总记录点击坐标作为树中匹配失败时的兜底
+    // 存储策略：id/text/desc 有值全存；执行端按 全组合→desc→text→id→坐标 依次兜底，
+    // 动态文本（如时间组件）回放时会变，靠后续条件与坐标兜底命中
     const accNode = scriptShowTree.value ? scriptTreeNodeAt(scriptPressStart.x, scriptPressStart.y) : null
     let accStep: Record<string, any> | null = null
     if (accNode) {
       const accId = accNode.id || ''
       const accText = accNode.text || ''
       const accDesc = accNode.desc || ''
-      accStep = {
-        type: 'accClick',
-        id: '',
-        text: '',
-        desc: '',
-        x: Math.round(scriptPressStart.x),
-        y: Math.round(scriptPressStart.y),
-        interval: 500,
-        count: 1,
-      }
-      if (accDesc) {
-        accStep.desc = accDesc
-        if (scriptCountTreeNodes(n => n.desc === accDesc) >= 2 && accId) accStep.id = accId
-      } else if (accText) {
-        accStep.text = accText
-        if (scriptCountTreeNodes(n => n.text === accText) >= 2 && accId) accStep.id = accId
-      } else if (accId) {
-        accStep.id = accId
-      } else {
-        accStep = null
+      if (accId || accText || accDesc) {
+        accStep = {
+          type: 'accClick',
+          id: accId,
+          text: accText,
+          desc: accDesc,
+          x: Math.round(scriptPressStart.x),
+          y: Math.round(scriptPressStart.y),
+          interval: 500,
+          count: 1,
+        }
       }
     }
     if (accStep) {
@@ -1737,19 +1728,6 @@ const scriptTreeNodeAt = (x: number, y: number) => {
   }
   walk(info.root)
   return found
-}
-// 统计组件树中满足条件的节点数（录制时判断同文本/desc 是否重复，重复则补 resource-id 区分）
-const scriptCountTreeNodes = (predicate: (n: any) => boolean) => {
-  const info = scriptTreeInfo.value
-  if (!info?.root) return 0
-  let count = 0
-  const walk = (node: any) => {
-    if (!node) return
-    if (predicate(node)) count++
-    ;(node.children || []).forEach(walk)
-  }
-  walk(info.root)
-  return count
 }
 // 悬停提示：鼠标所在设备坐标 + 命中的组件节点
 const scriptTreeHover = ref<{ x: number; y: number; node: any } | null>(null)
