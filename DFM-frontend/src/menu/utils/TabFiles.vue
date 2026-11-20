@@ -103,9 +103,9 @@ const exportFile = async (file: { path: string; name: string; isDirectory: boole
   }
 }
 
-// SQLite 数据库文件判断（.db / .db3 / .sqlite / .sqlite3）
+// SQLite 数据库文件判断（.db / .db3 / .sqlite / .sqlite3；FaceDB 为无扩展名的特殊命名 sqlite 文件）
 const isSqliteFile = (file: { name: string; isDirectory: boolean }) =>
-  !file.isDirectory && /\.(db|db3|sqlite|sqlite3)$/i.test(file.name)
+  !file.isDirectory && (/\.(db|db3|sqlite|sqlite3)$/i.test(file.name) || /^facedb$/i.test(file.name))
 
 const openSqliteViewer = (file: { path: string; name: string }) => {
   if (!selectedDevice.value) {
