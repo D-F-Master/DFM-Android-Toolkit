@@ -2043,7 +2043,7 @@ onUnmounted(() => {
                               通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒
                             </div>
                             <div v-else-if="step.type === 'accClick'" class="script-config-hint">
-                              经探针 0x0C 获取无障碍组件树，按 id/text/desc 匹配节点后点击其中心；至少填一项，多项同时满足才命中；需设备已启用无障碍权限
+                              经探针 0x0D 在无障碍组件树中按 id/text/desc 匹配节点并直接执行无障碍点击（ACTION_CLICK）；至少填一项，多项同时满足才命中；需设备已启用无障碍权限
                             </div>
                             <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
