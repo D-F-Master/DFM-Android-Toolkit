@@ -505,7 +505,7 @@ const copyClipboard = ref<string[]>([])
 const batchCopySelected = () => {
   if (!selectedDevice.value || selectedFileCount.value === 0) return
   copyClipboard.value = [...selectedFiles.value]
-  showMessage(`已复制 ${copyClipboard.value.length} 项，请进入目标目录后点击「复制到此处」`)
+  showNotification(`已复制 ${copyClipboard.value.length} 项，请进入目标目录后点击「复制到此处」`)
 }
 
 // 把剪贴板里的文件/文件夹复制到当前目录（保留原件）
@@ -515,7 +515,7 @@ const pasteCopiedFiles = async () => {
   const base = currentPath.value.replace(/\/+$/, '')
   const paths = copyClipboard.value
   if (paths.every(p => p.substring(0, p.lastIndexOf('/')) === base)) {
-    showMessage('目标目录与来源目录相同，无需复制')
+    showNotification('目标目录与来源目录相同，无需复制', 'info')
     return
   }
   let okCount = 0
@@ -538,9 +538,9 @@ const pasteCopiedFiles = async () => {
     }
   }
   if (failed.length === 0) {
-    showMessage(`已复制 ${okCount} 项到 ${base}`)
+    showNotification(`已复制 ${okCount} 项到 ${base}`)
   } else {
-    showMessage(`复制完成 ${okCount}/${paths.length}，失败：\n${failed.join('\n')}`, '复制结果')
+    showNotification(`复制完成 ${okCount}/${paths.length}，失败：\n${failed.join('\n')}`, 'error')
   }
   copyClipboard.value = []
   fetchFiles(selectedDevice.value, currentPath.value)
