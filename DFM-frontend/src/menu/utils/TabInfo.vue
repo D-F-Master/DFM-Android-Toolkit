@@ -741,7 +741,6 @@ const clearProxy = async () => {
                       <button class="cert-repo-close" @click="closeCertRepo">&times;</button>
                     </div>
                   </div>
-                  <p class="cert-repo-hint">点击证书直接导入当前设备{{ selectedDevice ? `（${selectedDevice}）` : '，请先在左侧选择设备' }}；「导入证书」按钮把本机 PEM 证书保存到仓库（DFM-service/data/certs）。</p>
                   <div class="cert-repo-list">
                     <div v-if="certRepoLoading" class="cert-repo-empty">加载中...</div>
                     <div v-else-if="certRepoOptions.length === 0" class="cert-repo-empty">仓库为空，点击右上角「导入证书」保存 PEM 证书（.crt/.cer/.pem）</div>
