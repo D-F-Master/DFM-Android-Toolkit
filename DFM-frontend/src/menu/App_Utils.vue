@@ -3240,16 +3240,24 @@ button.batch-remote-tile-tag.active,
 /* 添加设备动作步骤按钮组 */
 :deep(.script-add-steps) {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
   margin-top: 8px;
 }
 
+/* 步骤功能区单行：类别标签 + 该类按钮 */
+:deep(.script-add-row) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 :deep(.script-add-label) {
+  flex-shrink: 0;
+  width: 60px;
   font-size: 12px;
   color: #888;
-  margin-right: 2px;
 }
 
 :deep(.script-add-btn) {
@@ -3387,14 +3395,6 @@ button.batch-remote-tile-tag.active,
   font-size: 12px;
 }
 
-/* 步骤分组标题：只影响展示，序号仍是全局执行顺序 */
-:deep(.script-step-group-header) {
-  padding: 6px 4px 3px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #909399;
-}
-
 :deep(.script-step-item) {
   display: flex;
   align-items: center;
@@ -3463,6 +3463,32 @@ button.batch-remote-tile-tag.active,
   font-size: 11px;
 }
 
+/* 单步执行按钮：只执行这一步，验证该步是否满足需求 */
+:deep(.script-step-run) {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #4caf50;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:deep(.script-step-run:hover:not(:disabled)) {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+:deep(.script-step-run:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
 :deep(.script-step-del) {
   flex-shrink: 0;
   width: 20px;
@@ -3523,10 +3549,6 @@ button.batch-remote-tile-tag.active,
 
 /* 模拟脚本页 暗色模式 */
 @media (prefers-color-scheme: dark) {
-  :deep(.script-step-group-header) {
-    color: #6b7079;
-  }
-
   :deep(.script-step-item:hover) {
     background: #33363e;
   }
