@@ -148,7 +148,7 @@ ADB_STEP_TYPES = (
 VISION_STEP_TYPES = ("waitFor",)
 # 判断步骤：求一次条件，按真/假分支动作决定下一步
 CONDITION_STEP_TYPES = ("condition",)
-CONDITION_KINDS = ("appInstalled", "template", "shell", "time")
+CONDITION_KINDS = ("appInstalled", "template", "shell", "time", "accClick")
 BRANCH_ACTIONS = ("continue", "goto", "stop", "fail")
 MAX_SCRIPT_JUMPS = 100  # 每轮脚本的跳转次数上限，防止分支构成死循环
 VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES + VISION_STEP_TYPES + CONDITION_STEP_TYPES
@@ -388,6 +388,16 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
         interval = step.get("interval", 1000)
         if not isinstance(interval, (int, float)) or interval < 0:
             return f"第 {idx} 步的轮询间隔必须是非负数字"
+    elif kind == "accClick":
+        # 无障碍点击判断：id/text/desc 至少一项，用于在无障碍树中匹配可点击节点
+        acc_id = str(step.get("id", "") or "").strip()
+        acc_text = str(step.get("text", "") or "").strip()
+        acc_desc = str(step.get("desc", "") or "").strip()
+        if not (acc_id or acc_text or acc_desc):
+            return f"第 {idx} 步的无障碍点击条件需至少填写 resource-id / 文本 / 内容描述 一项"
+        for label, value in (("resource-id", acc_id), ("文本", acc_text), ("内容描述", acc_desc)):
+            if len(value) > 200:
+                return f"第 {idx} 步的无障碍点击条件 {label} 过长（≤200 字符）"
 
     return ""
 
@@ -449,7 +459,7 @@ def _normalize_steps(steps) -> List[dict]:
                 "interval": step.get("interval", 1000),
                 "count": 1,
             }
-            for field in ("packageName", "template", "threshold", "command", "expected", "targetTime", "timeout"):
+            for field in ("packageName", "template", "threshold", "command", "expected", "targetTime", "timeout", "id", "text", "desc"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             normalized.append(item)
@@ -1199,6 +1209,34 @@ def _eval_condition(device_id: str, step: dict, base_w: int, base_h: int, stop_e
                     remaining -= step_wait
                 ok = True
                 reason = f"设备时间 {now_text} 已到 {target_time}（本地等待 {wait_sec:.1f}s）"
+    elif kind == "accClick":
+        # 无障碍点击判断：经探针 0x0D 在无障碍树中匹配节点并执行 ACTION_CLICK，
+        # 点到了 = 条件成立（未启用无障碍/未找到节点/点击失败 = 不成立）
+        from routes.probe import run_probe
+
+        acc_id = str(step.get("id", "") or "").strip()
+        acc_text = str(step.get("text", "") or "").strip()
+        acc_desc = str(step.get("desc", "") or "").strip()
+        acc_data = {}
+        if acc_id:
+            acc_data["id"] = acc_id
+        if acc_text:
+            acc_data["text"] = acc_text
+        if acc_desc:
+            acc_data["desc"] = acc_desc
+        d = run_probe(device_id, False, 0x0D, acc_data)
+        if not d.get("connected"):
+            ok = False
+            reason = f"探针通讯失败: {d.get('reason', '未知原因')}"
+        else:
+            response = d.get("response") or {}
+            if isinstance(response, dict) and response.get("code") == 200:
+                ok = True
+                reason = f"无障碍点击成功（id={acc_id or '-'} text={acc_text or '-'} desc={acc_desc or '-'}）"
+            else:
+                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                ok = False
+                reason = f"无障碍点击未成功: {message}"
     else:
         reason = f"未知判断类型: {kind}"
 

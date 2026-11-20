@@ -167,12 +167,13 @@ const SCRIPT_VARIABLE_HELP = `输入框支持的关键字：
 {执行轮数} → 当前第几轮
 {n位随机数} → n 位随机数字（n 取 1~18，如 {6位随机数}）`
 
-// 判断步骤：四种条件与分支动作
+// 判断步骤：五种条件与分支动作
 const SCRIPT_CONDITION_KINDS: Array<{ kind: string; label: string }> = [
   { kind: 'appInstalled', label: '应用已安装' },
   { kind: 'template', label: '组件出现' },
   { kind: 'shell', label: 'Shell 输出包含' },
   { kind: 'time', label: '设备时刻已到' },
+  { kind: 'accClick', label: '无障碍点击' },
 ]
 const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
   { action: 'continue', label: '继续下一步' },
@@ -187,6 +188,7 @@ const scriptConditionDefaults = (kind: string): Record<string, any> => {
     case 'template': return { template: '', threshold: 0.85 }
     case 'shell': return { command: '', expected: '' }
     case 'time': return { targetTime: '09:00', timeout: 3600 }
+    case 'accClick': return { id: '', text: '', desc: '' }
     default: return {}
   }
 }
@@ -2034,6 +2036,18 @@ onUnmounted(() => {
                                 <span>等待上限(秒)</span>
                                 <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="86400" controls-position="right" />
                               </div>
+                              <div v-if="step.kind === 'accClick'" class="script-config-row">
+                                <span>resource-id</span>
+                                <el-input v-model="step.id" class="ep-config-input" placeholder="com.example:id/btn（精确匹配）" />
+                              </div>
+                              <div v-if="step.kind === 'accClick'" class="script-config-row">
+                                <span>文本</span>
+                                <el-input v-model="step.text" class="ep-config-input" placeholder="包含匹配，如 确定" />
+                              </div>
+                              <div v-if="step.kind === 'accClick'" class="script-config-row">
+                                <span>内容描述</span>
+                                <el-input v-model="step.desc" class="ep-config-input" placeholder="包含匹配，如 提交按钮" />
+                              </div>
                               <div class="script-config-row">
                                 <span>成立时</span>
                                 <el-select v-model="step.onTrue.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onTrue, idx)">
@@ -2157,7 +2171,7 @@ onUnmounted(() => {
                               反复截屏搜索模板，组件出现才继续下一步；超时未出现判失败
                             </div>
                             <div v-else-if="step.type === 'condition'" class="script-config-hint">
-                              单次判断后按「成立/不成立」分支；时间条件读取一次设备时钟后在本地等待到点（不再轮询，当天目标时刻已过则立即成立），跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
+                              单次判断后按「成立/不成立」分支；时间条件读取一次设备时钟后在本地等待到点（不再轮询，当天目标时刻已过则立即成立）；无障碍点击条件 = 在无障碍树中找到匹配节点并点击，点到了即成立（需设备已启用无障碍权限）；跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
                             </div>
                             <div v-else-if="step.type === 'tts'" class="script-config-hint">
                               通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒

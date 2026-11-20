@@ -280,6 +280,14 @@ const scriptStepLabel = (step: any): string => {
     if (step.kind === 'template') return `${prefix} 组件出现 ${step.template || '（未选模板）'}`
     if (step.kind === 'shell') return `${prefix} Shell 输出含「${step.expected || '（未填）'}」`
     if (step.kind === 'time') return `${prefix} 时刻到 ${step.targetTime || '（未填）'}`
+    if (step.kind === 'accClick') {
+      const parts = [
+        step.id ? `id=${step.id}` : '',
+        step.text ? `text=${step.text}` : '',
+        step.desc ? `desc=${step.desc}` : '',
+      ].filter(Boolean)
+      return `${prefix} 无障碍点击 ${parts.join(' ') || '（未设置条件）'}`
+    }
     return `${prefix} 条件（未设置）`
   }
   return step.type
