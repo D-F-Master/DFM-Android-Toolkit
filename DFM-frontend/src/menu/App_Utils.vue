@@ -1083,6 +1083,8 @@ onMounted(async () => {
 
   // 组件挂载时自动刷新设备信息
   fetchDevices();
+  // 启动探针心跳：probe 被卸载/设备离线后绿点自动变红
+  startProbeHeartbeat();
 
   if (window.utools) {
     window.utools.onPluginEnter((action) => {
@@ -1124,10 +1126,11 @@ const setProbeBusy = (id: string, value: boolean) => {
   probeLoadingMap.value = next;
 };
 
-const runProbe = async (deviceId: string, install: boolean) => {
+const runProbe = async (deviceId: string, install: boolean, silent = false) => {
   if (!deviceId || probeLoadingMap.value[deviceId]) return;
   setProbeBusy(deviceId, true);
-  setProbeState(deviceId, { status: 'busy', message: install ? '安装通讯中...' : '检测中...' });
+  // silent（心跳复查）不打扰当前显示，拿到结果前绿点保持原样
+  if (!silent) setProbeState(deviceId, { status: 'busy', message: install ? '安装通讯中...' : '检测中...' });
   try {
     const url = install ? '/api/probe/connect' : '/api/probe/check';
     // 后端安装超时 180s + 连接等待 15s，前端不能在后端还没返回前就判失败
@@ -1159,6 +1162,25 @@ const autoInstallNewDevices = () => {
     runProbe(d.deviceId, true);
   }
 };
+
+// 探针心跳：定时复查每台设备的 probe 存活状态（/probe/check 不触发安装），
+// probe 被卸载/设备离线后绿点能自动变红，而不是永停绿点
+let probeHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const startProbeHeartbeat = () => {
+  if (probeHeartbeatTimer) return;
+  // 15s 一轮，错开首次执行（设备刚连上时 autoInstallNewDevices 已在检测）
+  probeHeartbeatTimer = setInterval(probeHeartbeatTick, 15000);
+};
+const probeHeartbeatTick = () => {
+  for (const d of devices.value) {
+    // busy（用户正在安装/检测）的设备不插手，避免和手动操作打架
+    if (!d.deviceId || probeLoadingMap.value[d.deviceId]) continue;
+    runProbe(d.deviceId, false, true);
+  }
+};
+onUnmounted(() => {
+  if (probeHeartbeatTimer) { clearInterval(probeHeartbeatTimer); probeHeartbeatTimer = null; }
+});
 
 // 探针工具：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A
 provide('app-utils', { API_BASE, IMAGE_EXTS, SCRIPT_COMMON_KEYS, TAB_ITEMS, VIDEO_EXTS, activeTab, apkDragOver, apkRepoInputEl, apkRepoLoading, apkRepoOptions, apkRepoUploading, apkRepoVisible, appLoading, apps, autoInstallNewDevices, batchDeviceInfos, batchLoading, batchRemoteCodecFromSps, batchRemoteIsKeyframe, batchSelectedDevices, concatU8, confirmDisconnect, confirmDisconnectAll, connectWireless, currentPath, deviceInfo, devices, disconnectAllLoading, editorFileName, editorInitialContent, editorLoadError, editorLoading, editorSaving, editorTarget, editorVisible, emit, enterAction, fetchApkRepo, fetchApps, fetchDeviceInfo, fetchDevices, fetchFiles, fileLoading, files, formatBytes, formatRepoSize, goHome, handleEditorClose, handleEditorSave, handleImageViewerClose, handleImageViewerNav, handleModalCancel, handleModalConfirm, hideProgressNotification, imageViewerError, imageViewerIndex, imageViewerKind, imageViewerList, imageViewerLoading, imageViewerName, imageViewerSize, imageViewerSrc, imageViewerTotal, imageViewerVisible, installApkFile, installFromRepo, isViewableImageFile, loadBatchDeviceInfos, loadConfig, loadViewerFile, loading, modalCallback, modalConfirmText, modalEmptyText, modalListItems, modalMessage, modalPlaceholder, modalProgress, modalTitle, modalType, modalVariant, modalVisible, onApkDragLeave, onApkDrop, onPageDragOver, onRepoApkChosen, pickRepoApk, previewKindOf, probeKnownDevices, probeLoadingMap, probeStateOf, probeStates, removeRepoApk, retryProbe, route, runProbe, scriptFlushTyping, scriptKeyName, scriptKeyboardActive, scriptOnKeyDown, scriptOpConfig, scriptRecording, scriptSendKey, scriptSendText, scriptStepLabel, scriptSteps, scriptStreaming, scriptTypingIndex, scriptTypingStep, scriptTypingTimer, scriptWs, selectDevice, selectedDevice, selectedFiles, setProbeBusy, setProbeState, showConfirm, showList, showMessage, showNotification, showProgressNotification, showPrompt, startApp, stopApp, uninstallApp, visibleTabs, wirelessIp, wirelessStatus });
