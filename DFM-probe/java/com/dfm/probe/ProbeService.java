@@ -1171,6 +1171,26 @@ public class ProbeService extends Service {
             }
             return null;
         }
+        // 同节点匹配失败但填了 id：尝试祖先组合匹配（id 由带相同 text/desc 的祖先提供）
+        if (!id.isEmpty()) {
+            AccessibilityNodeInfo ancestor = matchWithAncestorId(node, id, text, desc);
+            if (ancestor != null) {
+                if (ancestor.isClickable()) {
+                    return ancestor;
+                }
+                AccessibilityNodeInfo p = ancestor.getParent();
+                while (p != null) {
+                    if (p.isClickable()) {
+                        return p;
+                    }
+                    AccessibilityNodeInfo next = p.getParent();
+                    p.recycle();
+                    p = next;
+                }
+                ancestor.recycle();
+                return null;
+            }
+        }
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child == null) {
@@ -1201,6 +1221,29 @@ public class ProbeService extends Service {
             return false;
         }
         return true;
+    }
+
+    /**
+     * 祖先增强匹配：命中节点无 resource-id 但步骤同时填了 id 时，
+     * 允许 id 由「带相同 text/desc 的祖先」提供（跨节点组合，应对
+     * 可点击容器有 id、文本在子节点的布局）。祖先 text/desc 也必须满足条件，
+     * 避免 id 与文本跨层拼凑导致误点。
+     */
+    private AccessibilityNodeInfo matchWithAncestorId(AccessibilityNodeInfo node, String id, String text, String desc) {
+        AccessibilityNodeInfo cur = node;
+        int depth = 0;
+        while (cur != null && depth < 8) {
+            AccessibilityNodeInfo parent = cur.getParent();
+            depth++;
+            if (parent == null) {
+                break;
+            }
+            if (nodeMatches(parent, id, text, desc)) {
+                return parent;
+            }
+            cur = parent;
+        }
+        return null;
     }
 
     /** 递归序列化无障碍节点：超过 MAX_TREE_NODES 停止展开（该子树返回 null，不计入 children）。 */
