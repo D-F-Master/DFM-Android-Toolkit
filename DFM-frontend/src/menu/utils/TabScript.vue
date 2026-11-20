@@ -1002,6 +1002,19 @@ const scriptOnPointerMove = (ev: PointerEvent) => {
   if (!scriptStreaming.value) return
   const p = canvasPoint(ev)
 
+  // 组件树悬停提示：记录命中节点并重绘（不影响下方手势逻辑）
+  if (scriptShowTree.value && !scriptPointerActive && !scriptDragging.value) {
+    const node = scriptTreeNodeAt(p.x, p.y)
+    const prev = scriptTreeHover.value
+    if (node !== prev?.node || p.x !== prev?.x || p.y !== prev?.y) {
+      scriptTreeHover.value = node ? { x: p.x, y: p.y, node } : null
+      scriptRedrawMarkers()
+    }
+  } else if (scriptTreeHover.value) {
+    scriptTreeHover.value = null
+    scriptRedrawMarkers()
+  }
+
   // 框选中：更新框选区域并重绘
   if (scriptCropMode.value && scriptCropRegion.value) {
     scriptCropRegion.value.x2 = p.x
@@ -1068,19 +1081,38 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
       ...scriptOpConfig.value.swipe,
     })
   } else if (elapsed < SCRIPT_LONGPRESS_MS) {
-    // 快速点按 → 点击步骤
-    addRecordedStep({
-      type: 'tap',
-      x1: scriptPressStart.x, y1: scriptPressStart.y,
-      ...scriptOpConfig.value.tap,
-    })
+    // 快速点按：组件树开启且命中带 id/text/desc 的节点 → 记无障碍点击（执行时走探针 0x0D）
+    const accNode = scriptShowTree.value ? scriptTreeNodeAt(scriptPressStart.x, scriptPressStart.y) : null
+    if (accNode) {
+      addRecordedStep({
+        type: 'accClick',
+        id: accNode.id || '',
+        text: accNode.text || '',
+        desc: accNode.desc || '',
+        interval: 500,
+        count: 1,
+      })
+    } else {
+      // 普通点击步骤
+      addRecordedStep({
+        type: 'tap',
+        x1: scriptPressStart.x, y1: scriptPressStart.y,
+        ...scriptOpConfig.value.tap,
+      })
+    }
   }
   // elapsed >= 600ms 且未移动的长按已在 timer 里记录
 }
 
+// 鼠标移出画面：清掉悬停提示
+const onScriptPointerLeave = () => {
+  if (!scriptTreeHover.value) return
+  scriptTreeHover.value = null
+  scriptRedrawMarkers()
+}
+
 // 指针被中断（取消/离开窗口）：静默结束拖拽；框选中丢弃当前框但保留模式
-const scriptOnPointerCancel = () => {
-  // 手势被中断，丢弃这次按下的截图，避免下一步误用
+const scriptOnPointerCancel = () => {  // 手势被中断，丢弃这次按下的截图，避免下一步误用
   scriptVerifyPending = null
   if (scriptCropMode.value) {
     scriptCropRegion.value = null
@@ -1591,6 +1623,14 @@ const fetchScriptTree = async () => {
     if (r.code !== 200) throw new Error(r.message || '设备返回错误')
     scriptTreeInfo.value = r.data || {}
     scriptTreeError.value = ''
+    // 树刷新后按最后悬停位置重新命中，避免提示每秒闪烁消失
+    if (scriptTreeHover.value) {
+      const hx = scriptTreeHover.value.x
+      const hy = scriptTreeHover.value.y
+      scriptTreeHover.value = null
+      const node = scriptTreeNodeAt(hx, hy)
+      scriptTreeHover.value = node ? { x: hx, y: hy, node } : null
+    }
     // 画面静止时没有新帧，拿到新树后手动重绘一次叠加框
     scriptRedrawMarkers()
   } catch (e: any) {
@@ -1610,6 +1650,7 @@ const stopScriptTreePolling = () => {
   if (scriptTreeTimer !== null) { clearInterval(scriptTreeTimer); scriptTreeTimer = null }
   scriptTreeInfo.value = null
   scriptTreeError.value = ''
+  scriptTreeHover.value = null
   // 清掉画面上已画的组件树框
   scriptRedrawMarkers()
 }
@@ -1645,6 +1686,24 @@ const scriptTreeRects = computed(() => {
   walk(info.root)
   return rects
 })
+// 找出包含点 (x, y) 且带 id/text/desc 的最内层节点（悬停提示与录制点击用）
+const scriptTreeNodeAt = (x: number, y: number) => {
+  const info = scriptTreeInfo.value
+  if (!info?.root) return null
+  let found: any = null
+  const walk = (node: any) => {
+    if (!node) return
+    const rect = parseTreeBounds(node.bounds)
+    if (rect && x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height) {
+      if (node.id || node.text || node.desc) found = node
+      ;(node.children || []).forEach(walk)
+    }
+  }
+  walk(info.root)
+  return found
+}
+// 悬停提示：鼠标所在设备坐标 + 命中的组件节点
+const scriptTreeHover = ref<{ x: number; y: number; node: any } | null>(null)
 // 把组件树框叠加画在画面上（画布坐标系即设备分辨率，bounds 1:1 直接绘制）
 const scriptDrawTree = (ctx: CanvasRenderingContext2D) => {
   if (!scriptShowTree.value) return
@@ -1655,6 +1714,50 @@ const scriptDrawTree = (ctx: CanvasRenderingContext2D) => {
   ctx.lineWidth = Math.max(1, Math.round(scriptMeta.width / 400))
   ctx.globalAlpha = 0.9
   for (const rect of rects) ctx.strokeRect(rect.left, rect.top, rect.width, rect.height)
+  ctx.restore()
+
+  // 悬停高亮 + 组件信息提示（id/text/desc），画在画布内随画面缩放
+  const hover = scriptTreeHover.value
+  if (!hover?.node) return
+  const rect = parseTreeBounds(hover.node.bounds)
+  if (!rect) return
+  ctx.save()
+  ctx.strokeStyle = '#ff9800'
+  ctx.lineWidth = Math.max(2, Math.round(scriptMeta.width / 250))
+  ctx.globalAlpha = 0.95
+  ctx.strokeRect(rect.left, rect.top, rect.width, rect.height)
+  ctx.globalAlpha = 1
+  const fontSize = Math.max(16, Math.round(scriptMeta.width / 40))
+  ctx.font = `${fontSize}px sans-serif`
+  const lines = [
+    hover.node.id ? `id: ${hover.node.id}` : '',
+    hover.node.text ? `text: ${hover.node.text}` : '',
+    hover.node.desc ? `desc: ${hover.node.desc}` : '',
+  ].filter(Boolean)
+  const pad = Math.round(fontSize * 0.5)
+  const lineH = Math.round(fontSize * 1.4)
+  let maxW = 0
+  for (const line of lines) maxW = Math.max(maxW, ctx.measureText(line).width)
+  const boxW = maxW + pad * 2
+  const boxH = lines.length * lineH + pad * 2
+  // 默认画在悬停点右下，靠边时向左/上翻折，始终留在画面内
+  let boxX = hover.x + pad * 2
+  let boxY = hover.y + pad * 2
+  if (boxX + boxW > scriptMeta.width) boxX = scriptMeta.width - boxW - pad
+  if (boxY + boxH > scriptMeta.height) boxY = scriptMeta.height - boxH - pad
+  boxX = Math.max(pad, boxX)
+  boxY = Math.max(pad, boxY)
+  ctx.fillStyle = 'rgba(20, 24, 34, 0.88)'
+  ctx.fillRect(boxX, boxY, boxW, boxH)
+  ctx.strokeStyle = '#ff9800'
+  ctx.lineWidth = 1
+  ctx.strokeRect(boxX, boxY, boxW, boxH)
+  ctx.fillStyle = '#ffd54f'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  lines.forEach((line, i) => {
+    ctx.fillText(line, boxX + pad, boxY + pad + i * lineH)
+  })
   ctx.restore()
 }
 
@@ -1705,6 +1808,7 @@ onUnmounted(() => {
                         @pointermove="scriptOnPointerMove"
                         @pointerup="scriptOnPointerUp"
                         @pointercancel="scriptOnPointerCancel"
+                        @pointerleave="onScriptPointerLeave"
                         @contextmenu.prevent
                       ></canvas>
                       <div v-if="!scriptStreaming" class="script-screen-placeholder">
