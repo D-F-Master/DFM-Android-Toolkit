@@ -1531,9 +1531,76 @@ const repeatRun = () => {
   }, '', '重复执行')
 }
 
+// 显示组件树：开启后每 1 秒经探针 0x0C 刷新当前窗口组件树（悬浮面板展示）
+const scriptShowTree = ref(false)
+const scriptTreeInfo = ref<any>(null)
+const scriptTreeError = ref('')
+const scriptTreeLoading = ref(false)
+let scriptTreeTimer: number | null = null
+const fetchScriptTree = async () => {
+  if (!selectedDevice.value || scriptTreeLoading.value) return
+  scriptTreeLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+      deviceId: selectedDevice.value,
+      cmd: 0x0C,
+      data: {},
+    }, { timeout: 15000 })
+    const d = res.data
+    if (d?.code !== 200 || d?.data?.connected !== true) throw new Error(d?.message || '通讯失败')
+    const r = d.data.response || {}
+    if (r.code !== 200) throw new Error(r.message || '设备返回错误')
+    scriptTreeInfo.value = r.data || {}
+    scriptTreeError.value = ''
+  } catch (e: any) {
+    scriptTreeError.value = e?.response?.data?.message || e?.message || '请求异常'
+    scriptTreeInfo.value = null
+  } finally {
+    scriptTreeLoading.value = false
+  }
+}
+const stopScriptTreePolling = () => {
+  if (scriptTreeTimer !== null) { clearInterval(scriptTreeTimer); scriptTreeTimer = null }
+  scriptTreeInfo.value = null
+  scriptTreeError.value = ''
+}
+const startScriptTreePolling = () => {
+  stopScriptTreePolling()
+  if (!scriptShowTree.value) return
+  fetchScriptTree()
+  scriptTreeTimer = window.setInterval(fetchScriptTree, 1000)
+}
+watch([scriptShowTree, selectedDevice], () => {
+  if (scriptShowTree.value && selectedDevice.value) startScriptTreePolling()
+  else stopScriptTreePolling()
+})
+// 把组件树拍平成缩进行，供悬浮面板渲染
+const scriptTreeLines = computed(() => {
+  const info = scriptTreeInfo.value
+  if (!info?.root) return []
+  const lines: any[] = []
+  const walk = (node: any, depth: number) => {
+    if (!node) return
+    const attrs: string[] = []
+    if (node.clickable) attrs.push('可点击')
+    if (node.scrollable) attrs.push('可滚动')
+    if (!node.enabled) attrs.push('禁用')
+    lines.push({
+      depth,
+      label: [node.class, node.text, node.desc].filter(Boolean).join(' · ') || '(无文本)',
+      id: node.id || '',
+      bounds: node.bounds || '',
+      attrs,
+    })
+    ;(node.children || []).forEach((c: any) => walk(c, depth + 1))
+  }
+  walk(info.root, 0)
+  return lines
+})
+
 
 onMounted(() => { window.addEventListener('keydown', scriptOnKeyDown) })
-onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch() })
+onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch(); stopScriptTreePolling() })
 
 </script>
 
@@ -1550,6 +1617,11 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                         ⌨ 键盘已接管
                         <button class="script-kbd-exit" @click.stop="scriptReleaseKeyboard">退出</button>
                       </span>
+                      <label class="script-switch" :class="{ on: scriptShowTree }">
+                        <input type="checkbox" v-model="scriptShowTree" />
+                        <span class="script-switch-track"></span>
+                        <span class="script-switch-text">显示组件树</span>
+                      </label>
                       <label class="script-switch" :class="{ on: scriptShowMarkers }">
                         <input type="checkbox" v-model="scriptShowMarkers" />
                         <span class="script-switch-track"></span>
@@ -1572,6 +1644,26 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                       ></canvas>
                       <div v-if="!scriptStreaming" class="script-screen-placeholder">
                         {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
+                      </div>
+                      <!-- 组件树悬浮面板：开启「显示组件树」后每秒刷新 -->
+                      <div v-if="scriptShowTree" class="script-tree-panel">
+                        <div v-if="scriptTreeError" class="script-tree-error">获取失败：{{ scriptTreeError }}</div>
+                        <template v-else-if="scriptTreeInfo">
+                          <div class="script-tree-head">
+                            包名 {{ scriptTreeInfo.package || '未知' }} · 节点 {{ scriptTreeInfo.nodeCount || 0 }}{{ scriptTreeInfo.truncated ? '（超出上限已截断）' : '' }}
+                          </div>
+                          <div class="script-tree-lines">
+                            <div
+                              v-for="(line, i) in scriptTreeLines"
+                              :key="i"
+                              class="script-tree-line"
+                              :style="{ paddingLeft: line.depth * 12 + 'px' }"
+                            >
+                              {{ line.label }}{{ line.id ? ` [${line.id}]` : '' }}{{ line.bounds ? ` @${line.bounds}` : '' }}{{ line.attrs.length ? ` (${line.attrs.join('/')})` : '' }}
+                            </div>
+                          </div>
+                        </template>
+                        <div v-else class="script-tree-error">{{ scriptTreeLoading ? '正在读取组件树...' : '暂无数据' }}</div>
                       </div>
                     </div>
                     <!-- 右缘拖拽热区：按住左右拖动调整面板宽度 -->
