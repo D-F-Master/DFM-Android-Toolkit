@@ -258,7 +258,7 @@ class RemoteHub:
                     x, y, w, h = mapped
                     s.inject_touch(event["action"], x, y, w, h)
                 elif kind == "key":
-                    s.inject_keycode(event["keycode"], event["action"])
+                    s.inject_keycode(event["keycode"], event["action"], int(event.get("metaState") or 0))
                 elif kind == "text":
                     s.inject_text(event["text"])
                 elif kind == "scroll":

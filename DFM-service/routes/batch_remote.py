@@ -412,9 +412,9 @@ class DeviceSession:
         )
         self._send_control(msg)
 
-    def inject_keycode(self, keycode: int, action: int):
-        """注入按键（14 字节定长）"""
-        msg = struct.pack(">B B I I I", TYPE_INJECT_KEYCODE, action, keycode, 0, 0)
+    def inject_keycode(self, keycode: int, action: int, meta_state: int = 0):
+        """注入按键（14 字节定长）；meta_state 为 Android META_* 修饰键掩码（如 META_CTRL_ON）"""
+        msg = struct.pack(">B B I I I", TYPE_INJECT_KEYCODE, action, keycode, 0, meta_state)
         self._send_control(msg)
 
     def tap_key(self, keycode: int):
