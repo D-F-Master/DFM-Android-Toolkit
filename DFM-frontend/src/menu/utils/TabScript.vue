@@ -499,16 +499,18 @@ const scriptHitTest = (x: number, y: number): { stepIndex: number; part: 'start'
   return null
 }
 
-// 移动标记到新坐标
+// 移动标记到新坐标（夹在画面范围内，拖出屏幕外无效）
 const scriptMoveMarker = (target: { stepIndex: number; part: 'start' | 'end' }, x: number, y: number) => {
   const step = scriptSteps.value[target.stepIndex]
   if (!step) return
+  const cx = Math.min(Math.max(x, 0), scriptMeta.width)
+  const cy = Math.min(Math.max(y, 0), scriptMeta.height)
   if (target.part === 'end' && step.type === 'swipe') {
-    step.x2 = x
-    step.y2 = y
+    step.x2 = cx
+    step.y2 = cy
   } else {
-    step.x1 = x
-    step.y1 = y
+    step.x1 = cx
+    step.y1 = cy
   }
 }
 
