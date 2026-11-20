@@ -12,7 +12,7 @@ import SqliteDbViewer from '../../components/SqliteDbViewer.vue'
 echarts.use([LineChart, BarChart, GaugeChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const ctx = inject<any>('app-utils')!
-const { API_BASE, activeTab, apkRepoVisible, appLoading, apps, fetchApkRepo, files, installApkFile, loading, selectedDevice, showMessage, startApp, stopApp, uninstallApp } = ctx
+const { API_BASE, activeTab, apkRepoVisible, appLoading, apps, fetchApkRepo, fetchApps, files, installApkFile, loading, selectedDevice, showMessage, startApp, stopApp, uninstallApp } = ctx
 const installApp = async (event: Event) => {
   if (!selectedDevice.value) return
 
@@ -35,6 +35,12 @@ const installApp = async (event: Event) => {
 const openApkRepo = () => {
   apkRepoVisible.value = true
   fetchApkRepo()
+}
+
+// 手动刷新应用列表
+const refreshApps = () => {
+  if (!selectedDevice.value || appLoading.value) return
+  fetchApps(selectedDevice.value)
 }
 
 const extractApk = async (packageName: string, appName?: string) => {
@@ -104,6 +110,7 @@ const extractApk = async (packageName: string, appName?: string) => {
                     </span>
                     <span>应用管理</span>
                     <div class="apps-header-btns">
+                      <button class="card-action-btn" @click="refreshApps" title="刷新应用列表">🔄 刷新</button>
                       <button class="card-action-btn" @click="openApkRepo">🗄️ APK仓库</button>
                       <button class="card-action-btn" @click="installApp">+ 安装</button>
                     </div>
