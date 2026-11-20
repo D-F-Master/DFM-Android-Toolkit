@@ -1170,6 +1170,48 @@ def rename_file(request: RenameRequest):
         return {"code": 500, "message": result.get("error", "Rename failed"), "data": None}
 
 
+# 复制文件或文件夹（保留原件，cp -r）
+@router.post("/device/files/copy")
+def copy_file(request: RenameRequest):
+    if not request.path or not request.newPath:
+        return {"code": 400, "message": "path and newPath are required", "data": None}
+
+    # 相对新名按源文件所在目录解析，避免 adb shell 把它落到只读的根目录 /
+    new_path = request.newPath
+    if not new_path.startswith("/"):
+        head, _, _ = request.path.rpartition("/")
+        new_path = head.rstrip("/") + "/" + new_path
+
+    # 同名视为无操作
+    if request.path == new_path:
+        return {"code": 200, "message": "success", "data": None}
+
+    # 源路径与目标路径都要做顶层保护
+    for p in (request.path, new_path):
+        normalized = p.rstrip("/") or "/"
+        if normalized in PROTECTED_DELETE_PATHS:
+            return {"code": 400, "message": f"拒绝操作顶层目录 {normalized}（保护性拦截）", "data": None}
+
+    # 目标已存在时 cp 会覆盖或复制进内部，先检查拒绝，避免误覆盖
+    exists = execute_adb_command(
+        f"adb -s {request.deviceId} shell test -e {_shell_quote(new_path)} && echo Y"
+    )
+    if (exists.get("stdout") or "").strip().endswith("Y"):
+        return {"code": 400, "message": "目标路径已存在，请换一个名字", "data": None}
+
+    # 复制目录到其自身子目录会无限递归，直接拒绝
+    if new_path.rstrip("/").startswith(request.path.rstrip("/") + "/"):
+        return {"code": 400, "message": "目标目录在源目录内部，拒绝复制", "data": None}
+
+    result = execute_adb_command(
+        f"adb -s {request.deviceId} shell cp -r {_shell_quote(request.path)} {_shell_quote(new_path)}"
+    )
+    if result["success"]:
+        return {"code": 200, "message": "success", "data": None}
+    else:
+        return {"code": 500, "message": result.get("error", "Copy failed"), "data": None}
+
+
 # 上传文件
 @router.post("/device/files/upload")
 async def upload_file(
