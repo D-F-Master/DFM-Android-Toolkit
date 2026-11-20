@@ -327,7 +327,7 @@ const scriptFlushTyping = () => {
 }
 
 // 退出键盘接管状态
-const scriptOnKeyDown = (ev: KeyboardEvent) => {
+const scriptOnKeyDown = async (ev: KeyboardEvent) => {
   if (!scriptKeyboardActive.value || !scriptStreaming.value) return
   // 正在页面上的输入框里打字时不拦截（右侧输入框、保存弹窗等），否则会吞掉正常输入
   const el = ev.target as HTMLElement | null
@@ -335,6 +335,25 @@ const scriptOnKeyDown = (ev: KeyboardEvent) => {
     const tag = el.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return
   }
+  // Ctrl 组合键：Ctrl+A/C 全选/复制走设备侧注入；Ctrl+V 优先把电脑剪贴板文字打到设备，
+  // 读不到剪贴板（非安全上下文/被拒）时退回设备侧粘贴
+  if (ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    const k = ev.key.toLowerCase()
+    if (k === 'a') { ev.preventDefault(); scriptSendCtrlKey(29); return }
+    if (k === 'c') { ev.preventDefault(); scriptSendCtrlKey(31); return }
+    if (k === 'v') {
+      ev.preventDefault()
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text) { scriptSendText(text); scriptFlushTyping(); return }
+      } catch { /* 读剪贴板失败，走设备侧粘贴 */ }
+      scriptSendCtrlKey(50)
+      return
+    }
+    // 其余 Ctrl 组合不处理，交给默认行为
+    return
+  }
+
   // 只处理可见字符与退格/回车，其余（方向键、F1 等）交给默认行为
   const key = ev.key
   const isBackspace = key === 'Backspace'
@@ -413,13 +432,21 @@ const scriptOnKeyDown = (ev: KeyboardEvent) => {
   }
 }
 
-// 特殊键：走 key 通道（后端 inject_keycode）
-const scriptSendKey = (name: 'backspace' | 'enter') => {
+// 特殊键：走 key 通道（后端 inject_keycode）；metaState 为 Android META_* 修饰键掩码（如 Ctrl=4096）
+const scriptSendKey = (name: 'backspace' | 'enter', metaState = 0) => {
   if (!scriptWs.value || scriptWs.value.readyState !== WebSocket.OPEN) return
   // Android KeyEvent：BACKSPACE=67，ENTER=66
   const code = name === 'backspace' ? 67 : 66
-  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 0 } }))
-  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 1 } }))
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 0, metaState } }))
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 1, metaState } }))
+}
+
+// Ctrl 组合键：注入带 META_CTRL_ON 修饰的按键事件（Android 文本框原生支持 Ctrl+A/C/V）
+// Android KeyEvent：A=29，C=31，V=50，META_CTRL_ON=4096
+const scriptSendCtrlKey = (keycode: number) => {
+  if (!scriptWs.value || scriptWs.value.readyState !== WebSocket.OPEN) return
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode, action: 0, metaState: 4096 } }))
+  scriptWs.value.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode, action: 1, metaState: 4096 } }))
 }
 
 
