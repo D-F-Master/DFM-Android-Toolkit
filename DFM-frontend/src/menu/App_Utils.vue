@@ -265,6 +265,14 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
   if (step.type === 'reboot') return '重启设备'
   if (step.type === 'tts') return `语音「${step.text ?? ''}」`
+  if (step.type === 'accClick') {
+    const parts = [
+      step.id ? `id=${step.id}` : '',
+      step.text ? `text=${step.text}` : '',
+      step.desc ? `desc=${step.desc}` : '',
+    ].filter(Boolean)
+    return `无障碍点击 ${parts.join(' ') || '（未设置条件）'}`
+  }
   if (step.type === 'waitFor') return `等待组件 ${step.template || '（未选择模板）'}（阈值${step.threshold ?? 0.85}）`
   if (step.type === 'condition') {
     const prefix = step.negate ? '判断非' : '判断'

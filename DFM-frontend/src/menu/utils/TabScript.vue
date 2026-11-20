@@ -150,6 +150,7 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'volume', label: '音量控制', icon: '🔊' },
   { type: 'reboot', label: '重启设备', icon: '🔄' },
   { type: 'tts', label: 'TTS语音', icon: '🗣️' },
+  { type: 'accClick', label: '无障碍点击', icon: '🎯' },
 ]
 
 // 手势类步骤（手动添加：坐标默认屏幕中心，开启「显示步骤」后在画面上拖动标记调整）
@@ -300,6 +301,7 @@ const scriptAdbStepDefaults = (type: string): Record<string, any> => {
     case 'keyevent': return { keycode: 4 }
     case 'volume': return { action: 'up', stream: 'media' }
     case 'tts': return { text: '' }
+    case 'accClick': return { id: '', text: '', desc: '' }
     default: return {}
   }
 }
@@ -921,6 +923,14 @@ const scriptSendTouch = (action: number, p: { x: number; y: number }) => {
 const scriptReleaseKeyboard = () => {
   scriptKeyboardActive.value = false
   scriptFlushTyping()
+}
+
+// 键盘接管时点击屏幕预览以外的区域 → 退出接管并停止键盘监听（capture 抢在画布事件前）
+const scriptOnDocPointerDown = (ev: PointerEvent) => {
+  if (!scriptKeyboardActive.value) return
+  const target = ev.target as HTMLElement | null
+  if (target?.closest?.('.script-screen-panel')) return
+  scriptReleaseKeyboard()
 }
 
 const scriptOnPointerDown = (ev: PointerEvent) => {
@@ -1649,8 +1659,15 @@ const scriptDrawTree = (ctx: CanvasRenderingContext2D) => {
 }
 
 
-onMounted(() => { window.addEventListener('keydown', scriptOnKeyDown) })
-onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch(); stopScriptTreePolling() })
+onMounted(() => {
+  window.addEventListener('keydown', scriptOnKeyDown)
+  document.addEventListener('pointerdown', scriptOnDocPointerDown, true)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', scriptOnKeyDown)
+  document.removeEventListener('pointerdown', scriptOnDocPointerDown, true)
+  scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch(); stopScriptTreePolling()
+})
 
 </script>
 
@@ -1993,6 +2010,18 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                               <span>朗读文本</span>
                               <el-input v-model="step.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
                             </div>
+                            <div v-if="step.type === 'accClick'" class="script-config-row">
+                              <span>resource-id</span>
+                              <el-input v-model="step.id" class="ep-config-input" placeholder="com.x:id/btn（精确匹配）" />
+                            </div>
+                            <div v-if="step.type === 'accClick'" class="script-config-row">
+                              <span>文本 text</span>
+                              <el-input v-model="step.text" class="ep-config-input" placeholder="包含匹配，如「登录」" />
+                            </div>
+                            <div v-if="step.type === 'accClick'" class="script-config-row">
+                              <span>描述 desc</span>
+                              <el-input v-model="step.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
+                            </div>
                             <div class="script-config-row">
                               <span>{{ step.type === 'condition' ? '轮询/步间(ms)' : '执行间隔(ms)' }}</span>
                               <el-input-number v-model="step.interval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
@@ -2012,6 +2041,9 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                             </div>
                             <div v-else-if="step.type === 'tts'" class="script-config-hint">
                               通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒
+                            </div>
+                            <div v-else-if="step.type === 'accClick'" class="script-config-hint">
+                              经探针 0x0C 获取无障碍组件树，按 id/text/desc 匹配节点后点击其中心；至少填一项，多项同时满足才命中；需设备已启用无障碍权限
                             </div>
                             <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
