@@ -1023,24 +1023,39 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
 
         elif stype == "accClick":
             # 无障碍点击：经探针 0x0D 让设备端直接对匹配节点执行 ACTION_CLICK（不走坐标注入）
+            # 匹配策略（录制端 id/text/desc 有值全存）：依次尝试
+            #   ① id+text+desc 全组合（最精确）② 仅 desc ③ 仅 text ④ 仅 id ⑤ 录制坐标兜底
+            # 每轮 404（未找到节点）才试下一轮；其他错误（未启用无障碍等）直接失败
             from routes.probe import run_probe
 
             _acc_id = str(step.get("id", "") or "").strip()
             _acc_text = str(step.get("text", "") or "").strip()
             _acc_desc = str(step.get("desc", "") or "").strip()
-            _acc_data = {}
-            if _acc_id:
-                _acc_data["id"] = _acc_id
-            if _acc_text:
-                _acc_data["text"] = _acc_text
+            _attempts = []
+            if _acc_id and _acc_text and _acc_desc:
+                _attempts.append({"id": _acc_id, "text": _acc_text, "desc": _acc_desc})
             if _acc_desc:
-                _acc_data["desc"] = _acc_desc
-            d = run_probe(device_id, False, 0x0D, _acc_data)
-            if not d.get("connected"):
-                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
-            response = d.get("response") or {}
-            if not isinstance(response, dict) or response.get("code") != 200:
-                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                _attempts.append({"desc": _acc_desc})
+            if _acc_text:
+                _attempts.append({"text": _acc_text})
+            if _acc_id:
+                _attempts.append({"id": _acc_id})
+
+            _clicked = False
+            _last_message = ""
+            for _data in _attempts:
+                d = run_probe(device_id, False, 0x0D, _data)
+                if not d.get("connected"):
+                    raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
+                response = d.get("response") or {}
+                if isinstance(response, dict) and response.get("code") == 200:
+                    _clicked = True
+                    break
+                _last_message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                if "未找到节点" not in _last_message:
+                    # 未启用无障碍 / 无活动窗口 / 节点不支持点击等：重试也不会成功
+                    raise RuntimeError(f"无障碍点击失败: {_last_message}")
+            if not _clicked:
                 # 树中匹配失败且录制时带了点击坐标（x/y 为录制时的设备显示坐标）：
                 # 动态文本（如时间组件）回放时会变，按坐标兜底点击。纯 ADB 脚本没有
                 # scrcpy 会话（_screen_w/_h 为 0），实时取当前屏幕尺寸；与录制基准
@@ -1067,7 +1082,7 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
                         timeout=30,
                     )
                 else:
-                    raise RuntimeError(f"无障碍点击失败: {message}；该步骤未录制点击坐标，无法兜底")
+                    raise RuntimeError(f"无障碍点击失败: {_last_message}；该步骤未录制点击坐标，无法兜底")
 
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
