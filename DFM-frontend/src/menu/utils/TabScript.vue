@@ -446,6 +446,7 @@ const scriptDrawFrame = (ctx: CanvasRenderingContext2D, frame: any) => {
   ctx.drawImage(frame, 0, 0)
   // 缓存一份画面供重绘使用（frame 随即被 close，不能直接持有）
   scriptCacheFrame(frame)
+  scriptDrawTree(ctx)
   scriptDrawMarkers(ctx)
 }
 
@@ -469,6 +470,7 @@ const scriptRedrawMarkers = () => {
   if (!cv || !scriptFrameCanvas) return
   const ctx = cv.getContext('2d')!
   ctx.drawImage(scriptFrameCanvas, 0, 0)
+  scriptDrawTree(ctx)
   scriptDrawMarkers(ctx)
 }
 
@@ -1552,6 +1554,8 @@ const fetchScriptTree = async () => {
     if (r.code !== 200) throw new Error(r.message || '设备返回错误')
     scriptTreeInfo.value = r.data || {}
     scriptTreeError.value = ''
+    // 画面静止时没有新帧，拿到新树后手动重绘一次叠加框
+    scriptRedrawMarkers()
   } catch (e: any) {
     scriptTreeError.value = e?.response?.data?.message || e?.message || '请求异常'
     scriptTreeInfo.value = null
@@ -1563,6 +1567,8 @@ const stopScriptTreePolling = () => {
   if (scriptTreeTimer !== null) { clearInterval(scriptTreeTimer); scriptTreeTimer = null }
   scriptTreeInfo.value = null
   scriptTreeError.value = ''
+  // 清掉画面上已画的组件树框
+  scriptRedrawMarkers()
 }
 const startScriptTreePolling = () => {
   stopScriptTreePolling()
@@ -1574,29 +1580,40 @@ watch([scriptShowTree, selectedDevice], () => {
   if (scriptShowTree.value && selectedDevice.value) startScriptTreePolling()
   else stopScriptTreePolling()
 })
-// 把组件树拍平成缩进行，供悬浮面板渲染
-const scriptTreeLines = computed(() => {
+// 解析 "l,t,r,b" 为矩形，非法/零面积返回 null
+const parseTreeBounds = (b: string) => {
+  const m = /^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/.exec(b || '')
+  if (!m) return null
+  const left = +m[1], top = +m[2], right = +m[3], bottom = +m[4]
+  if (right <= left || bottom <= top) return null
+  return { left, top, width: right - left, height: bottom - top }
+}
+// 全树拍平出可绘制的 bounds 矩形列表
+const scriptTreeRects = computed(() => {
   const info = scriptTreeInfo.value
   if (!info?.root) return []
-  const lines: any[] = []
-  const walk = (node: any, depth: number) => {
+  const rects: { left: number; top: number; width: number; height: number }[] = []
+  const walk = (node: any) => {
     if (!node) return
-    const attrs: string[] = []
-    if (node.clickable) attrs.push('可点击')
-    if (node.scrollable) attrs.push('可滚动')
-    if (!node.enabled) attrs.push('禁用')
-    lines.push({
-      depth,
-      label: [node.class, node.text, node.desc].filter(Boolean).join(' · ') || '(无文本)',
-      id: node.id || '',
-      bounds: node.bounds || '',
-      attrs,
-    })
-    ;(node.children || []).forEach((c: any) => walk(c, depth + 1))
+    const rect = parseTreeBounds(node.bounds)
+    if (rect) rects.push(rect)
+    ;(node.children || []).forEach(walk)
   }
-  walk(info.root, 0)
-  return lines
+  walk(info.root)
+  return rects
 })
+// 把组件树框叠加画在画面上（画布坐标系即设备分辨率，bounds 1:1 直接绘制）
+const scriptDrawTree = (ctx: CanvasRenderingContext2D) => {
+  if (!scriptShowTree.value) return
+  const rects = scriptTreeRects.value
+  if (!rects.length) return
+  ctx.save()
+  ctx.strokeStyle = '#00e5ff'
+  ctx.lineWidth = Math.max(1, Math.round(scriptMeta.width / 400))
+  ctx.globalAlpha = 0.9
+  for (const rect of rects) ctx.strokeRect(rect.left, rect.top, rect.width, rect.height)
+  ctx.restore()
+}
 
 
 onMounted(() => { window.addEventListener('keydown', scriptOnKeyDown) })
@@ -1645,26 +1662,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                       <div v-if="!scriptStreaming" class="script-screen-placeholder">
                         {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
                       </div>
-                      <!-- 组件树悬浮面板：开启「显示组件树」后每秒刷新 -->
-                      <div v-if="scriptShowTree" class="script-tree-panel">
-                        <div v-if="scriptTreeError" class="script-tree-error">获取失败：{{ scriptTreeError }}</div>
-                        <template v-else-if="scriptTreeInfo">
-                          <div class="script-tree-head">
-                            包名 {{ scriptTreeInfo.package || '未知' }} · 节点 {{ scriptTreeInfo.nodeCount || 0 }}{{ scriptTreeInfo.truncated ? '（超出上限已截断）' : '' }}
-                          </div>
-                          <div class="script-tree-lines">
-                            <div
-                              v-for="(line, i) in scriptTreeLines"
-                              :key="i"
-                              class="script-tree-line"
-                              :style="{ paddingLeft: line.depth * 12 + 'px' }"
-                            >
-                              {{ line.label }}{{ line.id ? ` [${line.id}]` : '' }}{{ line.bounds ? ` @${line.bounds}` : '' }}{{ line.attrs.length ? ` (${line.attrs.join('/')})` : '' }}
-                            </div>
-                          </div>
-                        </template>
-                        <div v-else class="script-tree-error">{{ scriptTreeLoading ? '正在读取组件树...' : '暂无数据' }}</div>
-                      </div>
+                      <span v-if="scriptShowTree && scriptTreeError" class="script-tree-error" :title="scriptTreeError">组件树获取失败</span>
                     </div>
                     <!-- 右缘拖拽热区：按住左右拖动调整面板宽度 -->
                     <div
