@@ -249,7 +249,7 @@ const formatAccessibilityTree = (info: any) => {
   return lines.join('\n');
 };
 
-// 探针工具：获取无障碍组件树（0x0C），需设备已启用「DFM Probe」无障碍服务
+// 探针工具：获取无障碍组件树（0x0C），未启用无障碍权限时设备端会自动拉起设置页
 const getProbeAccessibilityTree = async () => {
   if (!probeReady()) return;
   probeBusy.value = 'accessibility-tree';
@@ -259,7 +259,10 @@ const getProbeAccessibilityTree = async () => {
     probeResult.value = formatAccessibilityTree(info);
     showMessage(`组件树读取完成（${info.package || '未知包名'}，${info.nodeCount || 0} 节点）`, '无障碍组件树');
   } catch (e: any) {
-    const text = `获取失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    const raw = e?.response?.data?.message || e?.message || '';
+    const text = raw.includes('已在设备上打开无障碍设置页')
+      ? '设备未启用无障碍权限，已在设备上打开设置页，请启用「DFM Probe」后重新获取'
+      : `获取失败：${raw || '请求异常'}`;
     probeResult.value = text;
     showMessage(text, '无障碍组件树');
   } finally {
@@ -325,7 +328,7 @@ const getProbeAccessibilityTree = async () => {
                     </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除；组件树需先在设备上启用「DFM Probe」无障碍服务（0x0B 跳设置页）。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除；组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
                     </div>
                   </div>
                 </div>

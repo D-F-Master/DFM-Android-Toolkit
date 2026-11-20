@@ -1568,8 +1568,14 @@ const fetchScriptTree = async () => {
     // 画面静止时没有新帧，拿到新树后手动重绘一次叠加框
     scriptRedrawMarkers()
   } catch (e: any) {
-    scriptTreeError.value = e?.response?.data?.message || e?.message || '请求异常'
+    const raw = e?.response?.data?.message || e?.message || '请求异常'
+    scriptTreeError.value = raw
     scriptTreeInfo.value = null
+    // 保底跳页：未启用无障碍权限时设备端已自动拉起设置页，停掉轮询避免反复拉页
+    if (raw.includes('已在设备上打开无障碍设置页')) {
+      stopScriptTreePolling()
+      scriptShowTree.value = false
+    }
   } finally {
     scriptTreeLoading.value = false
   }
@@ -1673,7 +1679,7 @@ onUnmounted(() => { window.removeEventListener('keydown', scriptOnKeyDown); scri
                       <div v-if="!scriptStreaming" class="script-screen-placeholder">
                         {{ selectedDevice ? '正在连接屏幕流...' : '请先选择设备' }}
                       </div>
-                      <span v-if="scriptShowTree && scriptTreeError" class="script-tree-error" :title="scriptTreeError">组件树获取失败</span>
+                      <span v-if="scriptShowTree && scriptTreeError" class="script-tree-error" :title="scriptTreeError">{{ scriptTreeError.includes('已在设备上打开无障碍设置页') ? '无障碍权限未开启，已在设备上打开设置页' : '组件树获取失败' }}</span>
                     </div>
                     <!-- 右缘拖拽热区：按住左右拖动调整面板宽度 -->
                     <div
