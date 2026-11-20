@@ -14,7 +14,7 @@ from fastapi import APIRouter, UploadFile, File, Form
 from pydantic import BaseModel
 
 from config.queue_config import task_queue
-from utils.tool_manager import get_adb_path, get_scrcpy_path  # 导入工具管理器
+from utils.tool_manager import get_adb_path, get_scrcpy_path, get_data_path  # 导入工具管理器
 
 router = APIRouter(
     prefix="/api",
@@ -2661,6 +2661,237 @@ async def install_ca_cert(
         return await asyncio.to_thread(_install)
     except Exception as e:
         logger.error(f"Install CA cert failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+
+
+# ---------------- 证书仓库（data/certs） ----------------
+# 仓库目录：先在本机保存 PEM 证书，再点选直接导入设备；交互参照 APK 仓库
+CERT_REPO_DIR = get_data_path() / "certs"
+
+
+class CertRepoInstallRequest(BaseModel):
+    deviceId: str
+    certName: str
+
+
+def _ensure_cert_repo() -> None:
+    CERT_REPO_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_cert_name(name: str) -> str:
+    """证书文件名安全过滤：只保留中英文数字下划线连字符点号，防止路径穿越"""
+    name = re.sub(r'[^\w\u4e00-\u9fff.-]', '_', str(name)).strip('._')
+    return name or "unnamed"
+
+
+async def _install_ca_cert_core(device_id: str, filename: str, content: bytes) -> dict:
+    """证书安装核心逻辑（install_ca_cert 与仓库安装共用）：PEM 校验 + 写入 cacerts-added"""
+    if not re.fullmatch(r"[A-Za-z0-9._:\-]+", device_id or ""):
+        return {"code": 400, "message": "设备序列号不合法", "data": None}
+
+    if not content:
+        return {"code": 400, "message": "证书文件为空", "data": None}
+    if len(content) > 1024 * 1024:
+        return {"code": 400, "message": "证书文件过大，请确认选择的是 CA 公钥证书（PEM）", "data": None}
+
+    pem_text = content.decode("utf-8", errors="replace")
+    cert_blocks = pem_text.count("-----BEGIN CERTIFICATE-----")
+    if cert_blocks == 0:
+        return {"code": 400, "message": "请使用 BEGIN CERTIFICATE 的 PEM 证书，不要用 DER/P12", "data": None}
+    if cert_blocks > 1:
+        return {"code": 400, "message": "请只选择一张 CA 证书（PEM 中检测到多张证书）", "data": None}
+
+    cert_hash = _cert_hash_old(pem_text)
+    fingerprint = _cert_fingerprint(pem_text)
+    if not cert_hash or not fingerprint:
+        return {"code": 400, "message": "证书解析失败，请确认是有效的 PEM 证书", "data": None}
+
+    def _install() -> dict:
+        warnings = []
+
+        # 1. 设备在线；非 root 设备用 su 提权（与 serial.py 的 _root_prefix 一致）
+        id_result = execute_adb_command(f"adb -s {device_id} shell id", timeout=10)
+        if not id_result["success"]:
+            return {
+                "code": 500,
+                "message": f"设备不在线或 adb shell 执行失败：{id_result.get('error', '未知错误')}",
+                "data": None,
+            }
+        root_prefix = _root_prefix(device_id)
+
+        # 2. 同指纹跳过；哈希已被别的证书占用时按 .1/.2 递增，不覆盖
+        file_name = None
+        for index in range(100):
+            candidate = f"{cert_hash}.{index}"
+            cat_result = execute_adb_command(
+                f"adb -s {device_id} shell {root_prefix}cat {CERT_USER_DIR}/{candidate}", timeout=10
+            )
+            if not cat_result["success"] or not cat_result.get("stdout", "").strip():
+                file_name = candidate
+                break
+            if _cert_fingerprint(cat_result.get("stdout", "")) == fingerprint:
+                return {
+                    "code": 200,
+                    "message": "该证书已安装（SHA256 指纹相同），无需重复导入",
+                    "data": {
+                        "alreadyInstalled": True,
+                        "fileName": candidate,
+                        "hash": cert_hash,
+                        "fingerprint": fingerprint,
+                        "warnings": [],
+                    },
+                }
+        if file_name is None:
+            return {"code": 500, "message": "同名证书哈希冲突过多，无法确定文件名", "data": None}
+
+        # 3. 按文档第 4 节写入，并修正属主/权限
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+        try:
+            commands = [
+                (f'adb -s {device_id} push "{tmp_path}" "{CERT_TMP_REMOTE}"', UPLOAD_TIMEOUT),
+                (f"adb -s {device_id} shell {root_prefix}mkdir -p {CERT_USER_DIR}", 10),
+                (f"adb -s {device_id} shell {root_prefix}cp {CERT_TMP_REMOTE} {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {device_id} shell {root_prefix}chown system:system {CERT_USER_DIR}", 10),
+                (f"adb -s {device_id} shell {root_prefix}chown system:system {CERT_USER_DIR}/{file_name}", 10),
+                (f"adb -s {device_id} shell {root_prefix}chmod 755 {CERT_USER_DIR}", 10),
+                (f"adb -s {device_id} shell {root_prefix}chmod 644 {CERT_USER_DIR}/{file_name}", 10),
+            ]
+            for command, timeout in commands:
+                result = execute_adb_command(command, timeout=timeout)
+                if not result["success"]:
+                    return {
+                        "code": 500,
+                        "message": f"安装失败（{command}）：{result.get('error', '未知错误')}",
+                        "data": None,
+                    }
+
+            # 部分 ROM 没有 restorecon / 不接收该广播，失败只记 warning，不回滚已写入的证书
+            optional_commands = [
+                (f"adb -s {device_id} shell {root_prefix}restorecon -R {CERT_USER_DIR}", "restorecon"),
+                (
+                    f"adb -s {device_id} shell {root_prefix}am broadcast -a {CERT_TRUST_STORE_CHANGED}",
+                    "TRUST_STORE_CHANGED 广播",
+                ),
+            ]
+            for command, label in optional_commands:
+                result = execute_adb_command(command, timeout=10)
+                if not result["success"]:
+                    warnings.append(f"{label} 未成功：{(result.get('error') or '').strip()}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        # 4. ls -lZ 校验：期望 -rw-r--r-- 1 system system
+        ls_result = execute_adb_command(
+            f"adb -s {device_id} shell {root_prefix}ls -lZ {CERT_USER_DIR}", timeout=10
+        )
+        ls_output = ls_result.get("stdout", "") if ls_result["success"] else ""
+        cert_line = next(
+            (line for line in ls_output.splitlines() if file_name in line), ""
+        )
+        if not cert_line:
+            return {
+                "code": 500,
+                "message": f"安装后未找到 {file_name}（ls -lZ 输出：{ls_output.strip() or '空'}）",
+                "data": None,
+            }
+        if "rw-r--r--" not in cert_line or cert_line.count("system") < 2:
+            warnings.append(f"属主/权限与预期（system:system 644）不一致：{cert_line.strip()}")
+
+        return {
+            "code": 200,
+            "message": "证书已导入",
+            "data": {
+                "alreadyInstalled": False,
+                "fileName": file_name,
+                "hash": cert_hash,
+                "fingerprint": fingerprint,
+                "lsOutput": ls_output.strip(),
+                "warnings": warnings,
+                "certName": filename,
+            },
+        }
+
+    try:
+        return await asyncio.to_thread(_install)
+    except Exception as e:
+        logger.error(f"Install CA cert failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+
+
+@router.post("/device/cert/repo/list")
+async def list_cert_repo():
+    """列出证书仓库（data/certs）中的 PEM 证书文件"""
+    try:
+        _ensure_cert_repo()
+        items = []
+        for path in sorted(CERT_REPO_DIR.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in (".crt", ".cer", ".pem"):
+                continue
+            items.append({"name": path.name, "size": path.stat().st_size})
+        return {"code": 200, "message": "success", "data": items}
+    except Exception as e:
+        logger.error(f"List cert repo failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+
+
+@router.post("/device/cert/repo/upload")
+async def upload_cert_repo(cert: UploadFile = File(..., description="PEM 格式 CA 证书（.crt/.cer/.pem）")):
+    """上传证书到仓库（data/certs）保存，供后续直接导入"""
+    try:
+        _ensure_cert_repo()
+        content = await cert.read()
+        if not content:
+            return {"code": 400, "message": "证书文件为空", "data": None}
+        if len(content) > 1024 * 1024:
+            return {"code": 400, "message": "证书文件过大，请确认选择的是 CA 公钥证书（PEM）", "data": None}
+        pem_text = content.decode("utf-8", errors="replace")
+        if pem_text.count("-----BEGIN CERTIFICATE-----") == 0:
+            return {"code": 400, "message": "请使用 BEGIN CERTIFICATE 的 PEM 证书，不要用 DER/P12", "data": None}
+        suffix = os.path.splitext(cert.filename or "")[1].lower()
+        if suffix not in (".crt", ".cer", ".pem"):
+            suffix = ".crt"
+        filename = _safe_cert_name(os.path.splitext(cert.filename or "")[0]) + suffix
+        path = CERT_REPO_DIR / filename
+        with open(path, "wb") as f:
+            f.write(content)
+        return {"code": 200, "message": "证书已保存到仓库", "data": {"name": filename, "size": len(content)}}
+    except Exception as e:
+        logger.error(f"Upload cert to repo failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+
+
+@router.post("/device/cert/install-from-repo")
+async def install_cert_from_repo(request: CertRepoInstallRequest):
+    """把证书仓库（data/certs）里的证书装到指定设备"""
+    if not re.fullmatch(r"[A-Za-z0-9._:\-]+", request.deviceId or ""):
+        return {"code": 400, "message": "设备序列号不合法", "data": None}
+    cert_name = _safe_cert_name(request.certName)
+    path = CERT_REPO_DIR / cert_name
+    if not path.is_file() or path.suffix.lower() not in (".crt", ".cer", ".pem"):
+        return {"code": 404, "message": "仓库中不存在该证书", "data": None}
+    try:
+        content = path.read_bytes()
+    except Exception as e:
+        logger.error(f"Read cert from repo failed: {str(e)}")
+        return {"code": 500, "message": str(e), "data": None}
+    return await _install_ca_cert_core(request.deviceId, cert_name, content)
+
+
+@router.post("/device/cert/repo/delete")
+async def delete_cert_repo(request: CertRepoInstallRequest):
+    """删除证书仓库中的证书文件"""
+    cert_name = _safe_cert_name(request.certName)
+    path = CERT_REPO_DIR / cert_name
+    if not path.is_file():
+        return {"code": 404, "message": "仓库中不存在该证书", "data": None}
+    try:
+        path.unlink()
+        return {"code": 200, "message": "证书已删除", "data": {"name": cert_name}}
+    except Exception as e:
+        logger.error(f"Delete cert from repo failed: {str(e)}")
         return {"code": 500, "message": str(e), "data": None}
 
 
