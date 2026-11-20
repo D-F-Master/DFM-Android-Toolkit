@@ -1041,8 +1041,10 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             response = d.get("response") or {}
             if not isinstance(response, dict) or response.get("code") != 200:
                 message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
-                # 树中匹配失败且录制时带了点击坐标（x/y 为录制基准分辨率下的设备坐标）：
-                # 动态文本（如时间组件）回放时会变，按录制坐标换算到当前会话分辨率兜底点击
+                # 树中匹配失败且录制时带了点击坐标（x/y 为录制时的设备显示坐标）：
+                # 动态文本（如时间组件）回放时会变，按坐标兜底点击。纯 ADB 脚本没有
+                # scrcpy 会话（_screen_w/_h 为 0），实时取当前屏幕尺寸；与录制基准
+                # 不同才换算，相同（或基准缺失）直接按录制坐标点。
                 _acc_x = step.get("x")
                 _acc_y = step.get("y")
                 if isinstance(_acc_x, (int, float)) and isinstance(_acc_y, (int, float)):
@@ -1050,17 +1052,22 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
                     _bh = int(step.get("_base_h") or 0)
                     _sw = int(step.get("_screen_w") or 0)
                     _sh = int(step.get("_screen_h") or 0)
-                    if _bw > 0 and _bh > 0 and _sw > 0 and _sh > 0:
+                    if _sw <= 0 or _sh <= 0:
+                        try:
+                            _sw, _sh = _current_screen_size(device_id, 0, 0)
+                        except Exception:
+                            _sw, _sh = 0, 0
+                    if _bw > 0 and _bh > 0 and _sw > 0 and _sh > 0 and (_bw != _sw or _bh != _sh):
                         _cx = int(round(_acc_x * _sw / _bw))
                         _cy = int(round(_acc_y * _sh / _bh))
-                        execute_adb_command(
-                            f'adb -s {device_id} shell input tap {_cx} {_cy}',
-                            timeout=30,
-                        )
                     else:
-                        raise RuntimeError(f"无障碍点击失败: {message}；录制坐标缺少基准分辨率，无法兜底")
+                        _cx, _cy = int(_acc_x), int(_acc_y)
+                    execute_adb_command(
+                        f'adb -s {device_id} shell input tap {_cx} {_cy}',
+                        timeout=30,
+                    )
                 else:
-                    raise RuntimeError(f"无障碍点击失败: {message}")
+                    raise RuntimeError(f"无障碍点击失败: {message}；该步骤未录制点击坐标，无法兜底")
 
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
