@@ -92,6 +92,7 @@ public class ProbeService extends Service {
     private static final int CMD_CAMERA = 0x0A;
     private static final int CMD_ACCESSIBILITY_SETTINGS = 0x0B;
     private static final int CMD_ACCESSIBILITY_TREE = 0x0C;
+    private static final int CMD_ACCESSIBILITY_CLICK = 0x0D;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -347,7 +348,8 @@ public class ProbeService extends Service {
                     && cmd != CMD_SERIAL_OPEN && cmd != CMD_SERIAL_SEND
                     && cmd != CMD_SERIAL_CLOSE
                     && cmd != CMD_SHELL && cmd != CMD_SCREENSHOT && cmd != CMD_CAMERA
-                    && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE;
+                    && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE
+                    && cmd != CMD_ACCESSIBILITY_CLICK;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -443,10 +445,14 @@ public class ProbeService extends Service {
                 return fail(500, "cmd failed: " + e);
             }
         }
-        if (cmd == CMD_ACCESSIBILITY_SETTINGS || cmd == CMD_ACCESSIBILITY_TREE) {
+        if (cmd == CMD_ACCESSIBILITY_SETTINGS || cmd == CMD_ACCESSIBILITY_TREE
+                || cmd == CMD_ACCESSIBILITY_CLICK) {
             try {
                 if (cmd == CMD_ACCESSIBILITY_SETTINGS) {
                     return ok(openAccessibilitySettings());
+                }
+                if (cmd == CMD_ACCESSIBILITY_CLICK) {
+                    return accessibilityClick(req);
                 }
                 return accessibilityTree();
             } catch (Exception e) {
@@ -1100,6 +1106,101 @@ public class ProbeService extends Service {
         data.put("truncated", count.get() > MAX_TREE_NODES);
         data.put("root", rootNode);
         return ok(data);
+    }
+
+    /** CMD_ACCESSIBILITY_CLICK (0x0D)：按 id/text/desc 匹配节点并对其执行 ACTION_CLICK（无障碍点击，不依赖坐标）。 */
+    private JSONObject accessibilityClick(JSONObject req) throws Exception {
+        String id = req.optString("id", "").trim();
+        String text = req.optString("text", "").trim();
+        String desc = req.optString("desc", "").trim();
+        if (id.isEmpty() && text.isEmpty() && desc.isEmpty()) {
+            return fail(400, "id/text/desc 至少填一项");
+        }
+        if (id.length() > 200 || text.length() > 200 || desc.length() > 200) {
+            return fail(400, "id/text/desc 每项最长 200 字符");
+        }
+        DfmAccessibilityService svc = DfmAccessibilityService.instance();
+        if (svc == null) {
+            // 保底：无障碍权限缺失时直接把设置页拉到前台
+            openAccessibilitySettings();
+            return fail(500, "accessibility service not enabled (已在设备上打开无障碍设置页，请启用 DFM Probe 后重试)");
+        }
+        AccessibilityNodeInfo root = svc.getRootInActiveWindow();
+        if (root == null) {
+            return fail(500, "no active window for accessibility");
+        }
+        AccessibilityNodeInfo target = findClickableNode(root, id, text, desc, new AtomicInteger(0));
+        if (target == null) {
+            StringBuilder cond = new StringBuilder();
+            if (!id.isEmpty()) cond.append("id=").append(id).append(' ');
+            if (!text.isEmpty()) cond.append("text=").append(text).append(' ');
+            if (!desc.isEmpty()) cond.append("desc=").append(desc);
+            return fail(404, "无障碍树未找到节点（" + cond.toString().trim() + "）；请确认目标界面在前台");
+        }
+        boolean clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+        if (!clicked) {
+            return fail(500, "节点不支持 ACTION_CLICK（clickable=false）");
+        }
+        JSONObject data = new JSONObject();
+        data.put("clicked", true);
+        data.put("id", id);
+        data.put("text", text);
+        data.put("desc", desc);
+        return ok(data);
+    }
+
+    /** 深度优先找首个匹配节点：id 精确相等、text/desc 包含，填了的条件同时满足；命中后若自身不可点击则向上回溯最近可点击祖先。 */
+    private AccessibilityNodeInfo findClickableNode(AccessibilityNodeInfo node,
+                                                    String id, String text, String desc,
+                                                    AtomicInteger guard) {
+        if (guard.incrementAndGet() > MAX_TREE_NODES) {
+            return null;
+        }
+        if (nodeMatches(node, id, text, desc)) {
+            if (node.isClickable()) {
+                return node;
+            }
+            AccessibilityNodeInfo p = node.getParent();
+            while (p != null) {
+                if (p.isClickable()) {
+                    return p;
+                }
+                AccessibilityNodeInfo next = p.getParent();
+                p.recycle();
+                p = next;
+            }
+            return null;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) {
+                continue;
+            }
+            AccessibilityNodeInfo hit = findClickableNode(child, id, text, desc, guard);
+            if (hit != null) {
+                if (hit != child) {
+                    child.recycle();
+                }
+                return hit;
+            }
+            child.recycle();
+        }
+        return null;
+    }
+
+    private boolean nodeMatches(AccessibilityNodeInfo node, String id, String text, String desc) {
+        if (!id.isEmpty() && !id.equals(node.getViewIdResourceName())) {
+            return false;
+        }
+        CharSequence t = node.getText();
+        if (!text.isEmpty() && (t == null || !t.toString().contains(text))) {
+            return false;
+        }
+        CharSequence d = node.getContentDescription();
+        if (!desc.isEmpty() && (d == null || !d.toString().contains(desc))) {
+            return false;
+        }
+        return true;
     }
 
     /** 递归序列化无障碍节点：超过 MAX_TREE_NODES 停止展开（该子树返回 null，不计入 children）。 */
