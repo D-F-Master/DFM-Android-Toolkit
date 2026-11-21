@@ -313,6 +313,9 @@ const scriptAdbStepDefaults = (type: string): Record<string, any> => {
 // 是否在投屏画面上标出脚本步骤位置
 const scriptShowMarkers = ref(false)
 
+// 实时控制：开启后点击画面才会注入操作设备（关闭时点击仅用于查看/编辑，不触达设备）
+const scriptLiveControl = ref(false)
+
 // 拖拽编辑：当前被拖动的标记 { stepIndex, part }，part 为 start/end
 const scriptDragging = ref<{ stepIndex: number; part: 'start' | 'end' } | null>(null)
 // 正在编辑配置的步骤索引（展开 interval/count 编辑项）
@@ -359,7 +362,12 @@ const scriptDrawMarkers = (ctx: CanvasRenderingContext2D) => {
   const radius = Math.max(18, Math.round(scriptMeta.width / 40))
   const fontSize = Math.max(14, Math.round(scriptMeta.width / 45))
 
+  // 点开点击/长按/滑动详情页时，画面上单独只显示该步骤的标记（其他步骤不画）
+  const editingStep = scriptEditingStep.value !== null ? scriptSteps.value[scriptEditingStep.value] : null
+  const focusOnly = !!editingStep && ['tap', 'longpress', 'swipe'].includes(editingStep.type)
+
   scriptSteps.value.forEach((step, idx) => {
+    if (focusOnly && idx !== scriptEditingStep.value) return
     // 输入步骤与设备动作步骤没有坐标，画面上不画标记（序号也就不占位）
     if (step.type === 'input' || step.type === 'condition' || SCRIPT_ADB_STEPS.some(a => a.type === step.type)) return
     const color = SCRIPT_MARKER_COLORS[step.type] || '#4caf50'
@@ -952,8 +960,9 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   ev.preventDefault()
 
   // 右键 = 返回键：注入 BACK，不当作触摸（对齐 scrcpy 桌面版）
+  // 实时控制门控：未开启实时控制且非录制时，右键不触达设备
   if (ev.button === 2) {
-    scriptSendBack()
+    if (scriptLiveControl.value || scriptRecording.value) scriptSendBack()
     return
   }
 
@@ -967,9 +976,12 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   }
 
   // 点画面即接管键盘：之后敲电脑键盘的文字会实时发到设备并在录制时记为输入步骤
-  scriptKeyboardActive.value = true
-  // 点别处意味着上一段输入结束
-  scriptFlushTyping()
+  // 实时控制门控：未开启实时控制且非录制时不接管键盘（点画面不操作设备）
+  if (scriptLiveControl.value || scriptRecording.value) {
+    scriptKeyboardActive.value = true
+    // 点别处意味着上一段输入结束
+    scriptFlushTyping()
+  }
 
   // 显示步骤时优先命中标记：命中则进入拖拽编辑，不注入设备也不记录新步骤
   if (scriptShowMarkers.value && !scriptRecording.value) {
@@ -983,6 +995,8 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   }
 
   if (!scriptRecording.value) {
+    // 实时控制门控：未开启实时控制时点击不注入设备（仅查看/编辑模式）
+    if (!scriptLiveControl.value) return
     // 远控模式：直接注入
     try { scriptCanvasRef.value?.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
     scriptRemotePressing = true
@@ -1081,6 +1095,29 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
   // 抬起事件注入（远控与录制模式都需要）
   if (scriptRemotePressing) scriptSendTouch(1, p)
   scriptRemotePressing = false
+
+  // 无障碍点击详情页展开 + 组件树开启 + 未开实时控制：点击组件 → 回填属性到详情页
+  // （纯编辑行为：不注入设备、不录新步骤；节点三项完全同步为该组件当前值）
+  if (
+    !scriptRecording.value &&
+    !scriptLiveControl.value &&
+    scriptShowTree.value &&
+    scriptEditingStep.value !== null &&
+    scriptSteps.value[scriptEditingStep.value]?.type === 'accClick'
+  ) {
+    const node = scriptTreeNodeAt(p.x, p.y)
+    if (node) {
+      const editStep = scriptSteps.value[scriptEditingStep.value]
+      editStep.id = node.id || ''
+      editStep.text = node.text || ''
+      editStep.desc = node.desc || ''
+      showNotification(`已把组件属性填入第 ${scriptEditingStep.value + 1} 步（无障碍点击）`, 'success')
+    } else {
+      showNotification('该位置没有命中带 id/text/desc 的组件', 'info')
+    }
+    return
+  }
+
   if (!scriptRecording.value) return
   if (!scriptPointerActive) return
   clearTimeout(scriptLongPressTimer)
@@ -1824,6 +1861,11 @@ onUnmounted(() => {
                         <span class="script-switch-track"></span>
                         <span class="script-switch-text">步骤</span>
                       </label>
+                      <label class="script-switch" :class="{ on: scriptLiveControl }">
+                        <input type="checkbox" v-model="scriptLiveControl" />
+                        <span class="script-switch-track"></span>
+                        <span class="script-switch-text">实时控制</span>
+                      </label>
                     </div>
                     <div class="script-screen-body" ref="scriptScreenBodyRef">
                       <canvas
@@ -1832,6 +1874,7 @@ onUnmounted(() => {
                         :class="{
                           recording: scriptRecording,
                           'keyboard-active': scriptKeyboardActive,
+                          'live-control': scriptLiveControl,
                           'editing-markers': scriptShowMarkers && !scriptRecording,
                           dragging: !!scriptDragging
                         }"

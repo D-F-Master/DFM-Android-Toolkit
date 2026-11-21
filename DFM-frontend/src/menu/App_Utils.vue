@@ -3100,6 +3100,12 @@ button.batch-remote-tile-tag.active,
   outline-offset: -2px;
 }
 
+/* 实时控制开启：画面预览边框变蓝（点击才会操作设备），录制红色优先级更高（放它后面） */
+:deep(.script-canvas.live-control) {
+  outline: 2px solid #1e88e5;
+  outline-offset: -2px;
+}
+
 :deep(.script-canvas.recording) {
   cursor: crosshair;
   outline: 2px solid #e53935;
