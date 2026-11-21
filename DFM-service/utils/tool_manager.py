@@ -38,6 +38,18 @@ def get_data_path() -> Path:
     raise FileNotFoundError(f"data依赖文件异常")
 
 
+def get_log_path() -> Path:
+    """
+    获取日志目录（service 程序同目录下的 log 文件夹）
+
+    Returns:
+        Path: log 目录路径对象（不存在则自动创建）
+    """
+    log_path = get_base_path() / "log"
+    log_path.mkdir(parents=True, exist_ok=True)
+    return log_path
+
+
 def get_conf_path() -> Path:
     base_path = get_base_path()
     conf_paths = [
