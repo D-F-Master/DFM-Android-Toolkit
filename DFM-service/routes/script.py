@@ -62,9 +62,52 @@ from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel
 from typing import Optional, List
 
+import logging
 from config import logger
-from utils.tool_manager import get_data_path
+from utils.tool_manager import get_data_path, get_log_path
 from routes.adb_utils import execute_adb_command
+
+
+def _sanitize_device_dir(device_id: str) -> str:
+    """设备号清洗为合法目录名（127.0.0.1:5555 -> 127.0.0.1_5555）"""
+    return re.sub(r'[\\/:*?"<>|\s]+', '_', device_id.strip())
+
+
+def _new_script_log_dir(device_id: str) -> Path:
+    """创建本次脚本执行的日志目录 log/{设备号}_{执行时间}/，返回路径"""
+    log_dir = get_log_path() / f"{_sanitize_device_dir(device_id)}_{time.strftime('%Y%m%d_%H%M%S')}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def _attach_script_log_handler(log_dir: Path):
+    """为本次执行挂一个独立 FileHandler，返回 (handler, formatter)"""
+    handler = logging.FileHandler(str(log_dir / "run.log"), encoding='utf-8')
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    logger.addHandler(handler)
+    return handler
+
+
+def _detach_script_log_handler(handler):
+    """移除并关闭本次执行的 FileHandler"""
+    logger.removeHandler(handler)
+    handler.close()
+
+
+def _capture_error_screen(device_id: str, log_dir: Path, step_no: int):
+    """报错时截取设备当前画面存入日志目录（失败不影响原异常传播）"""
+    try:
+        from routes.vision import capture_screen
+        frame = capture_screen(device_id)
+        if frame is not None:
+            shot = log_dir / f"error_step{step_no}_{time.strftime('%H%M%S')}.png"
+            cv2.imwrite(str(shot), frame)
+            logger.info(f"[{device_id}] 错误画面已保存: {shot.name}")
+    except Exception as e:
+        logger.warning(f"[{device_id}] 错误画面保存失败: {e}")
 
 
 class DeviceIdRequest(BaseModel):
@@ -1308,6 +1351,15 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     from routes.remote_ws import acquire_session, release_session
 
+    # 本次执行的独立日志目录：log/{设备号}_{执行时间}/run.log
+    log_dir = _new_script_log_dir(device_id)
+    log_handler = _attach_script_log_handler(log_dir)
+    script_name = script.get("name") or "(未命名)"
+    logger.info(
+        f"[{device_id}] 开始执行脚本「{script_name}」repeat={repeat} steps={len(steps or [])} "
+        f"日志目录: {log_dir}"
+    )
+
     # 同设备并发执行防护：拿不到执行槽说明已有一个在跑
     stop_event = _script_runs.get(device_id)
     if stop_event is not None:
@@ -1323,6 +1375,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     session = None
     w = h = 0
     scale_x = scale_y = 1.0
+    current_step_no = 0
 
     try:
         if needs_session:
@@ -1367,6 +1420,8 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 stype = step.get("type")
                 count = max(1, int(step.get("count", 1)))
                 interval = max(0, int(step.get("interval", 0)))
+                current_step_no = idx + 1
+                logger.info(f"[{device_id}] 执行步骤 {current_step_no}/{len(steps)}: {stype} (count={count}, interval={interval}ms)")
 
                 # 视觉等待步骤：反复截屏搜索模板，命中才继续
                 if stype in VISION_STEP_TYPES:
@@ -1453,7 +1508,17 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                 idx += 1
                 if idx < len(steps):
                     _interruptible_sleep(interval, stop_event)
+    except _ScriptStopped:
+        logger.info(f"[{device_id}] 脚本被用户停止 at step {current_step_no}")
+        raise
+    except Exception as e:
+        # 报错现场留痕：截当前画面 + 异常堆栈写入本次日志目录
+        logger.exception(f"[{device_id}] 脚本执行报错 at step {current_step_no}: {e}")
+        _capture_error_screen(device_id, log_dir, current_step_no)
+        raise
     finally:
+        logger.info(f"[{device_id}] 脚本执行结束，日志目录: {log_dir}")
+        _detach_script_log_handler(log_handler)
         _script_runs.pop(device_id, None)
         if session is not None:
             release_session(device_id, session)
