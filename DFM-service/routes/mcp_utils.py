@@ -133,8 +133,13 @@ def _conf_mcp_python() -> Optional[str]:
 def _find_mcp_python() -> Optional[str]:
     """
     寻找可用于创建 server venv 的 Python（>= 3.10）。
-    优先级：conf.json 的 MCP_PYTHON_PATH > 常见安装目录自动探测（取最高版本）。
+    优先级：内置运行时（data/runtime/python310，打包自带）> conf.json 的 MCP_PYTHON_PATH > 常见安装目录自动探测（取最高版本）。
     """
+    # 内置便携运行时（随包分发，目标机无需安装 Python）
+    bundled = Path(get_data_path()) / "runtime" / "python310" / "python.exe"
+    if bundled.is_file():
+        return str(bundled)
+
     conf_path = _conf_mcp_python()
     if conf_path:
         return conf_path
