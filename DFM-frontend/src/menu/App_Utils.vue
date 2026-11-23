@@ -721,6 +721,28 @@ const selectDevice = (deviceId: string) => {
   fetchFiles(deviceId, '/sdcard')
 }
 
+// 把 adb install 的原始报错映射成中文说明 + 处理建议；未知错误原样保留
+const INSTALL_ERROR_TIPS: Array<[string, string]> = [
+  ['INSTALL_FAILED_NO_MATCHING_ABIS', '应用与设备 CPU 架构不匹配（APK 缺少设备支持架构的 so 库）：请换用匹配架构的 APK，或更换设备/模拟器'],
+  ['INSTALL_FAILED_INSUFFICIENT_STORAGE', '设备存储空间不足：清理空间后重试'],
+  ['INSTALL_FAILED_VERSION_DOWNGRADE', '待装版本低于已装版本：请先卸载旧版，或安装更高版本'],
+  ['INSTALL_FAILED_SIGNATURE_MISMATCH', '签名与已装版本冲突：请先卸载旧版再安装'],
+  ['INSTALL_PARSE_FAILED_INCONSISTENT_CERTIFICATES', '签名与已装版本冲突：请先卸载旧版再安装'],
+  ['INSTALL_FAILED_UPDATE_INCOMPATIBLE', '与已装版本不兼容：请先卸载旧版再安装'],
+  ['INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE', '权限模型降级冲突：请先卸载旧版再安装'],
+  ['INSTALL_FAILED_TEST_ONLY', 'APK 标记为仅测试（testOnly）：请用 adb install -t 安装，或换正式包'],
+  ['INSTALL_FAILED_USER_RESTRICTED', '设备阻止了安装：请在设备弹窗中确认，或关闭“禁止安装未知来源应用”限制'],
+  ['INSTALL_PARSE_FAILED_NOT_APK', '文件不是有效的 APK：请检查安装包是否完整'],
+  ['INSTALL_FAILED_INVALID_APK', 'APK 文件损坏或格式错误：请重新下载安装包'],
+]
+const formatInstallError = (raw: string): string => {
+  const msg = raw || '未知错误'
+  for (const [code, tip] of INSTALL_ERROR_TIPS) {
+    if (msg.includes(code)) return `${tip}（错误码：${code}）`
+  }
+  return msg
+}
+
 const installApkFile = async (file: File) => {
   if (!selectedDevice.value) return
 
@@ -740,7 +762,7 @@ const installApkFile = async (file: File) => {
       showMessage('应用安装成功')
       fetchApps(selectedDevice.value)
     } else {
-      showMessage('应用安装失败: ' + (response.data.message || '未知错误'))
+      showMessage('应用安装失败: ' + formatInstallError(response.data.message || '未知错误'))
     }
   } catch (error) {
     console.error('安装应用失败:', error)
@@ -860,10 +882,10 @@ const installFromRepo = async (name: string) => {
       showNotification(`${name} 安装成功`, 'success')
       fetchApps(selectedDevice.value)
     } else {
-      showNotification('安装失败: ' + (response.data.message || '未知错误'), 'error')
+      showNotification('安装失败: ' + formatInstallError(response.data.message || '未知错误'), 'error')
     }
   } catch (error: any) {
-    showNotification('安装失败: ' + (error?.response?.data?.message || error.message), 'error')
+    showNotification('安装失败: ' + formatInstallError(error?.response?.data?.message || error.message), 'error')
   }
 }
 
