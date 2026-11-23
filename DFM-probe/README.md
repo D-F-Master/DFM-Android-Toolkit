@@ -121,7 +121,7 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 | `0x0A` | CMD_CAMERA | PC→设备 | `{}` 或 `{"cameraId":"0"}` | 统一信封，`data` 为 `{path,size,cameraId,width,height}` |
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC→设备 | `{}` | 统一信封，`data` 为 `{enabled,started}`（未启用才跳设置页） |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC→设备 | `{}` | 统一信封，`data` 为 `{package,nodeCount,truncated,root}`（节点上限 150） |
-| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC→设备 | `{"id":"","text":"","desc":""}`（至少一项） | 统一信封，`data` 为 `{clicked,id,text,desc}`（匹配节点执行 ACTION_CLICK） |
+| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC→设备 | `{"id":"","text":"","desc":""}`（至少一项） | 统一信封，`data` 为 `{clicked,id,text,desc}`（匹配节点执行 ACTION_CLICK，不可点击时 dispatchGesture 坐标兜底） |
 | `0x80` ~ `0x85`、`0x87` ~ `0x8D` | CMD_RESPONSE | 设备→PC | UTF-8 JSON | 无（通知类，不要求 ACK） |
 | `0xFF` | CMD_ERROR | 设备→PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 无（通知类） |
 
@@ -164,7 +164,8 @@ shell / 截屏 / 拍照（`0x08` / `0x09` / `0x0A`）与无障碍（`0x0B` / `0x
 `0x0B` 检测无障碍服务、未启用时跳转系统设置页（返回 `{enabled, started}`）；`0x0C` 经 `DfmAccessibilityService` 返回
 当前窗口组件树 `{package, nodeCount, truncated, root}`，节点上限 150；`0x0D` 按 `id`（精确）/
 `text`（包含）/ `desc`（包含）匹配节点并直接执行无障碍点击 `ACTION_CLICK`（不走坐标注入，
-命中节点不可点击时向上回溯最近可点击祖先）；未启用无障碍服务时同样会
+命中节点不可点击时向上回溯最近可点击祖先；自身与祖先链均不可点击时经 `dispatchGesture`
+在节点中心坐标派发点击兜底，API 24+，无需 root）；未启用无障碍服务时同样会
 自动拉起设置页并回 `500 accessibility service not enabled`，启用「DFM Probe」后重试即可。
 参数规范见 `接口文档.md`「3.5」~「3.10」。
 

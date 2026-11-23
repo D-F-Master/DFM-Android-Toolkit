@@ -45,7 +45,7 @@
 | `0x0A` | CMD_CAMERA | PC → 设备 | `{}` 或 `{"cameraId":"0"}` | camera2 无预览拍照存设备端，见 `DFM-probe/接口文档.md` |
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe/接口文档.md` |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe/接口文档.md` |
-| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK，见 `DFM-probe/接口文档.md` |
+| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe/接口文档.md` |
 | `0x80` ~ `0x85`、`0x87` ~ `0x8D` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
 | `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
 
