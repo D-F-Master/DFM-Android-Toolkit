@@ -1801,13 +1801,29 @@ watch([scriptShowTree, selectedDevice], () => {
   if (scriptShowTree.value && selectedDevice.value) startScriptTreePolling()
   else stopScriptTreePolling()
 })
-// 解析 "l,t,r,b" 为矩形，非法/零面积返回 null
-const parseTreeBounds = (b: string) => {
+// 解析 "l,t,r,b" 原始物理像素矩形，非法/零面积返回 null
+const parseRawBounds = (b: string) => {
   const m = /^(-?\d+),(-?\d+),(-?\d+),(-?\d+)$/.exec(b || '')
   if (!m) return null
   const left = +m[1], top = +m[2], right = +m[3], bottom = +m[4]
   if (right <= left || bottom <= top) return null
   return { left, top, width: right - left, height: bottom - top }
+}
+// 无障碍树 bounds 是设备物理像素，画布是 scrcpy 按 max_size 等比缩小后的尺寸。
+// 用根节点 bounds（全屏物理宽）推算缩放比，避免高分辨率设备（如 1080x2400 → 576x1280）
+// 的框整体放大、点击命不中；低分辨率设备 scale≈1 不受影响。
+const scriptTreeScale = () => {
+  const rb = scriptTreeInfo.value?.root ? parseRawBounds(scriptTreeInfo.value.root.bounds) : null
+  if (!rb || !scriptMeta.width || rb.width <= 0) return 1
+  const scale = scriptMeta.width / rb.width
+  return scale > 0 && scale < 1 ? scale : 1
+}
+// 解析 "l,t,r,b" 并换算到画布坐标系（物理像素 × scale）
+const parseTreeBounds = (b: string) => {
+  const raw = parseRawBounds(b)
+  if (!raw) return null
+  const s = scriptTreeScale()
+  return { left: raw.left * s, top: raw.top * s, width: raw.width * s, height: raw.height * s }
 }
 // 全树拍平出可绘制的 bounds 矩形列表
 const scriptTreeRects = computed(() => {
@@ -1841,7 +1857,7 @@ const scriptTreeNodeAt = (x: number, y: number) => {
 }
 // 悬停提示：鼠标所在设备坐标 + 命中的组件节点
 const scriptTreeHover = ref<{ x: number; y: number; node: any } | null>(null)
-// 把组件树框叠加画在画面上（画布坐标系即设备分辨率，bounds 1:1 直接绘制）
+// 把组件树框叠加画在画面上（bounds 已在 parseTreeBounds 换算到画布坐标系）
 const scriptDrawTree = (ctx: CanvasRenderingContext2D) => {
   if (!scriptShowTree.value) return
   const rects = scriptTreeRects.value
