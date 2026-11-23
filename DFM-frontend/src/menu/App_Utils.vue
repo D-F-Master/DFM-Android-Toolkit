@@ -1788,6 +1788,34 @@ provide('app-utils', { API_BASE, IMAGE_EXTS, SCRIPT_COMMON_KEYS, TAB_ITEMS, VIDE
     2px 2px 3px rgba(27, 94, 32, 0.45);
 }
 
+/* 文件管理拖入导入：覆盖文件列表卡的局部提示层 */
+:deep(.file-drop-zone) {
+  position: relative;
+}
+:deep(.file-drop-overlay) {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: rgba(46, 125, 50, 0.15);
+  border: 3px dashed #4caf50;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 覆盖层不接收鼠标事件：不干扰 dragleave/drop 的事件序列 */
+  pointer-events: none;
+}
+:deep(.file-drop-overlay-box) {
+  padding: 16px 32px;
+  color: #2e7d32;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-shadow:
+    -1px -1px 2px rgba(255, 255, 255, 0.8),
+    1px 1px 2px rgba(255, 255, 255, 0.8);
+}
+
 :deep(.app-list) {
   max-height: calc(100vh - 140px);
   overflow-y: auto;

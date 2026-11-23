@@ -115,58 +115,80 @@ const openSqliteViewer = (file: { path: string; name: string }) => {
   dbViewerFile.value = { path: file.path, name: file.name }
 }
 
-const importFile = async () => {
+// 逐个上传（adb push 本身串行，进度通知逐个显示），任一失败继续后面的文件；按钮导入与拖拽导入共用
+const uploadFiles = async (picked: File[]) => {
   if (!selectedDevice.value) {
     showMessage('请先选择设备')
     return
   }
+  let okCount = 0
+  const failed: string[] = []
+  const startedAt = Date.now()
+  for (const file of picked) {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('deviceId', selectedDevice.value)
+    formData.append('remotePath', currentPath.value + '/')
 
+    showProgressNotification(`正在导入 ${file.name}（${formatBytes(file.size)}）… ${okCount + 1}/${picked.length}`)
+    try {
+      const response = await axios.post(
+        `${API_BASE.value}/api/device/files/upload`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      )
+      if (response.data.code === 200) {
+        okCount++
+      } else {
+        failed.push(`${file.name}: ${response.data.message || '未知错误'}`)
+      }
+    } catch (error) {
+      console.error('导入文件失败:', error)
+      failed.push(`${file.name}: 网络异常`)
+    }
+  }
+  hideProgressNotification()
+  if (failed.length === 0) {
+    showNotification(`已导入 ${okCount} 个文件，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`)
+  } else {
+    showNotification(`导入完成 ${okCount}/${picked.length}，失败：\n${failed.join('\n')}`, 'error')
+  }
+  fetchFiles(selectedDevice.value, currentPath.value)
+}
+
+const importFile = () => {
   const input = document.createElement('input')
   input.type = 'file'
   input.multiple = true
-
-  input.onchange = async (e: Event) => {
+  input.onchange = (e: Event) => {
     const target = e.target as HTMLInputElement
     const picked = Array.from(target.files || [])
     if (picked.length === 0) return
-
-    // 逐个上传（adb push 本身串行，进度通知逐个显示），任一失败继续后面的文件
-    let okCount = 0
-    const failed: string[] = []
-    const startedAt = Date.now()
-    for (const file of picked) {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('deviceId', selectedDevice.value)
-      formData.append('remotePath', currentPath.value + '/')
-
-      showProgressNotification(`正在导入 ${file.name}（${formatBytes(file.size)}）… ${okCount + 1}/${picked.length}`)
-      try {
-        const response = await axios.post(
-          `${API_BASE.value}/api/device/files/upload`,
-          formData,
-          { headers: { 'Content-Type': 'multipart/form-data' } }
-        )
-        if (response.data.code === 200) {
-          okCount++
-        } else {
-          failed.push(`${file.name}: ${response.data.message || '未知错误'}`)
-        }
-      } catch (error) {
-        console.error('导入文件失败:', error)
-        failed.push(`${file.name}: 网络异常`)
-      }
-    }
-    hideProgressNotification()
-    if (failed.length === 0) {
-      showNotification(`已导入 ${okCount} 个文件，耗时 ${Math.round((Date.now() - startedAt) / 1000)}s`)
-    } else {
-      showNotification(`导入完成 ${okCount}/${picked.length}，失败：\n${failed.join('\n')}`, 'error')
-    }
-    fetchFiles(selectedDevice.value, currentPath.value)
+    uploadFiles(picked)
   }
-
   input.click()
+}
+
+// 文件列表区拖入导入：拖的是文件时高亮提示，松开后走与按钮相同的上传链路
+const fileDragOver = ref(false)
+const onFilesDragOver = (event: DragEvent) => {
+  const types = event.dataTransfer?.types
+  if (!types || !Array.from(types).includes('Files')) return
+  fileDragOver.value = true
+}
+const onFilesDragLeave = (event: DragEvent) => {
+  // 移到子元素也触发父级 dragleave，relatedTarget 仍在容器内不算真正离开
+  const el = event.currentTarget as HTMLElement
+  if (event.relatedTarget && el.contains(event.relatedTarget as Node)) return
+  fileDragOver.value = false
+}
+const onFilesDrop = async (event: DragEvent) => {
+  fileDragOver.value = false
+  // 阻止冒泡到全局 onApkDrop（文件页它不会安装，但避免无谓触发）
+  event.stopPropagation()
+  const picked = Array.from(event.dataTransfer?.files || [])
+  if (picked.length === 0) return
+  await uploadFiles(picked)
 }
 
 // ==================== 文本文件在线编辑 ====================
@@ -568,7 +590,13 @@ const pasteCopiedFiles = async () => {
                     <span class="file-path-text">{{ currentPath }}</span>
                     <button class="card-action-btn" @click="navigateTo('/sdcard')">根目录</button>
                   </div>
-                  <div class="card-body" style="padding: 0;">
+                  <div class="card-body file-drop-zone" style="padding: 0;"
+                       @dragover.prevent="onFilesDragOver"
+                       @dragleave="onFilesDragLeave"
+                       @drop.prevent.stop="onFilesDrop">
+                    <div v-if="fileDragOver" class="file-drop-overlay">
+                      <div class="file-drop-overlay-box">松开鼠标导入到当前目录</div>
+                    </div>
                     <div class="file-toolbar">
                       <span class="file-batch-info">{{ selectedFileCount > 0 ? '已选中 ' + selectedFileCount + ' 项' : '未选中' }}</span>
                       <button class="toolbar-btn" @click="fetchFiles(selectedDevice, currentPath)" title="刷新">
