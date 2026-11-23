@@ -151,6 +151,7 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'reboot', label: '重启设备', icon: '🔄' },
   { type: 'tts', label: 'TTS语音', icon: '🗣️' },
   { type: 'accClick', label: '无障碍点击', icon: '🎯' },
+  { type: 'runScript', label: '执行脚本', icon: '🧩' },
 ]
 
 // 手势类步骤（手动添加：坐标默认屏幕中心，开启「显示步骤」后在画面上拖动标记调整）
@@ -180,7 +181,16 @@ const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
   { action: 'goto', label: '跳到第 N 步' },
   { action: 'stop', label: '终止脚本' },
   { action: 'fail', label: '判定失败' },
+  { action: 'runScript', label: '执行脚本' },
+  // 执行左边功能区的某个步骤功能（把该功能当作分支命中后的单步执行）
+  ...SCRIPT_GESTURE_STEPS.map((g: any) => ({ action: g.type, label: `执行·${g.label}` })),
+  ...SCRIPT_ADB_STEPS.map((a: any) => ({ action: a.type, label: `执行·${a.label}` })),
+  { action: 'waitFor', label: '执行·等待组件(选图)' },
+  { action: 'condition', label: '执行·判断步骤' },
 ]
+
+// 分支动作是否需要展示嵌套脚本下拉（仅 runScript）
+const branchActionNeedsScript = (branch: any): boolean => branch?.action === 'runScript'
 
 const scriptConditionDefaults = (kind: string): Record<string, any> => {
   switch (kind) {
@@ -212,6 +222,10 @@ const scriptGotoTargets = (idx: number): number[] => {
 const onScriptBranchActionChange = (branch: any, idx: number) => {
   if (branch.action === 'goto') branch.target = idx + 2
   else delete branch.target
+  if (branch.action === 'runScript') {
+    branch.script = branch.script || ''
+    if (scriptSavedOptions.value.length === 0) fetchSavedScriptOptions()
+  }
 }
 
 // 已上传的 APK 列表（安装APK步骤的下拉数据源）
@@ -268,6 +282,32 @@ const fetchScriptTemplates = async () => {
   }
 }
 
+// 已保存脚本列表（执行脚本步骤与分支动作 runScript 的下拉数据源）
+const scriptSavedOptions = ref<Array<{ value: string; label: string; desc: string }>>([])
+const scriptSavedLoading = ref(false)
+
+const fetchSavedScriptOptions = async () => {
+  scriptSavedLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/device/script/list`)
+    if (res.data.code === 200) {
+      const scripts = res.data.data || []
+      // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
+      scriptSavedOptions.value = scripts
+        .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
+        .map((s: any) => ({
+          value: s.name,
+          label: s.name,
+          desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+        }))
+    }
+  } catch {
+    /* 脚本列表拉取失败不阻断脚本编辑 */
+  } finally {
+    scriptSavedLoading.value = false
+  }
+}
+
 // 等待组件步骤展开时，预览当前已选中的模板图
 const scriptTemplatePreview = ref('')
 let scriptTemplatePreviewSeq = 0
@@ -304,6 +344,7 @@ const scriptAdbStepDefaults = (type: string): Record<string, any> => {
     case 'volume': return { action: 'up', stream: 'media' }
     case 'tts': return { text: '' }
     case 'accClick': return { id: '', text: '', desc: '' }
+    case 'runScript': return { script: '', repeat: 1 }
     default: return {}
   }
 }
@@ -1197,7 +1238,7 @@ const addScriptStep = (step: any) => {
   showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
 }
 
-// 添加设备动作类步骤（安装APK/删除文件夹/应用管理/按键/音量/重启）
+// 添加设备动作类步骤（安装APK/删除文件夹/应用管理/按键/音量/重启/执行脚本）
 const addScriptAdbStep = (type: string) => {
   if (type === 'installApk' && scriptApkOptions.value.length === 0) {
     fetchScriptApks()
@@ -1206,12 +1247,19 @@ const addScriptAdbStep = (type: string) => {
   if (type === 'startApp' || type === 'stopApp' || type === 'uninstallApp') {
     fetchScriptApps()
   }
+  // 执行脚本步骤用已保存脚本列表做下拉
+  if (type === 'runScript') {
+    fetchSavedScriptOptions()
+  }
   addScriptStep({
     type,
     ...scriptAdbStepDefaults(type),
     interval: 500,
     count: 1,
   })
+  if (type === 'runScript') {
+    scriptEditingStep.value = scriptSteps.value.length - 1
+  }
 }
 
 // 手动添加手势步骤（点击/长按/滑动/输入文本）：字段与录制生成的步骤一致
@@ -1958,6 +2006,12 @@ onUnmounted(() => {
                             title="按应用/组件/Shell 输出/设备时刻判断，并按成立与否跳转"
                             @click="addScriptConditionStep"
                           >🧭 判断步骤</button>
+                          <button
+                            class="script-add-btn"
+                            :disabled="scriptRunning"
+                            title="新增执行脚本步骤：运行中嵌套执行另一个已保存的脚本"
+                            @click="addScriptAdbStep('runScript')"
+                          >🧩 执行脚本</button>
                         </div>
                       </div>
                     </div>
@@ -2122,6 +2176,12 @@ onUnmounted(() => {
                                   <el-option v-for="n in scriptGotoTargets(idx)" :key="n" :value="n" :label="`第 ${n} 步：${scriptStepLabel(scriptSteps[n - 1])}`" />
                                 </el-select>
                               </div>
+                              <div v-if="branchActionNeedsScript(step.onTrue)" class="script-config-row">
+                                <span>目标脚本</span>
+                                <el-select v-model="step.onTrue.script" class="ep-config-select" placeholder="选择已保存的脚本" :loading="scriptSavedLoading" filterable>
+                                  <el-option v-for="s in scriptSavedOptions" :key="s.value" :value="s.value" :label="s.label" />
+                                </el-select>
+                              </div>
                               <div class="script-config-row">
                                 <span>不成立时</span>
                                 <el-select v-model="step.onFalse.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onFalse, idx)">
@@ -2138,6 +2198,12 @@ onUnmounted(() => {
                                 <span>跳到</span>
                                 <el-select v-model="step.onFalse.target" class="ep-config-select" placeholder="选择目标步骤">
                                   <el-option v-for="n in scriptGotoTargets(idx)" :key="n" :value="n" :label="`第 ${n} 步：${scriptStepLabel(scriptSteps[n - 1])}`" />
+                                </el-select>
+                              </div>
+                              <div v-if="branchActionNeedsScript(step.onFalse)" class="script-config-row">
+                                <span>目标脚本</span>
+                                <el-select v-model="step.onFalse.script" class="ep-config-select" placeholder="选择已保存的脚本" :loading="scriptSavedLoading" filterable>
+                                  <el-option v-for="s in scriptSavedOptions" :key="s.value" :value="s.value" :label="s.label" />
                                 </el-select>
                               </div>
                             </template>
@@ -2212,6 +2278,16 @@ onUnmounted(() => {
                               <span>描述 desc</span>
                               <el-input v-model="step.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
                             </div>
+                            <div v-if="step.type === 'runScript'" class="script-config-row">
+                              <span>目标脚本</span>
+                              <el-select v-model="step.script" class="ep-config-select" placeholder="选择已保存的脚本" :loading="scriptSavedLoading" filterable>
+                                <el-option v-for="s in scriptSavedOptions" :key="s.value" :value="s.value" :label="s.label" />
+                              </el-select>
+                            </div>
+                            <div v-if="step.type === 'runScript'" class="script-config-row">
+                              <span>执行轮数</span>
+                              <el-input-number v-model="step.repeat" class="ep-config-num" :min="1" :max="99" controls-position="right" />
+                            </div>
                             <div class="script-config-row">
                               <span>{{ step.type === 'condition' ? '轮询/步间(ms)' : '执行间隔(ms)' }}</span>
                               <el-input-number v-model="step.interval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
@@ -2227,13 +2303,16 @@ onUnmounted(() => {
                               反复截屏搜索模板，组件出现才继续下一步；超时未出现判失败
                             </div>
                             <div v-else-if="step.type === 'condition'" class="script-config-hint">
-                              单次判断后按「成立/不成立」分支；时间条件读取一次设备时钟后在本地等待到点（不再轮询，当天目标时刻已过则立即成立）；无障碍点击条件 = 在无障碍树中找到匹配节点并点击，点到了即成立（需设备已启用无障碍权限）；跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
+                              单次判断后按「成立/不成立」分支；分支可执行任意左侧功能（执行·开头的项会执行该功能一步）、执行脚本（嵌套跑完整个脚本再继续）或跳转；时间条件读取一次设备时钟后在本地等待到点（不再轮询，当天目标时刻已过则立即成立）；无障碍点击条件 = 在无障碍树中找到匹配节点并点击，点到了即成立（需设备已启用无障碍权限）；跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
                             </div>
                             <div v-else-if="step.type === 'tts'" class="script-config-hint">
                               通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒
                             </div>
                             <div v-else-if="step.type === 'accClick'" class="script-config-hint">
                               经探针 0x0D 在无障碍组件树中按 id/text/desc 匹配节点并直接执行无障碍点击（ACTION_CLICK）；至少填一项，多项同时满足才命中；需设备已启用无障碍权限
+                            </div>
+                            <div v-else-if="step.type === 'runScript'" class="script-config-hint">
+                              嵌套执行另一个已保存的脚本：按顺序跑完其全部步骤后继续；嵌套深度最多 3 层，执行中点「停止」会同时停止子脚本
                             </div>
                             <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
                               设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置

@@ -265,6 +265,7 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
   if (step.type === 'reboot') return '重启设备'
   if (step.type === 'tts') return `语音「${step.text ?? ''}」`
+  if (step.type === 'runScript') return `执行脚本 ${step.script || '（未选择）'}${step.repeat && step.repeat > 1 ? ` ×${step.repeat} 轮` : ''}`
   if (step.type === 'accClick') {
     const parts = [
       step.id ? `id=${step.id}` : '',
