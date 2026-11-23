@@ -73,8 +73,8 @@ const scriptRunning = ref(false)
 // 每类操作的默认配置（录制时快照进步骤）
 const scriptRepeat = ref(1)
 const scriptSaving = ref(false)
-// 执行结束邮件通知：独立于步骤序列，仅由功能区「通知」分类控制
-const scriptNotifyEnabled = ref(true)
+// 执行结束邮件通知：独立于步骤序列，由右侧列表的「通知」分类控制（添加后才启用）
+const scriptNotifyAdded = ref(false)
 const scriptNotifyEmail = ref('dfm_mail_service@163.com')
 
 let scriptDecoder: VideoDecoder | null = null
@@ -1446,27 +1446,10 @@ const saveScript = async () => {
 
 // 把已载入的步骤应用到当前脚本面板
 const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
-  scriptSteps.value = steps.map((s: any) => ({
-    type: s.type,
-    x1: s.x1,
-    y1: s.y1,
-    x2: s.x2,
-    y2: s.y2,
-    duration: s.duration,
-    text: s.text,
-    apkName: s.apkName,
-    path: s.path,
-    packageName: s.packageName,
-    activity: s.activity,
-    keycode: s.keycode,
-    action: s.action,
-    stream: s.stream,
-    template: s.template,
-    threshold: s.threshold,
-    timeout: s.timeout,
-    interval: s.interval ?? 0,
-    count: s.count ?? 1,
-  }))
+  // 后端 load 返回的 steps 已经过 _normalize_steps 标准化，这里整对象透传即可。
+  // 之前用字段白名单逐字段拷贝，漏掉了 accClick 的 id/desc/x/y、condition 的
+  // kind/onTrue/onFalse、runScript 的 script/repeat 等，导致导入后这些属性消失。
+  scriptSteps.value = steps.map((s: any) => ({ ...s }))
   scriptRepeat.value = repeat
   showNotification(`已导入脚本「${name}」，共 ${steps.length} 个步骤`, 'success')
 }
@@ -1621,9 +1604,19 @@ const openImportMenu = () => {
   )
 }
 
+// 添加一个独立的邮箱通知分类（不在执行脚本步骤序列里）
+const addScriptNotify = () => {
+  if (scriptNotifyAdded.value) return
+  scriptNotifyAdded.value = true
+  showNotification('已在列表新增「通知」分类', 'success')
+}
+const removeScriptNotify = () => {
+  scriptNotifyAdded.value = false
+}
+
 // 执行结果邮件通知：通知分类独立于步骤序列，执行结束后自动发信告知成败
 const sendRunNotify = async (subject: string, body: string) => {
-  if (!scriptNotifyEnabled.value || !scriptNotifyEmail.value.trim()) return
+  if (!scriptNotifyAdded.value || !scriptNotifyEmail.value.trim()) return
   try {
     await axios.post(`${API_BASE.value}/api/notify/email`, {
       to: [scriptNotifyEmail.value.trim()],
@@ -2042,13 +2035,12 @@ onUnmounted(() => {
                         </div>
                         <div class="script-add-row">
                           <span class="script-add-label">通知</span>
-                          <el-switch v-model="scriptNotifyEnabled" :disabled="scriptRunning" />
-                          <el-input
-                            v-model="scriptNotifyEmail"
-                            class="ep-config-input"
-                            placeholder="收件邮箱"
-                            :disabled="scriptRunning || !scriptNotifyEnabled"
-                          />
+                          <button
+                            class="script-add-btn"
+                            :disabled="scriptRunning"
+                            title="在右侧列表新增独立的通知分类，执行结束后发送结果邮件"
+                            @click="addScriptNotify"
+                          >✉ 邮箱通知</button>
                         </div>
                       </div>
                     </div>
@@ -2062,7 +2054,7 @@ onUnmounted(() => {
                               <div class="script-help-content">{{ SCRIPT_VARIABLE_HELP }}</div>
                             </template>
                             <span class="script-help-icon">i</span>
-                          </el-tooltip>脚本步骤（{{ scriptSteps.length }}）</span>
+                          </el-tooltip>执行脚本（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
                           <button
                             class="script-mini-btn"
@@ -2360,6 +2352,24 @@ onUnmounted(() => {
                           </div>
                           </div>
                       </div>
+
+                      <!-- 通知分类：独立于执行脚本步骤列表，点击功能区「邮箱通知」后新增 -->
+                      <div v-if="scriptNotifyAdded" class="script-notify-section">
+                        <div class="script-notify-header">
+                          <span>通知</span>
+                          <button class="script-mini-btn" title="移除通知分类" @click="removeScriptNotify">移除</button>
+                        </div>
+                        <div class="script-notify-item">
+                          <span>✉ 邮箱通知</span>
+                          <el-input
+                            v-model="scriptNotifyEmail"
+                            class="ep-config-input"
+                            placeholder="收件邮箱"
+                            :disabled="scriptRunning"
+                          />
+                        </div>
+                      </div>
+
                       <div class="script-actions">
                         <button class="script-action-btn" @click="saveScript" :disabled="scriptSaving">保存</button>
                         <button class="script-action-btn" @click="runCurrentSteps" :disabled="scriptRunning || scriptSaving">执行</button>

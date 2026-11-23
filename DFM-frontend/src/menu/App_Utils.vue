@@ -3565,6 +3565,33 @@ button.batch-remote-tile-tag.active,
   color: #c62828;
 }
 
+:deep(.script-notify-section) {
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+:deep(.script-notify-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+:deep(.script-notify-item) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #666;
+}
+
 :deep(.script-actions) {
   display: flex;
   gap: 8px;
