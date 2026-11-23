@@ -842,6 +842,13 @@ let scriptReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let scriptReconnectAttempts = 0
 let scriptManualStop = false
 
+// 离开脚本页后保留屏幕预览长连接，5 分钟内切回直接复用；超时才断开
+const SCRIPT_STREAM_IDLE_MS = 5 * 60 * 1000
+let scriptIdleTimer: ReturnType<typeof setTimeout> | null = null
+const cancelScriptIdleTimer = () => {
+  if (scriptIdleTimer) { clearTimeout(scriptIdleTimer); scriptIdleTimer = null }
+}
+
 const scheduleScriptReconnect = () => {
   if (scriptReconnectTimer) return
   const delay = Math.min(1000 * Math.pow(2, scriptReconnectAttempts), 15000)
@@ -854,7 +861,8 @@ const scheduleScriptReconnect = () => {
 }
 
 const stopScriptStream = () => {
-  // 主动停流：抑制自动重连
+  // 主动停流：抑制自动重连（同时取消离开 Tab 的空闲断连计时）
+  cancelScriptIdleTimer()
   scriptManualStop = true
   if (scriptReconnectTimer) { clearTimeout(scriptReconnectTimer); scriptReconnectTimer = null }
   if (scriptWs.value) {
@@ -876,10 +884,20 @@ const stopScriptStream = () => {
   scriptReleaseKeyboard()
 }
 
-// 主动启动入口：清除手动停止标记
+// 主动启动入口：清除手动停止标记、取消空闲断连计时
 const beginScriptStream = () => {
+  cancelScriptIdleTimer()
   scriptManualStop = false
   startScriptStream()
+}
+
+// 离开脚本页：不立即断开，改为 5 分钟后空闲断连；期间切回由 activeTab watch 取消计时并复用连接
+const scheduleScriptIdleClose = () => {
+  cancelScriptIdleTimer()
+  scriptIdleTimer = setTimeout(() => {
+    scriptIdleTimer = null
+    stopScriptStream()
+  }, SCRIPT_STREAM_IDLE_MS)
 }
 
 // ---------- 半开 TCP 检测：流"活着"但 10 秒没有任何数据 → 强制断开触发重连 ----------
@@ -915,19 +933,22 @@ const scriptOnVisibilityChange = () => {
   }
 }
 
-// 进入/离开 Tab 时开关屏幕流
+// 进入/离开 Tab 时开关屏幕流（离开不立即断连，保留 5 分钟供切回复用）
 watch(activeTab, async (tab) => {
   if (tab === 'script') {
+    cancelScriptIdleTimer()
     await nextTick()
     startStallWatch()
-    if (selectedDevice.value) beginScriptStream()
+    // 连接仍开着就直接复用，避免每次切回都重连；已断开（含半开被清理后）才重新建连
+    if (selectedDevice.value && (!scriptWs.value || scriptWs.value.readyState !== WebSocket.OPEN)) beginScriptStream()
     // 进入脚本页时准备安装APK / 等待组件 / 应用下拉的数据
     if (scriptApkOptions.value.length === 0) fetchScriptApks()
     fetchScriptTemplates()
     fetchScriptApps()
   } else {
-    stopScriptStream()
-    stopStallWatch()
+    // 保留 stall watch 守护这条长连接：后端 session 死掉时仍能强断，
+    // 避免切回时复用到半开连接而卡死
+    scheduleScriptIdleClose()
   }
 })
 
@@ -1926,7 +1947,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', scriptOnKeyDown)
   document.removeEventListener('pointerdown', scriptOnDocPointerDown, true)
   document.removeEventListener('visibilitychange', scriptOnVisibilityChange)
-  scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; stopScriptStream(); stopStallWatch(); stopScriptTreePolling()
+  scriptPreviewObserver?.disconnect(); scriptPreviewObserver = null; cancelScriptIdleTimer(); stopScriptStream(); stopStallWatch(); stopScriptTreePolling()
 })
 
 </script>
