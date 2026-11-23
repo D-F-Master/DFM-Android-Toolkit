@@ -1139,10 +1139,18 @@ public class ProbeService extends Service {
         }
         boolean clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
         if (!clicked) {
-            return fail(500, "节点不支持 ACTION_CLICK（clickable=false）");
+            // 节点存在但不可点击（如纯展示 TextView）：无障碍手势在屏幕坐标中心派发点击兜底（API 24+，无需 root）
+            Rect r = new Rect();
+            target.getBoundsInScreen(r);
+            float cx = (r.left + r.right) / 2f;
+            float cy = (r.top + r.bottom) / 2f;
+            clicked = svc.dispatchTap(cx, cy);
+            if (!clicked) {
+                return fail(500, "节点不支持 ACTION_CLICK 且手势派发失败（clickable=false, dispatchGesture=false）");
+            }
         }
         JSONObject data = new JSONObject();
-        data.put("clicked", true);
+        data.put("clicked", clicked);
         data.put("id", id);
         data.put("text", text);
         data.put("desc", desc);
@@ -1169,7 +1177,8 @@ public class ProbeService extends Service {
                 p.recycle();
                 p = next;
             }
-            return null;
+            // 自身与祖先链都不可点击：返回匹配节点本身，由外层按其坐标 tap 兜底
+            return node;
         }
         // 同节点匹配失败但填了 id：尝试祖先组合匹配（id 由带相同 text/desc 的祖先提供）
         if (!id.isEmpty()) {
@@ -1187,8 +1196,8 @@ public class ProbeService extends Service {
                     p.recycle();
                     p = next;
                 }
-                ancestor.recycle();
-                return null;
+                // 祖先链不可点击：返回祖先本身（id+text/desc 命中处），由外层按坐标 tap 兜底
+                return ancestor;
             }
         }
         for (int i = 0; i < node.getChildCount(); i++) {

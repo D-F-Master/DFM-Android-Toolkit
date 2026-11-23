@@ -1,6 +1,9 @@
 package com.dfm.probe;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
+import android.graphics.Path;
+import android.os.Build;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
@@ -41,5 +44,23 @@ public class DfmAccessibilityService extends AccessibilityService {
     @Override
     public void onInterrupt() {
         // 空实现
+    }
+
+    /**
+     * 在屏幕坐标 (x, y) 派发一次点击手势（dispatchGesture，API 24+）。
+     * 用于 ACTION_CLICK 不生效时（节点不可点击/纯展示控件）的坐标点击兜底，无需 root。
+     *
+     * @return 派发是否被系统受理（受理≠保证点击生效，但为无障碍服务能做的最大努力）
+     */
+    boolean dispatchTap(float x, float y) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            Log.w(TAG, "dispatchTap requires API 24+, current " + Build.VERSION.SDK_INT);
+            return false;
+        }
+        Path p = new Path();
+        p.moveTo(x, y);
+        GestureDescription.Builder builder = new GestureDescription.Builder();
+        builder.addStroke(new GestureDescription.StrokeDescription(p, 0, 1));
+        return dispatchGesture(builder.build(), null, null);
     }
 }
