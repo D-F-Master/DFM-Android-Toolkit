@@ -32,6 +32,7 @@ from routes.jar_diff import router as jar_diff_router
 from routes.jar_edit import router as jar_edit_router
 from routes.sqlite_utils import router as sqlite_router
 from routes.mcp_utils import router as mcp_router
+from routes.notify import router as notify_router
 
 app.include_router(adb_router)
 app.include_router(port_router)
@@ -43,6 +44,7 @@ app.include_router(jar_diff_router)
 app.include_router(jar_edit_router)
 app.include_router(sqlite_router)
 app.include_router(mcp_router)
+app.include_router(notify_router)
 
 
 app.include_router(remote_ws_router)
