@@ -728,12 +728,14 @@ const installApkFile = async (file: File) => {
   formData.append('apk', file)
   formData.append('deviceId', selectedDevice.value)
 
+  showProgressNotification(`正在安装 ${file.name}，请稍候...`)
   try {
     const response = await axios.post(
       `${API_BASE.value}/api/device/app/install`,
       formData,
       { headers: { 'Content-Type': 'multipart/form-data' } }
     )
+    hideProgressNotification()
     if (response.data.code === 200) {
       showMessage('应用安装成功')
       fetchApps(selectedDevice.value)
@@ -742,6 +744,7 @@ const installApkFile = async (file: File) => {
     }
   } catch (error) {
     console.error('安装应用失败:', error)
+    hideProgressNotification()
     showMessage('安装应用失败')
   }
 }
