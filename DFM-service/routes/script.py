@@ -186,15 +186,16 @@ INJECT_STEP_TYPES = ("tap", "swipe", "longpress", "input")
 # 设备动作类步骤：走 adb 命令或探针帧（不依赖 scrcpy 会话）
 ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
-    "keyevent", "volume", "reboot", "tts", "accClick",
+    "keyevent", "volume", "reboot", "tts", "accClick", "runScript",
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
 # 判断步骤：求一次条件，按真/假分支动作决定下一步
 CONDITION_STEP_TYPES = ("condition",)
 CONDITION_KINDS = ("appInstalled", "template", "shell", "time", "accClick")
-BRANCH_ACTIONS = ("continue", "goto", "stop", "fail")
+BRANCH_ACTIONS = ("continue", "goto", "stop", "fail", "runScript")
 MAX_SCRIPT_JUMPS = 100  # 每轮脚本的跳转次数上限，防止分支构成死循环
+MAX_NESTED_SCRIPT_DEPTH = 3  # 嵌套执行脚本（runScript）的最大深度，防递归套娃
 VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES + VISION_STEP_TYPES + CONDITION_STEP_TYPES
 
 
@@ -357,6 +358,24 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
                 return f"第 {idx} 步的无障碍点击需填写 id/text/desc 至少一项匹配条件"
         return ""
 
+    if step_type == "runScript":
+        # 嵌套执行脚本：脚本名必填、禁路径分隔符、文件必须存在、禁止自己套自己
+        sub_name = str(step.get("script", "")).strip()
+        if not sub_name:
+            return f"第 {idx} 步未选择要执行的脚本"
+        if "/" in sub_name or "\\" in sub_name or ".." in sub_name:
+            return f"第 {idx} 步的嵌套脚本名不能包含路径分隔符"
+        try:
+            sub_repeat = int(step.get("repeat", 1))
+        except (TypeError, ValueError):
+            return f"第 {idx} 步的嵌套脚本执行次数无效"
+        if not (1 <= sub_repeat <= 99):
+            return f"第 {idx} 步的嵌套脚本执行次数需在 1-99 之间"
+        _ensure_scripts_dir()
+        if not (SCRIPTS_DIR / f"{_safe_name(sub_name)}.json").exists():
+            return f"第 {idx} 步的嵌套脚本 {sub_name} 不存在，请先保存"
+        return ""
+
     return ""
 
 
@@ -385,12 +404,19 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
         if not isinstance(branch, dict):
             return f"第 {idx} 步的 {label} 必须是对象"
         action = branch.get("action", "continue")
-        if action not in BRANCH_ACTIONS:
-            return f"第 {idx} 步的 {label} 动作无效: {action}（应为 {'/'.join(BRANCH_ACTIONS)}）"
+        # 分支动作两类：控制流（continue/goto/stop/fail/runScript）或直接执行某个步骤功能（VALID_STEP_TYPES）
+        if action not in BRANCH_ACTIONS and action not in VALID_STEP_TYPES:
+            return f"第 {idx} 步的 {label} 动作无效: {action}（应为 {'/'.join(BRANCH_ACTIONS)} 或某个步骤功能）"
         if action == "goto":
             target = branch.get("target")
             if not isinstance(target, int) or isinstance(target, bool) or not (idx < target <= total):
                 return f"第 {idx} 步的 {label} 跳转目标必须是第 {idx + 1}-{total} 步之间的序号"
+        if action == "runScript":
+            name = str(branch.get("script", "")).strip()
+            if not name:
+                return f"第 {idx} 步的 {label} 选择执行脚本，但未指定目标脚本"
+            if "/" in name or "\\" in name or ".." in name:
+                return f"第 {idx} 步的 {label} 目标脚本名不能包含路径分隔符"
 
     if kind == "appInstalled":
         pkg = str(step.get("packageName", "")).strip()
@@ -445,16 +471,39 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
             if len(value) > 200:
                 return f"第 {idx} 步的无障碍点击条件 {label} 过长（≤200 字符）"
 
+    # 分支动作 = runScript 时：必须指定嵌套脚本名，且脚本文件存在
+    for label in ("onTrue", "onFalse"):
+        branch = step.get(label) or {}
+        if branch.get("action") == "runScript":
+            sub_name = str(branch.get("script", "")).strip()
+            if not sub_name:
+                return f"第 {idx} 步的 {label} 动作是执行脚本，但未选择脚本"
+            if "/" in sub_name or "\\" in sub_name or ".." in sub_name:
+                return f"第 {idx} 步的 {label} 嵌套脚本名不能包含路径分隔符"
+
     return ""
 
 
 def _normalize_branch(branch) -> dict:
-    """分支动作归一化：非 goto 不带 target，避免脏字段落盘"""
+    """
+    分支动作归一化：
+    - goto 带 target；runScript 带 script；
+    - action=某个步骤功能（VALID_STEP_TYPES）时透传该功能的参数字段
+      （text/id/desc/packageName/keycode/path/apkName/threshold/template/command/expected 等），
+      供 _run_branch_step 构造临时步骤用；
+    - 纯控制流（continue/stop/fail）不带参数，避免脏字段落盘。
+    """
     if not isinstance(branch, dict):
         return {"action": "continue"}
     action = branch.get("action", "continue")
     if action == "goto":
         return {"action": "goto", "target": int(branch.get("target", 0))}
+    if action == "runScript":
+        return {"action": "runScript", "script": str(branch.get("script", "")).strip()}
+    if action in VALID_STEP_TYPES:
+        keep = {k: v for k, v in branch.items() if k not in ("action", "target")}
+        keep["action"] = action
+        return keep
     return {"action": action}
 
 
@@ -492,6 +541,9 @@ def _normalize_steps(steps) -> List[dict]:
             for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc", "x", "y"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
+            if step["type"] == "runScript":
+                item["script"] = str(step.get("script", "")).strip()
+                item["repeat"] = max(1, min(99, int(step.get("repeat", 1) or 1)))
             normalized.append(item)
             continue
         # 判断步骤：只保留已校验过的条件与分支字段
@@ -919,6 +971,54 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
         return {"code": 500, "message": f"导入脚本包失败: {str(e)}", "data": None}
 
 
+def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w: int, h: int, round_no: int):
+    """
+    判断分支动作=执行某个步骤功能（需求③：分支可选左边功能区的全部功能）。
+
+    把分支对象当作一个临时步骤执行，按类型分流：
+    - ADB 类（手势外的设备动作，含 runScript 嵌套）→ _exec_adb_step
+    - waitFor → _exec_wait_step；condition → _eval_condition（其分支动作在此忽略，防套娃）
+    - 手势类（tap/longpress/swipe/input）需要 scrcpy 会话，由调用方持有 session，
+      这里仅支持无会话的类别；分支选手势时直接按 ADB 思路走 input tap 坐标兜底不可行，
+      故抛错提示改用普通步骤（分支含会话注入不在本版支持范围）。
+    """
+    # 构造临时步骤：分支里除 action/target 外的字段都透传（script/id/text/desc/packageName 等）
+    step = {k: v for k, v in branch.items() if k not in ("action", "target")}
+    step["type"] = action
+    # ADB 类分支步骤默认执行一次
+    step.setdefault("interval", 0)
+    step.setdefault("count", 1)
+
+    if action in ADB_STEP_TYPES:
+        _exec_adb_step(
+            device_id,
+            {**step, "_base_w": int(script.get("videoWidth") or 0), "_base_h": int(script.get("videoHeight") or 0),
+             "_screen_w": w, "_screen_h": h},
+            1,
+            round_no,
+        )
+        return
+
+    if action in VISION_STEP_TYPES:
+        base_w = int(script.get("videoWidth") or 0) or w
+        base_h = int(script.get("videoHeight") or 0) or h
+        _exec_wait_step(device_id, step, base_w, base_h)
+        return
+
+    if action in CONDITION_STEP_TYPES:
+        # 分支动作=再嵌一个判断步骤：允许，但为防递归套娃其分支动作忽略（按 continue 处理）
+        base_w = int(script.get("videoWidth") or 0) or w
+        base_h = int(script.get("videoHeight") or 0) or h
+        ok, reason = _eval_condition(device_id, step, base_w, base_h)
+        if not ok:
+            logger.warning(f"[{device_id}] 分支嵌套判断未成立（忽略其分支动作）: {reason}")
+        return
+
+    # 手势类需要 scrcpy 控制会话；分支动作运行时由 _run_script_on_device 持有会话
+    # 时不便传递，本版不支持（前端下拉也不提供），到这里说明数据被手工改过
+    raise RuntimeError(f"判断分支不支持直接执行手势类功能: {action}（请改用普通步骤）")
+
+
 def _check_device_online(device_id: str) -> bool:
     result = execute_adb_command("adb devices")
     if result["success"]:
@@ -933,6 +1033,53 @@ def _check_package_installed(device_id: str, pkg: str) -> bool:
     """检查设备上是否安装了指定包（pm path 对不存在的包返回空输出且 exit 1）"""
     result = execute_adb_command(f'adb -s {device_id} shell pm path "{pkg}"', timeout=30)
     return bool(result["success"] and (result.get("stdout") or "").strip())
+
+
+# 嵌套执行脚本（runScript）的当前深度：同一执行线程内传递（asyncio/线程池下互不干扰）
+_script_nest_depth = threading.local()
+
+
+def _exec_run_script_step(device_id: str, step: dict):
+    """
+    执行 runScript 步骤：加载嵌套脚本并同步跑完（阻塞）。
+
+    复用 _run_script_on_device 引擎：注入类子步骤会临时 acquire 共享会话
+    （引用计数，父脚本已持有则直接复用，不重复起 scrcpy server）；子脚本
+    继承父脚本的停止标志——用户点停止时父/子一起停。深度超过
+    MAX_NESTED_SCRIPT_DEPTH 直接报错，防止 A 套 B、B 又套 A 的递归套娃。
+    """
+    name = str(step.get("script", "")).strip()
+    sub_repeat = max(1, min(99, int(step.get("repeat", 1) or 1)))
+    if not name:
+        raise RuntimeError("嵌套执行脚本未指定脚本名")
+
+    depth = getattr(_script_nest_depth, "value", 0)
+    if depth >= MAX_NESTED_SCRIPT_DEPTH:
+        raise RuntimeError(f"嵌套执行脚本深度超过上限 {MAX_NESTED_SCRIPT_DEPTH}，请检查是否存在递归嵌套")
+
+    _ensure_scripts_dir()
+    path = SCRIPTS_DIR / f"{_safe_name(name)}.json"
+    if not path.exists():
+        raise RuntimeError(f"嵌套脚本 {name} 不存在，请先保存")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            sub_script = json.load(f)
+    except Exception as e:
+        raise RuntimeError(f"读取嵌套脚本 {name} 失败: {str(e)}")
+
+    sub_steps = sub_script.get("steps") or []
+    if not sub_steps:
+        raise RuntimeError(f"嵌套脚本 {name} 没有步骤，无法执行")
+
+    _script_nest_depth.value = depth + 1
+    # 继承父脚本的停止标志：用户点停止时父/子一起停（_run_script_on_device
+    # 检测到 _script_nest_depth.stop_event 即为嵌套模式，复用执行槽不重复占）
+    _script_nest_depth.stop_event = getattr(_script_nest_depth, "stop_event", None) or _script_runs.get(device_id)
+    try:
+        logger.info(f"[{device_id}] runScript step: 嵌套执行「{name}」repeat={sub_repeat} (depth={depth + 1})")
+        _run_script_on_device(device_id, {**sub_script, "name": name}, sub_repeat)
+    finally:
+        _script_nest_depth.value = depth
 
 
 def _resolve_step_text(text: str, seq: int, round_no: int) -> str:
@@ -1127,6 +1274,11 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
                     )
                 else:
                     raise RuntimeError(f"无障碍点击失败: {_last_message}；该步骤未录制点击坐标，无法兜底")
+
+        elif stype == "runScript":
+            # 嵌套执行脚本：加载目标脚本文件，复用同一执行引擎跑完再继续
+            # （同步执行、共享同一停止标志；深度防护防脚本 A→B→A 递归套娃）
+            _exec_run_script_step(device_id, step)
 
         else:
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
@@ -1362,12 +1514,16 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
         f"日志目录: {log_dir}"
     )
 
-    # 同设备并发执行防护：拿不到执行槽说明已有一个在跑
-    stop_event = _script_runs.get(device_id)
-    if stop_event is not None:
-        raise RuntimeError(f"设备 {device_id} 已有脚本在执行中，请先停止或等待完成")
-    stop_event = threading.Event()
-    _script_runs[device_id] = stop_event
+    # 同设备并发执行防护：拿不到执行槽说明已有一个在跑。
+    # 嵌套执行（runScript 步骤）复用父脚本的执行槽与停止标志，不重复占槽。
+    stop_event = getattr(_script_nest_depth, "stop_event", None)
+    nested = stop_event is not None
+    if not nested:
+        stop_event = _script_runs.get(device_id)
+        if stop_event is not None:
+            raise RuntimeError(f"设备 {device_id} 已有脚本在执行中，请先停止或等待完成")
+        stop_event = threading.Event()
+        _script_runs[device_id] = stop_event
 
     # 全脚本没有注入类步骤时不需要 scrcpy 会话
     # （设备动作与视觉等待都走 adb，纯这类脚本更快、更稳）
@@ -1465,6 +1621,13 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         return
                     if action == "fail":
                         raise RuntimeError(f"判断步骤未通过：{reason}")
+                    if action == "runScript":
+                        # 分支动作=执行脚本：同步嵌套跑完目标脚本再继续
+                        _exec_run_script_step(device_id, {"script": branch.get("script", "")})
+                    elif action in VALID_STEP_TYPES:
+                        # 分支动作=执行某个步骤功能（手势/设备动作/等待与判断）：
+                        # 把分支参数当作一个临时步骤执行（参数可省，用默认值）
+                        _run_branch_step(device_id, action, branch, script, w, h, round_no)
                 else:
                     for i in range(count):
                         if stype == "tap":
@@ -1520,7 +1683,9 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     finally:
         logger.info(f"[{device_id}] 脚本执行结束，日志目录: {log_dir}")
         _detach_script_log_handler(log_handler)
-        _script_runs.pop(device_id, None)
+        if not nested:
+            # 嵌套执行共享父脚本的执行槽，只有顶层脚本负责释放
+            _script_runs.pop(device_id, None)
         if session is not None:
             release_session(device_id, session)
         logger.info(f"Script run finished on {device_id}")
