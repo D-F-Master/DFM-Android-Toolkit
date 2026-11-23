@@ -735,8 +735,9 @@ const scriptHandleBinary = (buf: ArrayBuffer) => {
   const view = new DataView(buf)
   const kind = view.getUint8(1)
   const payload = new Uint8Array(buf, 2)
-  const cv = scriptCanvasRef.value
-  if (!cv) return
+  // 不在开头按 canvas 存在与否提前 return：切 Tab 期间 canvas 被 v-if 销毁，
+  // 但仍需继续解码以维持 H.264 参考帧链，否则切回后全是无法解码的 P 帧。
+  // output 回调动态取当前 canvas（每次可能已被重建）。
 
   // kind=3：后端应用层心跳（画面静态无新帧时每秒一拍），仅喂狗不解码
   if (kind === 3) return
@@ -748,9 +749,12 @@ const scriptHandleBinary = (buf: ArrayBuffer) => {
     }
     scriptDecoder = new VideoDecoder({
       output: (frame) => {
-        if (cv.width !== frame.displayWidth) cv.width = frame.displayWidth
-        if (cv.height !== frame.displayHeight) cv.height = frame.displayHeight
-        const ctx = cv.getContext('2d')!
+        const curCv = scriptCanvasRef.value
+        // 画布不存在（切到别的 Tab）时只丢弃绘制，帧已解码、参考链不断
+        if (!curCv) { frame.close(); return }
+        if (curCv.width !== frame.displayWidth) curCv.width = frame.displayWidth
+        if (curCv.height !== frame.displayHeight) curCv.height = frame.displayHeight
+        const ctx = curCv.getContext('2d')!
         scriptDrawFrame(ctx, frame)
         setScriptMeta(frame.displayWidth, frame.displayHeight)
         frame.close()
@@ -939,6 +943,14 @@ watch(activeTab, async (tab) => {
     cancelScriptIdleTimer()
     await nextTick()
     startStallWatch()
+    // canvas 被 v-if 重建（尺寸回到默认）：先恢复尺寸再画回缓存帧，
+    // 避免静止画面（scrcpy 只发心跳不推帧）时一直黑屏或画面被裁切
+    const cv = scriptCanvasRef.value
+    if (cv && scriptFrameCanvas) {
+      if (cv.width !== scriptFrameCanvas.width) cv.width = scriptFrameCanvas.width
+      if (cv.height !== scriptFrameCanvas.height) cv.height = scriptFrameCanvas.height
+    }
+    scriptRedrawMarkers()
     // 连接仍开着就直接复用，避免每次切回都重连；已断开（含半开被清理后）才重新建连
     if (selectedDevice.value && (!scriptWs.value || scriptWs.value.readyState !== WebSocket.OPEN)) beginScriptStream()
     // 进入脚本页时准备安装APK / 等待组件 / 应用下拉的数据
