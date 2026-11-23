@@ -1020,6 +1020,10 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
   // 实时控制门控：未开启实时控制且非录制时不接管键盘（点画面不操作设备）
   if (scriptLiveControl.value || scriptRecording.value) {
     scriptKeyboardActive.value = true
+    // 实时控制开关是 INPUT，点它开启后焦点停在上面；点画面 preventDefault 不转移焦点，
+    // 导致 keydown 被 scriptOnKeyDown 的 INPUT 排除逻辑吞掉——主动 blur 让输入发往设备
+    const focused = document.activeElement as HTMLElement | null
+    focused?.blur?.()
     // 点别处意味着上一段输入结束
     scriptFlushTyping()
   }
