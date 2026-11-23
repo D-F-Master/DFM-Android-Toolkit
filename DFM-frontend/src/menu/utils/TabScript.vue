@@ -73,6 +73,9 @@ const scriptRunning = ref(false)
 // 每类操作的默认配置（录制时快照进步骤）
 const scriptRepeat = ref(1)
 const scriptSaving = ref(false)
+// 执行结束邮件通知：独立于步骤序列，仅由功能区「通知」分类控制
+const scriptNotifyEnabled = ref(true)
+const scriptNotifyEmail = ref('dfm_mail_service@163.com')
 
 let scriptDecoder: VideoDecoder | null = null
 let scriptCodecConfig: Uint8Array | null = null
@@ -1618,6 +1621,20 @@ const openImportMenu = () => {
   )
 }
 
+// 执行结果邮件通知：通知分类独立于步骤序列，执行结束后自动发信告知成败
+const sendRunNotify = async (subject: string, body: string) => {
+  if (!scriptNotifyEnabled.value || !scriptNotifyEmail.value.trim()) return
+  try {
+    await axios.post(`${API_BASE.value}/api/notify/email`, {
+      to: [scriptNotifyEmail.value.trim()],
+      subject,
+      body,
+    }, { timeout: 30000 })
+  } catch (e: any) {
+    showNotification('通知邮件发送失败: ' + (e?.response?.data?.message || e.message), 'error')
+  }
+}
+
 // 执行当前步骤：直接把步骤发给后端执行，不落盘（不再产生 current_xxx.json 临时文件）
 const runCurrentSteps = async () => {
   if (!selectedDevice.value) {
@@ -1643,13 +1660,19 @@ const runCurrentSteps = async () => {
       videoHeight: scriptMeta.height,
     }, { timeout: 600000 })
     if (response.data.code !== 200) {
-      showNotification(response.data.message || '执行失败', 'error')
+      const reason = response.data.message || '执行失败'
+      showNotification(reason, 'error')
+      await sendRunNotify('模拟脚本执行失败', `设备：${selectedDevice.value}\n结果：失败\n原因：${reason}`)
       return
     }
     const d = response.data.data || {}
-    showNotification(`执行完成：${d.stepCount ?? scriptSteps.value.length} 步 × ${d.repeat ?? scriptRepeat.value} 轮`, 'success')
+    const summary = `${d.stepCount ?? scriptSteps.value.length} 步 × ${d.repeat ?? scriptRepeat.value} 轮`
+    showNotification(`执行完成：${summary}`, 'success')
+    await sendRunNotify('模拟脚本执行成功', `设备：${selectedDevice.value}\n结果：成功\n详情：${summary}`)
   } catch (error: any) {
-    showNotification('执行失败: ' + (error?.response?.data?.message || error.message), 'error')
+    const reason = '执行失败: ' + (error?.response?.data?.message || error.message)
+    showNotification(reason, 'error')
+    await sendRunNotify('模拟脚本执行失败', `设备：${selectedDevice.value}\n结果：失败\n原因：${reason}`)
   } finally {
     scriptRunning.value = false
   }
@@ -2016,6 +2039,16 @@ onUnmounted(() => {
                             title="新增执行脚本步骤：运行中嵌套执行另一个已保存的脚本"
                             @click="addScriptAdbStep('runScript')"
                           >🧩 执行脚本</button>
+                        </div>
+                        <div class="script-add-row">
+                          <span class="script-add-label">通知</span>
+                          <el-switch v-model="scriptNotifyEnabled" :disabled="scriptRunning" />
+                          <el-input
+                            v-model="scriptNotifyEmail"
+                            class="ep-config-input"
+                            placeholder="收件邮箱"
+                            :disabled="scriptRunning || !scriptNotifyEnabled"
+                          />
                         </div>
                       </div>
                     </div>
