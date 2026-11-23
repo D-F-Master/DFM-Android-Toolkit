@@ -1356,8 +1356,9 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     log_dir = _new_script_log_dir(device_id)
     log_handler = _attach_script_log_handler(log_dir)
     script_name = script.get("name") or "(未命名)"
+    steps = script.get("steps", [])
     logger.info(
-        f"[{device_id}] 开始执行脚本「{script_name}」repeat={repeat} steps={len(steps or [])} "
+        f"[{device_id}] 开始执行脚本「{script_name}」repeat={repeat} steps={len(steps)} "
         f"日志目录: {log_dir}"
     )
 
@@ -1368,7 +1369,6 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
     stop_event = threading.Event()
     _script_runs[device_id] = stop_event
 
-    steps = script.get("steps", [])
     # 全脚本没有注入类步骤时不需要 scrcpy 会话
     # （设备动作与视觉等待都走 adb，纯这类脚本更快、更稳）
     needs_session = any(s.get("type") in INJECT_STEP_TYPES for s in steps)
