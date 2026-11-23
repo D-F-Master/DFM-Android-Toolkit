@@ -3565,31 +3565,12 @@ button.batch-remote-tile-tag.active,
   color: #c62828;
 }
 
+/* 通知分类：与脚本步骤列表分开的独立列表，item 复用 .script-step-item 样式 */
 :deep(.script-notify-section) {
   flex-shrink: 0;
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid #e8eaed;
-  border-radius: 8px;
-  background: #fafbfc;
-}
-
-:deep(.script-notify-header) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 13px;
-  font-weight: 600;
-  color: #333;
-  margin-bottom: 8px;
-}
-
-:deep(.script-notify-item) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #666;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e8eaed;
 }
 
 :deep(.script-actions) {

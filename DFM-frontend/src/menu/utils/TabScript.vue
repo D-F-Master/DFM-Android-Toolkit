@@ -75,6 +75,7 @@ const scriptRepeat = ref(1)
 const scriptSaving = ref(false)
 // 执行结束邮件通知：独立于步骤序列，由右侧列表的「通知」分类控制（添加后才启用）
 const scriptNotifyAdded = ref(false)
+const scriptNotifyEditing = ref(false)
 const scriptNotifyEmail = ref('dfm_mail_service@163.com')
 
 let scriptDecoder: VideoDecoder | null = null
@@ -1612,6 +1613,10 @@ const addScriptNotify = () => {
 }
 const removeScriptNotify = () => {
   scriptNotifyAdded.value = false
+  scriptNotifyEditing.value = false
+}
+const toggleNotifyEdit = () => {
+  scriptNotifyEditing.value = !scriptNotifyEditing.value
 }
 
 // 执行结果邮件通知：通知分类独立于步骤序列，执行结束后自动发信告知成败
@@ -2054,7 +2059,7 @@ onUnmounted(() => {
                               <div class="script-help-content">{{ SCRIPT_VARIABLE_HELP }}</div>
                             </template>
                             <span class="script-help-icon">i</span>
-                          </el-tooltip>执行脚本（{{ scriptSteps.length }}）</span>
+                          </el-tooltip>脚本步骤（{{ scriptSteps.length }}）</span>
                         <div class="script-header-actions">
                           <button
                             class="script-mini-btn"
@@ -2353,20 +2358,33 @@ onUnmounted(() => {
                           </div>
                       </div>
 
-                      <!-- 通知分类：独立于执行脚本步骤列表，点击功能区「邮箱通知」后新增 -->
+                      <!-- 通知分类：与脚本步骤分开的独立列表，点击功能区「邮箱通知」后新增 -->
                       <div v-if="scriptNotifyAdded" class="script-notify-section">
-                        <div class="script-notify-header">
+                        <div class="script-list-header">
                           <span>通知</span>
-                          <button class="script-mini-btn" title="移除通知分类" @click="removeScriptNotify">移除</button>
                         </div>
-                        <div class="script-notify-item">
-                          <span>✉ 邮箱通知</span>
-                          <el-input
-                            v-model="scriptNotifyEmail"
-                            class="ep-config-input"
-                            placeholder="收件邮箱"
-                            :disabled="scriptRunning"
-                          />
+                        <div class="script-notify-list">
+                          <div
+                            class="script-step-item"
+                            :class="{ selected: scriptNotifyEditing }"
+                            @click="toggleNotifyEdit"
+                          >
+                            <span class="script-step-idx">✉</span>
+                            <span class="script-step-desc">邮箱通知</span>
+                            <button class="script-step-del" title="移除邮箱通知" @click.stop="removeScriptNotify">×</button>
+                            <!-- 点开后展开该通知的配置 -->
+                            <div v-if="scriptNotifyEditing" class="script-step-config" @click.stop>
+                              <div class="script-config-row">
+                                <span>收件邮箱</span>
+                                <el-input
+                                  v-model="scriptNotifyEmail"
+                                  class="ep-config-input"
+                                  placeholder="收件邮箱"
+                                  :disabled="scriptRunning"
+                                />
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </div>
 
