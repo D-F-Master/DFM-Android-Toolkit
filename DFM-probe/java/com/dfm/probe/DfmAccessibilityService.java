@@ -63,4 +63,22 @@ public class DfmAccessibilityService extends AccessibilityService {
         builder.addStroke(new GestureDescription.StrokeDescription(p, 0, 1));
         return dispatchGesture(builder.build(), null, null);
     }
+
+    /**
+     * 派发一条自定义笔画手势（供脚本引擎的 tap/longpress/swipe 使用，API 24+）。
+     *
+     * @param path         手势轨迹
+     * @param startTimeMs  距手势开始的延迟（0 立即）
+     * @param durationMs   笔画持续时间（长按 = 按住时长，滑动 = 滑动时长）
+     * @return 派发是否被系统受理
+     */
+    boolean dispatchGestureStroke(Path path, long startTimeMs, long durationMs) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            Log.w(TAG, "dispatchGestureStroke requires API 24+, current " + Build.VERSION.SDK_INT);
+            return false;
+        }
+        GestureDescription.Builder builder = new GestureDescription.Builder();
+        builder.addStroke(new GestureDescription.StrokeDescription(path, startTimeMs, durationMs));
+        return dispatchGesture(builder.build(), null, null);
+    }
 }

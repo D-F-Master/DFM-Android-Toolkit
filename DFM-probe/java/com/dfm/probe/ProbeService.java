@@ -15,6 +15,7 @@ import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
 import android.graphics.ImageFormat;
+import android.graphics.Path;
 import android.graphics.Rect;
 import android.hardware.input.InputManager;
 import android.hardware.usb.UsbDevice;
@@ -25,6 +26,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
@@ -57,10 +59,13 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * 常驻服务：监听设备本机 0.0.0.0:21104，等待 PC 主动连入。
@@ -93,6 +98,9 @@ public class ProbeService extends Service {
     private static final int CMD_ACCESSIBILITY_SETTINGS = 0x0B;
     private static final int CMD_ACCESSIBILITY_TREE = 0x0C;
     private static final int CMD_ACCESSIBILITY_CLICK = 0x0D;
+    private static final int CMD_SCRIPT_IMPORT = 0x0E;
+    private static final int CMD_SCRIPT_LIST = 0x0F;
+    private static final int CMD_SCRIPT_RUN = 0x10;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -104,6 +112,9 @@ public class ProbeService extends Service {
 
     /** 0x0C 组件树序列化的节点数上限，超出后停止展开并置 truncated，防止响应超出单帧 65535。 */
     private static final int MAX_TREE_NODES = 150;
+
+    /** 设备端离线脚本引擎（0x0E 解压 / 0x0F 列表 / 0x10 执行），懒创建。 */
+    private ScriptEngine scriptEngine;
 
     /** 监听状态必须 static：系统每 60 秒把后台服务按 app idle 停掉（ onDestroy ），但进程仍存活；
      *  监听线程挂在 static 字段上即可跨服务生命周期继续 accept，端口不中断。 */
@@ -349,7 +360,9 @@ public class ProbeService extends Service {
                     && cmd != CMD_SERIAL_CLOSE
                     && cmd != CMD_SHELL && cmd != CMD_SCREENSHOT && cmd != CMD_CAMERA
                     && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE
-                    && cmd != CMD_ACCESSIBILITY_CLICK;
+                    && cmd != CMD_ACCESSIBILITY_CLICK
+                    && cmd != CMD_SCRIPT_IMPORT && cmd != CMD_SCRIPT_LIST
+                    && cmd != CMD_SCRIPT_RUN;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -460,6 +473,25 @@ public class ProbeService extends Service {
                 return fail(500, "cmd failed: " + e);
             }
         }
+        if (cmd == CMD_SCRIPT_IMPORT || cmd == CMD_SCRIPT_LIST || cmd == CMD_SCRIPT_RUN) {
+            try {
+                JSONObject data;
+                if (cmd == CMD_SCRIPT_IMPORT) {
+                    data = scriptImport(req);
+                } else if (cmd == CMD_SCRIPT_LIST) {
+                    data = scriptList();
+                } else {
+                    data = scriptRun(req);
+                }
+                return ok(data);
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "script cmd param error: " + e);
+                return fail(400, e.getMessage());
+            } catch (Exception e) {
+                Log.w(TAG, "script cmd 0x" + Integer.toHexString(cmd) + " failed: " + e);
+                return fail(500, "script cmd failed: " + e);
+            }
+        }
         return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
     }
 
@@ -481,6 +513,33 @@ public class ProbeService extends Service {
         return res;
     }
 
+    // ===== 脚本离线执行（0x0E 解压 / 0x0F 列表 / 0x10 执行），引擎见 ScriptEngine =====
+
+    /** 脚本引擎懒创建：依赖本服务上下文（外部私有目录 / 0x08 shell / 0x01 TTS / 0x0D 无障碍）。 */
+    private synchronized ScriptEngine scriptEngine() throws Exception {
+        if (scriptEngine == null) {
+            scriptEngine = new ScriptEngine(this);
+        }
+        return scriptEngine;
+    }
+
+    /** CMD_SCRIPT_IMPORT (0x0E)：解压 script_in/ 下 zip 到 script_store/{脚本名}/。请求 {"zip":"xxx.zip"}。 */
+    private JSONObject scriptImport(JSONObject req) throws Exception {
+        String zip = req.optString("zip", "").trim();
+        return scriptEngine().unzip(zip);
+    }
+
+    /** CMD_SCRIPT_LIST (0x0F)：列出 script_store/ 下已导入的脚本。 */
+    private JSONObject scriptList() throws Exception {
+        return scriptEngine().list();
+    }
+
+    /** CMD_SCRIPT_RUN (0x10)：执行 script_store/{script}/script.json。请求 {"script":"名字","repeat":N}。 */
+    private JSONObject scriptRun(JSONObject req) throws Exception {
+        String name = req.optString("script", req.optString("name", "")).trim();
+        int repeat = req.optInt("repeat", 1);
+        return scriptEngine().run(name, repeat);
+    }
     /** CMD_DEVICE_INFO (0x02)：基础信息 + 串口 / 摄像头 / 外设列表，采集失败降级为空或 Unknown。 */
     private JSONObject deviceInfo() throws Exception {
         JSONObject data = new JSONObject();
@@ -741,7 +800,7 @@ public class ProbeService extends Service {
     // ===== shell 执行 / 截屏 / 拍照（0x08 / 0x09 / 0x0A）=====
 
     /** CMD_SHELL (0x08)：PC 下发 shell 命令，设备端执行并回传输出。root=true 时经 su 以 root 运行。 */
-    private JSONObject shellExec(JSONObject req) throws Exception {
+    JSONObject shellExec(JSONObject req) throws Exception {
         String command = req.optString("command", null);
         if (command == null || command.trim().isEmpty()) {
             throw new IllegalArgumentException("command is required");
@@ -1109,7 +1168,7 @@ public class ProbeService extends Service {
     }
 
     /** CMD_ACCESSIBILITY_CLICK (0x0D)：按 id/text/desc 匹配节点并对其执行 ACTION_CLICK（无障碍点击，不依赖坐标）。 */
-    private JSONObject accessibilityClick(JSONObject req) throws Exception {
+    JSONObject accessibilityClick(JSONObject req) throws Exception {
         String id = req.optString("id", "").trim();
         String text = req.optString("text", "").trim();
         String desc = req.optString("desc", "").trim();
@@ -1584,7 +1643,7 @@ public class ProbeService extends Service {
      * TTS 引擎懒初始化：首次调用才创建并同步等待引擎就绪（最多 30 秒，讯飞冷启动实测 ~13 秒），
      * 失败回 code 500，连接保持不断。
      */
-    private JSONObject speak(String text) throws Exception {
+    JSONObject speak(String text) throws Exception {
         String t = text.trim();
         final TextToSpeech engine = ensureTts();
         if (engine == null) {
