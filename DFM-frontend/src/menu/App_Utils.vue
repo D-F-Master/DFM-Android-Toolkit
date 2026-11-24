@@ -3572,35 +3572,41 @@ button.batch-remote-tile-tag.active,
   outline: none;
 }
 
-:deep(.script-repo-body) {
+:deep(.script-repo-tree) {
   flex: 1;
-  overflow-y: auto;
-  padding: 8px 16px 16px;
+  overflow: auto;
+  padding: 6px 8px 14px;
+  user-select: none;
 }
 
-:deep(.script-repo-group + .script-repo-group) {
-  margin-top: 14px;
-}
-
-:deep(.script-repo-group-title) {
-  font-weight: 600;
-  color: #666;
-  padding: 6px 0;
-  border-bottom: 1px solid #f0f1f3;
-  margin-bottom: 4px;
-}
-
-:deep(.script-repo-row) {
+:deep(.script-repo-node) {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 4px 2px;
-  border-bottom: 1px solid #f6f7f8;
+  gap: 6px;
+  min-height: 30px;
+  padding-right: 8px;
+  border-radius: 5px;
+  white-space: nowrap;
 }
 
-:deep(.script-repo-row:last-child) {
-  border-bottom: none;
+:deep(.script-repo-node:hover) {
+  background: #f2f6fc;
+}
+
+:deep(.script-repo-node-selected) {
+  background: #e8f0fe !important;
+}
+
+:deep(.script-repo-arrow) {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  color: #888;
+  cursor: pointer;
+}
+
+:deep(.script-repo-file) {
+  cursor: default;
 }
 
 :deep(.script-repo-name) {
@@ -3609,24 +3615,22 @@ button.batch-remote-tile-tag.active,
   color: #333;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 :deep(.script-repo-folder) {
   cursor: pointer;
-  color: #409eff;
 }
 
 :deep(.script-repo-meta) {
-  color: #999;
+  color: #aaa;
   font-size: 12px;
-  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 :deep(.script-repo-confirm) {
   color: #c62828;
   font-size: 12px;
-  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 :deep(.script-mini-btn.script-repo-danger) {
@@ -3638,6 +3642,33 @@ button.batch-remote-tile-tag.active,
   padding: 14px 4px;
   color: #aaa;
   text-align: center;
+}
+
+:deep(.script-repo-menu) {
+  position: fixed;
+  z-index: 80;
+  min-width: 160px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+
+:deep(.script-repo-menu-item) {
+  padding: 7px 14px;
+  cursor: pointer;
+  color: #333;
+  white-space: nowrap;
+}
+
+:deep(.script-repo-menu-item:hover) {
+  background: #f2f6fc;
+}
+
+:deep(.script-repo-menu-item.danger) {
+  color: #c62828;
 }
 
 :deep(.script-steps-list) {

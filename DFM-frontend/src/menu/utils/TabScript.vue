@@ -1650,73 +1650,137 @@ const importScriptFromList = async () => {
   }
 }
 
-// ===== 脚本仓库：文件夹管理弹层 =====
+// ===== 脚本仓库：VSCode 风格文件夹树（懒加载 + 右键菜单） =====
+interface RepoDirNode {
+  name: string
+  path: string        // 相对 scripts 目录的路径，"" 表示根目录
+  isRoot: boolean
+  expanded: boolean
+  loaded: boolean
+  loading: boolean
+  dirs: RepoDirNode[]
+  scripts: any[]
+}
+const makeRepoDir = (name: string, path: string, isRoot = false): RepoDirNode => ({
+  name, path, isRoot, expanded: isRoot, loaded: false, loading: false, dirs: [], scripts: []
+})
+const repoRoot = ref<RepoDirNode>(makeRepoDir('脚本仓库', '', true))
 const scriptRepoOpen = ref(false)
-const scriptRepoPath = ref('')            // 当前文件夹相对路径，"" 表示根目录
-const scriptRepoDirs = ref<string[]>([])
-const scriptRepoScripts = ref<any[]>([])
 const scriptRepoLoading = ref(false)
 const scriptRepoAction = ref<'create' | 'rename' | 'move' | 'deleteDir' | 'deleteScript' | ''>('')
 const scriptRepoInput = ref('')
-const scriptRepoTarget = ref<any>(null)
+const scriptRepoTarget = ref<any>(null)      // 文件夹节点或脚本对象
+const scriptRepoParent = ref<RepoDirNode | null>(null)  // 操作所在的目录节点
+const repoMenu = ref<{ x: number; y: number; row: any } | null>(null)
 
-const repoLoad = async (path: string) => {
-  scriptRepoLoading.value = true
+const repoJoin = (base: string, name: string) => base ? `${base}/${name}` : name
+
+// 懒加载某个文件夹的直接子项（首次展开或强制刷新时请求）
+const repoLoadDir = async (node: RepoDirNode, force = false) => {
+  if (node.loaded && !force) return
+  node.loading = true
   try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/folder/list`, { path })).data
-    if (d.code !== 200) {
-      showNotification('读取文件夹失败: ' + (d.message || '未知错误'), 'error')
-      return
-    }
-    scriptRepoPath.value = path
-    scriptRepoDirs.value = d.data.dirs || []
-    scriptRepoScripts.value = d.data.scripts || []
-    scriptRepoAction.value = ''
-    scriptRepoInput.value = ''
-    scriptRepoTarget.value = null
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/folder/list`, { path: node.path })).data
+    if (d.code !== 200) { showNotification('读取文件夹失败: ' + (d.message || '未知错误'), 'error'); return }
+    // 按 path 复用已有子节点，刷新后保留其展开/加载状态
+    const oldByPath = new Map(node.dirs.map(c => [c.path, c]))
+    node.dirs = (d.data.dirs || []).map((n: string) => {
+      const p = repoJoin(node.path, n)
+      return oldByPath.get(p) || makeRepoDir(n, p)
+    })
+    node.scripts = d.data.scripts || []
+    node.loaded = true
   } catch (error: any) {
     showNotification('读取文件夹失败: ' + error.message, 'error')
   } finally {
-    scriptRepoLoading.value = false
+    node.loading = false
   }
 }
-const openScriptRepo = () => { scriptRepoOpen.value = true; repoLoad('') }
-const closeScriptRepo = () => { scriptRepoOpen.value = false }
-const repoEnterDir = (name: string) => repoLoad(scriptRepoPath.value ? `${scriptRepoPath.value}/${name}` : name)
-const repoGoUp = () => {
-  const parts = scriptRepoPath.value.split('/').filter(Boolean)
-  parts.pop()
-  repoLoad(parts.join('/'))
+// 刷新所有已加载节点（操作后保持展开状态地更新）
+const repoRefreshLoaded = () => {
+  const walk = (node: RepoDirNode) => {
+    if (node.loaded) repoLoadDir(node, true)
+    node.dirs.forEach(walk)
+  }
+  walk(repoRoot.value)
 }
-const repoCrumb = computed(() => {
-  const parts = scriptRepoPath.value.split('/').filter(Boolean)
-  return [{ name: '根目录', path: '' }, ...parts.map((n, i) => ({ name: n, path: parts.slice(0, i + 1).join('/') }))]
+const openScriptRepo = () => {
+  scriptRepoOpen.value = true
+  if (!repoRoot.value.loaded) {
+    scriptRepoLoading.value = true
+    repoLoadDir(repoRoot.value).finally(() => { scriptRepoLoading.value = false })
+  } else {
+    repoRefreshLoaded()
+  }
+}
+const closeScriptRepo = () => { scriptRepoOpen.value = false; repoMenu.value = null }
+const repoToggleDir = (node: RepoDirNode) => {
+  node.expanded = !node.expanded
+  if (node.expanded) repoLoadDir(node)
+}
+// 把树拍平成按显示顺序排列的行，供模板单层 v-for 渲染（无需递归组件）
+const repoFlatRows = computed(() => {
+  const rows: any[] = []
+  const walk = (node: RepoDirNode, depth: number, parent: RepoDirNode | null) => {
+    rows.push({ kind: 'dir', node, parent, depth })
+    if (!node.expanded) return
+    for (const child of node.dirs) walk(child, depth + 1, node)
+    for (const s of node.scripts) rows.push({ kind: 'script', script: s, parent: node, depth: depth + 1 })
+  }
+  walk(repoRoot.value, 0, null)
+  return rows
 })
-const repoCancelAction = () => { scriptRepoAction.value = ''; scriptRepoInput.value = ''; scriptRepoTarget.value = null }
+const openRepoMenu = (ev: MouseEvent, row: any) => {
+  repoMenu.value = {
+    x: Math.min(ev.clientX, window.innerWidth - 180),
+    y: Math.min(ev.clientY, window.innerHeight - 210),
+    row
+  }
+}
+const closeRepoMenu = () => { repoMenu.value = null }
+const repoStartAction = (action: typeof scriptRepoAction.value, target: any, parent: RepoDirNode | null, input = '') => {
+  scriptRepoAction.value = action
+  scriptRepoTarget.value = target
+  scriptRepoParent.value = parent
+  scriptRepoInput.value = input
+  repoMenu.value = null
+}
+const repoCancelAction = () => {
+  scriptRepoAction.value = ''
+  scriptRepoInput.value = ''
+  scriptRepoTarget.value = null
+  scriptRepoParent.value = null
+}
+const repoParentPath = () => scriptRepoParent.value?.path ?? ''
 
 const repoCreateFolder = async () => {
   const name = scriptRepoInput.value.trim()
   if (!name) { showNotification('请输入文件夹名', 'error'); return }
+  const parent = scriptRepoParent.value || repoRoot.value
   try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/folder/create`, { path: scriptRepoPath.value, name })).data
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/folder/create`, { path: parent.path, name })).data
     if (d.code !== 200) { showNotification('创建失败: ' + (d.message || '未知错误'), 'error'); return }
     showNotification('文件夹已创建', 'success')
-    repoLoad(scriptRepoPath.value)
+    parent.expanded = true
+    repoCancelAction()
+    repoLoadDir(parent, true)
   } catch (error: any) { showNotification('创建失败: ' + error.message, 'error') }
 }
-const repoDeleteDir = async (name: string) => {
+const repoDeleteDir = async () => {
+  const node = scriptRepoTarget.value as RepoDirNode
+  const parent = scriptRepoParent.value || repoRoot.value
   try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/folder/delete`, { path: scriptRepoPath.value, name })).data
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/folder/delete`, { path: parent.path, name: node.name })).data
     if (d.code !== 200) { showNotification('删除失败: ' + (d.message || '未知错误'), 'error'); return }
     showNotification('文件夹已删除', 'success')
     repoCancelAction()
-    repoLoad(scriptRepoPath.value)
+    repoLoadDir(parent, true)
   } catch (error: any) { showNotification('删除失败: ' + error.message, 'error') }
 }
-const repoLoadScript = async (s: any) => {
+const repoLoadScript = async (s: any, parent: RepoDirNode) => {
   try {
     scriptSaving.value = true
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/load`, { name: s.fileName, path: scriptRepoPath.value })).data
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/load`, { name: s.fileName, path: parent.path })).data
     if (d.code !== 200) { showNotification('读取脚本失败: ' + (d.message || '未知错误'), 'error'); return }
     applyImportedSteps(d.data.steps, d.data.repeat, d.data.name)
     showNotification(`已载入脚本「${d.data.name}」`, 'success')
@@ -1724,32 +1788,37 @@ const repoLoadScript = async (s: any) => {
   } catch (error: any) { showNotification('读取脚本失败: ' + error.message, 'error') }
   finally { scriptSaving.value = false }
 }
-const repoDeleteScript = async (s: any) => {
+const repoDeleteScript = async () => {
+  const s = scriptRepoTarget.value
   try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/delete`, { name: s.fileName, path: scriptRepoPath.value })).data
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/delete`, { name: s.fileName, path: repoParentPath() })).data
     if (d.code !== 200) { showNotification('删除失败: ' + (d.message || '未知错误'), 'error'); return }
     showNotification('脚本已删除', 'success')
     repoCancelAction()
-    repoLoad(scriptRepoPath.value)
+    repoRefreshLoaded()
   } catch (error: any) { showNotification('删除失败: ' + error.message, 'error') }
 }
-const repoRenameScript = async (s: any) => {
+const repoRenameScript = async () => {
   const newName = scriptRepoInput.value.trim()
   if (!newName) { showNotification('请输入新名称', 'error'); return }
+  const s = scriptRepoTarget.value
   try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/rename`, { path: scriptRepoPath.value, name: s.fileName, newName })).data
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/rename`, { path: repoParentPath(), name: s.fileName, newName })).data
     if (d.code !== 200) { showNotification('重命名失败: ' + (d.message || '未知错误'), 'error'); return }
     showNotification('已重命名', 'success')
-    repoLoad(scriptRepoPath.value)
+    repoCancelAction()
+    repoRefreshLoaded()
   } catch (error: any) { showNotification('重命名失败: ' + error.message, 'error') }
 }
-const repoMoveScript = async (s: any) => {
+const repoMoveScript = async () => {
   const toPath = scriptRepoInput.value.trim()
+  const s = scriptRepoTarget.value
   try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/move`, { name: s.fileName, fromPath: scriptRepoPath.value, toPath })).data
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/move`, { name: s.fileName, fromPath: repoParentPath(), toPath })).data
     if (d.code !== 200) { showNotification('移动失败: ' + (d.message || '未知错误'), 'error'); return }
     showNotification('脚本已移动', 'success')
-    repoLoad(scriptRepoPath.value)
+    repoCancelAction()
+    repoRefreshLoaded()
   } catch (error: any) { showNotification('移动失败: ' + error.message, 'error') }
 }
 
@@ -2586,82 +2655,85 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <!-- 脚本仓库：文件夹管理弹层 -->
-                <div v-if="scriptRepoOpen" class="script-repo-overlay" @mousedown.self="closeScriptRepo">
-                  <div class="script-repo-dialog">
+                <!-- 脚本仓库：VSCode 风格文件夹树 -->
+                <div v-if="scriptRepoOpen" class="script-repo-overlay" @mousedown.self="closeScriptRepo" @contextmenu.prevent>
+                  <div class="script-repo-dialog" @click="closeRepoMenu">
                     <div class="script-repo-head">
                       <span class="script-repo-title">脚本仓库</span>
-                      <span class="script-repo-path">
-                        <template v-for="(c, i) in repoCrumb" :key="c.path">
-                          <span v-if="i > 0" class="script-repo-sep">/</span>
-                          <a class="script-repo-crumb" :class="{ cur: i === repoCrumb.length - 1 }" @click="repoLoad(c.path)">{{ c.name }}</a>
-                        </template>
-                      </span>
-                      <button class="script-mini-btn" @click="closeScriptRepo">关闭</button>
+                      <span class="script-repo-tip">右键文件夹或脚本进行操作</span>
+                      <button class="script-mini-btn" @click.stop="closeScriptRepo">关闭</button>
                     </div>
-                    <div class="script-repo-toolbar">
-                      <button class="script-mini-btn" v-if="scriptRepoPath" @click="repoGoUp" title="返回上级文件夹">↑ 上级</button>
-                      <template v-if="scriptRepoAction === 'create'">
-                        <input v-model="scriptRepoInput" class="script-repo-input" placeholder="新文件夹名" @keyup.enter="repoCreateFolder" />
-                        <button class="script-mini-btn" @click="repoCreateFolder">确定</button>
-                        <button class="script-mini-btn" @click="repoCancelAction">取消</button>
-                      </template>
-                      <button v-else class="script-mini-btn" @click="scriptRepoAction = 'create'; scriptRepoInput = ''" title="在当前文件夹下新建子文件夹">+ 新建文件夹</button>
-                      <span class="script-repo-spacer"></span>
-                      <span class="script-repo-tip">保存的脚本在根目录，可在仓库内移动到文件夹</span>
-                    </div>
-                    <div class="script-repo-body">
+                    <div class="script-repo-tree" @scroll="closeRepoMenu">
                       <div v-if="scriptRepoLoading" class="script-repo-empty">加载中...</div>
                       <template v-else>
-                        <div class="script-repo-group">
-                          <div class="script-repo-group-title">文件夹</div>
-                          <div v-if="scriptRepoDirs.length === 0" class="script-repo-empty">（无子文件夹）</div>
-                          <div v-for="d in scriptRepoDirs" :key="d" class="script-repo-row">
-                            <template v-if="scriptRepoAction === 'deleteDir' && scriptRepoTarget === d">
-                              <span class="script-repo-name">📁 {{ d }}</span>
+                        <div
+                          v-for="row in repoFlatRows"
+                          :key="row.kind === 'dir' ? 'd:' + row.node.path : 's:' + row.parent.path + '/' + row.script.fileName"
+                          class="script-repo-node"
+                          :class="{ 'script-repo-node-selected': repoMenu && repoMenu.row === row }"
+                          :style="{ paddingLeft: (8 + row.depth * 18) + 'px' }"
+                          @contextmenu.prevent.stop="openRepoMenu($event, row)"
+                        >
+                          <!-- 文件夹节点 -->
+                          <template v-if="row.kind === 'dir'">
+                            <span class="script-repo-arrow" @click.stop="repoToggleDir(row.node)">{{ row.node.expanded ? '▾' : '▸' }}</span>
+                            <template v-if="scriptRepoAction === 'create' && scriptRepoTarget === row.node">
+                              <input v-model="scriptRepoInput" class="script-repo-input" placeholder="新文件夹名" @click.stop @keyup.enter.stop="repoCreateFolder" />
+                              <button class="script-mini-btn" @click.stop="repoCreateFolder">确定</button>
+                              <button class="script-mini-btn" @click.stop="repoCancelAction">取消</button>
+                            </template>
+                            <template v-else-if="scriptRepoAction === 'deleteDir' && scriptRepoTarget === row.node">
+                              <span class="script-repo-name">📁 {{ row.node.name }}</span>
                               <span class="script-repo-confirm">删除文件夹及其中全部脚本？</span>
-                              <button class="script-mini-btn script-repo-danger" @click="repoDeleteDir(d)">确认删除</button>
-                              <button class="script-mini-btn" @click="repoCancelAction">取消</button>
+                              <button class="script-mini-btn script-repo-danger" @click.stop="repoDeleteDir">确认删除</button>
+                              <button class="script-mini-btn" @click.stop="repoCancelAction">取消</button>
                             </template>
                             <template v-else>
-                              <a class="script-repo-name script-repo-folder" @click="repoEnterDir(d)">📁 {{ d }}</a>
-                              <button class="script-mini-btn" @click="scriptRepoAction = 'deleteDir'; scriptRepoTarget = d" title="删除文件夹（含其中脚本）">删除</button>
+                              <span class="script-repo-name script-repo-folder" @click.stop="repoToggleDir(row.node)">{{ row.node.expanded ? '📂' : '📁' }} {{ row.node.name }}</span>
+                              <span v-if="row.node.loading" class="script-repo-meta">加载中...</span>
                             </template>
-                          </div>
-                        </div>
-                        <div class="script-repo-group">
-                          <div class="script-repo-group-title">脚本（{{ scriptRepoScripts.length }}）</div>
-                          <div v-if="scriptRepoScripts.length === 0" class="script-repo-empty">（无脚本）</div>
-                          <div v-for="s in scriptRepoScripts" :key="s.fileName" class="script-repo-row">
-                            <template v-if="scriptRepoAction === 'rename' && scriptRepoTarget === s">
-                              <input v-model="scriptRepoInput" class="script-repo-input" @keyup.enter="repoRenameScript(s)" />
-                              <button class="script-mini-btn" @click="repoRenameScript(s)">确定</button>
-                              <button class="script-mini-btn" @click="repoCancelAction">取消</button>
+                          </template>
+                          <!-- 脚本节点 -->
+                          <template v-else>
+                            <span class="script-repo-arrow script-repo-file">📄</span>
+                            <template v-if="scriptRepoAction === 'rename' && scriptRepoTarget === row.script">
+                              <input v-model="scriptRepoInput" class="script-repo-input" @click.stop @keyup.enter.stop="repoRenameScript" />
+                              <button class="script-mini-btn" @click.stop="repoRenameScript">确定</button>
+                              <button class="script-mini-btn" @click.stop="repoCancelAction">取消</button>
                             </template>
-                            <template v-else-if="scriptRepoAction === 'move' && scriptRepoTarget === s">
-                              <span class="script-repo-name">移动 "{{ s.name }}" 到：</span>
-                              <input v-model="scriptRepoInput" class="script-repo-input" placeholder="文件夹路径，留空=根目录" @keyup.enter="repoMoveScript(s)" />
-                              <button class="script-mini-btn" @click="repoMoveScript(s)">确定</button>
-                              <button class="script-mini-btn" @click="repoCancelAction">取消</button>
+                            <template v-else-if="scriptRepoAction === 'move' && scriptRepoTarget === row.script">
+                              <input v-model="scriptRepoInput" class="script-repo-input" placeholder="目标文件夹路径，留空=根目录" @click.stop @keyup.enter.stop="repoMoveScript" />
+                              <button class="script-mini-btn" @click.stop="repoMoveScript">确定</button>
+                              <button class="script-mini-btn" @click.stop="repoCancelAction">取消</button>
                             </template>
-                            <template v-else-if="scriptRepoAction === 'deleteScript' && scriptRepoTarget === s">
-                              <span class="script-repo-name">📄 {{ s.name }}</span>
-                              <span class="script-repo-confirm">确认删除该脚本？</span>
-                              <button class="script-mini-btn script-repo-danger" @click="repoDeleteScript(s)">确认删除</button>
-                              <button class="script-mini-btn" @click="repoCancelAction">取消</button>
+                            <template v-else-if="scriptRepoAction === 'deleteScript' && scriptRepoTarget === row.script">
+                              <span class="script-repo-name">{{ row.script.name }}</span>
+                              <span class="script-repo-confirm">确认删除？</span>
+                              <button class="script-mini-btn script-repo-danger" @click.stop="repoDeleteScript">确认删除</button>
+                              <button class="script-mini-btn" @click.stop="repoCancelAction">取消</button>
                             </template>
                             <template v-else>
-                              <span class="script-repo-name">📄 {{ s.name }}</span>
-                              <span class="script-repo-meta">{{ s.stepCount }} 步 · ×{{ s.repeat }}</span>
-                              <button class="script-mini-btn" @click="repoLoadScript(s)">载入</button>
-                              <button class="script-mini-btn" @click="scriptRepoAction = 'rename'; scriptRepoTarget = s; scriptRepoInput = s.name">重命名</button>
-                              <button class="script-mini-btn" @click="scriptRepoAction = 'move'; scriptRepoTarget = s; scriptRepoInput = ''">移动</button>
-                              <button class="script-mini-btn" @click="scriptRepoAction = 'deleteScript'; scriptRepoTarget = s">删除</button>
+                              <span class="script-repo-name">{{ row.script.name }}</span>
+                              <span class="script-repo-meta">{{ row.script.stepCount }} 步 · ×{{ row.script.repeat }}</span>
                             </template>
-                          </div>
+                          </template>
                         </div>
+                        <div v-if="repoFlatRows.length === 1" class="script-repo-empty">（空仓库，保存脚本后会出现在根目录）</div>
                       </template>
                     </div>
+                  </div>
+                  <!-- 右键菜单 -->
+                  <div v-if="repoMenu" class="script-repo-menu" :style="{ left: repoMenu.x + 'px', top: repoMenu.y + 'px' }" @click.stop @contextmenu.prevent.stop>
+                    <template v-if="repoMenu.row.kind === 'dir'">
+                      <div class="script-repo-menu-item" @click="repoStartAction('create', repoMenu.row.node, repoMenu.row.node)">＋ 新建子文件夹</div>
+                      <div v-if="!repoMenu.row.node.isRoot" class="script-repo-menu-item danger" @click="repoStartAction('deleteDir', repoMenu.row.node, repoMenu.row.parent)">🗑 删除文件夹（含脚本）</div>
+                    </template>
+                    <template v-else>
+                      <div class="script-repo-menu-item" @click="repoLoadScript(repoMenu.row.script, repoMenu.row.parent)">载入脚本</div>
+                      <div class="script-repo-menu-item" @click="repoStartAction('rename', repoMenu.row.script, repoMenu.row.parent, repoMenu.row.script.name)">重命名</div>
+                      <div class="script-repo-menu-item" @click="repoStartAction('move', repoMenu.row.script, repoMenu.row.parent, '')">移动到文件夹...</div>
+                      <div class="script-repo-menu-item danger" @click="repoStartAction('deleteScript', repoMenu.row.script, repoMenu.row.parent)">🗑 删除脚本</div>
+                    </template>
                   </div>
                 </div>
               </div>
