@@ -1,0 +1,12 @@
+{
+  "name": "DFM_MCP_AIProbe_service",
+  "version": "0.1.0",
+  "description": "AI 探针 MCP 服务：经设备探针（DFMProbe）读取当前无障碍树、按 id/text/desc 点击组件、截取当前屏幕",
+  "entry": "server:server",
+  "requirements": "requirements.txt",
+  "tools": [
+    { "name": "get_accessibility_tree", "description": "读取设备当前页面的无障碍组件树（含包名与 ID 列表）" },
+    { "name": "click_component", "description": "按组件 id/text/desc 匹配设备当前页面组件并点击" },
+    { "name": "get_screenshot", "description": "截取设备当前屏幕，返回本地图片路径与设备端文件大小" }
+  ]
+}
