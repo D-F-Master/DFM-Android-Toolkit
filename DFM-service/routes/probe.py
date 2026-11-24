@@ -33,6 +33,14 @@ CMD_CAMERA = 0x0A
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
+# 设备端离线脚本命令字（0x0E 解压 / 0x0F 列表 / 0x10 执行）
+CMD_SCRIPT_UNZIP = 0x0E
+CMD_SCRIPT_LIST = 0x0F
+CMD_SCRIPT_RUN = 0x10
+
+# 脚本 zip 在设备端的固定推送地址（应用外部私有目录下）
+DEVICE_SCRIPT_DIR = "/sdcard/Android/data/com.dfm.probe/files/script_in"
+
 ACK_TIMEOUT = 0.2
 MAX_RETRY = 3
 RESPONSE_TIMEOUT = 120.0
@@ -613,6 +621,71 @@ def probe_message(req: ProbeMessageRequest):
     0x05 串口发送 / 0x07 关闭串口会话 / 0x08 shell 命令执行 / 0x09 截屏 /
     0x0A 摄像头拍照 / 0x0B 跳转无障碍设置页 / 0x0C 无障碍组件树返回业务应答 /
     0x0D 无障碍点击（设备端按 id/text/desc 匹配节点并执行 ACTION_CLICK），
+    0x0E 脚本 zip 解压 / 0x0F 脚本列表 / 0x10 脚本执行，
     其余命令字由设备端回 0xFF CMD_ERROR。
     """
     return _result(req.deviceId, False, req.cmd, req.data)
+
+
+class ProbeScriptImportRequest(BaseModel):
+    deviceId: str
+    zipPath: str
+
+
+class ProbeScriptRunRequest(BaseModel):
+    deviceId: str
+    script: str
+    repeat: int = Field(1, ge=0, le=1000)
+
+
+@router.post("/probe/script-import")
+def probe_script_import(req: ProbeScriptImportRequest):
+    """把本地脚本 zip 推送到设备并解压。
+
+    adb push 到设备固定地址 DEVICE_SCRIPT_DIR（files/script_in/），随后发 0x0E
+    让设备端解压到 files/script_store/{脚本名}/；成功后删除设备端 zip 避免残留。
+    zipPath 接受本地 zip 绝对路径（如 D:\\log\\script_exports\\xxx.zip）。
+    """
+    device_id = (req.deviceId or "").strip()
+    if not device_id:
+        return {"code": 400, "message": "deviceId 不能为空", "data": None}
+    import os
+    zip_path = (req.zipPath or "").strip()
+    if not zip_path or not os.path.isfile(zip_path):
+        return {"code": 400, "message": f"zip 文件不存在: {zip_path}", "data": None}
+    zip_name = os.path.basename(zip_path)
+    if not zip_name.lower().endswith(".zip"):
+        return {"code": 400, "message": "仅支持 .zip 文件", "data": None}
+    # 先确保目录存在（旧 APK 上可能还没有 script_in/）
+    rc, out, err = _adb(device_id, "shell", "mkdir", "-p", DEVICE_SCRIPT_DIR)
+    if rc != 0:
+        return {"code": 500, "message": f"创建设备目录失败: {err or out}", "data": None}
+    rc, out, err = _adb(device_id, "push", zip_path, f"{DEVICE_SCRIPT_DIR}/{zip_name}", timeout=600)
+    if rc != 0:
+        return {"code": 500, "message": f"adb push 失败: {err or out}", "data": None}
+    result = _result(device_id, False, CMD_SCRIPT_UNZIP, {"zip": zip_name})
+    resp = (result.get("data") or {}).get("response") or {}
+    if resp.get("code") == 200:
+        # 解压成功后删除设备端 zip，避免 script_in 残留堆积
+        try:
+            _adb(device_id, "shell", "rm", "-f", f"{DEVICE_SCRIPT_DIR}/{zip_name}")
+        except Exception as e:
+            logger.warning(f"probe 删除设备端 zip 失败 device={device_id}: {e}")
+    return result
+
+
+@router.post("/probe/script-list")
+def probe_script_list(req: ProbeRequest):
+    """列出设备端已导入的脚本（0x0F），返回 script_store 下含 script.json 的目录。"""
+    return _result(req.deviceId, False, CMD_SCRIPT_LIST, {})
+
+
+@router.post("/probe/script-run")
+def probe_script_run(req: ProbeScriptRunRequest):
+    """执行设备端已导入的脚本（0x10），返回逐步骤成败日志。
+
+    注意：脚本执行时长受帧协议 RESPONSE_TIMEOUT=120s 限制，超长脚本
+    （如大 repeat、长 sleep）会因响应超时而失败；repeat=0 表示按脚本自身配置执行。
+    """
+    return _result(req.deviceId, False, CMD_SCRIPT_RUN,
+                   {"script": req.script, "repeat": req.repeat})
