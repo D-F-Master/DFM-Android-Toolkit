@@ -2199,7 +2199,7 @@ onUnmounted(() => {
                             'drag-over': scriptStepDragOver === idx && scriptStepDragFrom !== idx,
                             dragging: scriptStepDragFrom === idx,
                           }"
-                          draggable="true"
+                          :draggable="scriptEditingStep !== idx"
                           @click="toggleStepEdit(idx)"
                           @dragstart="onScriptStepDragStart(idx, $event)"
                           @dragover="onScriptStepDragOver(idx, $event)"
@@ -2450,30 +2450,6 @@ onUnmounted(() => {
                             <div v-if="step.type !== 'condition'" class="script-config-row">
                               <span>执行次数</span>
                               <el-input-number v-model="step.count" class="ep-config-num" :min="1" :max="99" controls-position="right" />
-                            </div>
-                            <div v-if="step.type === 'input'" class="script-config-hint">
-                              输入到设备当前聚焦的输入框，通常放在一次点击之后
-                            </div>
-                            <div v-else-if="step.type === 'waitFor'" class="script-config-hint">
-                              反复截屏搜索模板，组件出现才继续下一步；超时未出现判失败
-                            </div>
-                            <div v-else-if="step.type === 'condition'" class="script-config-hint">
-                              单次判断后按「成立/不成立」分支；分支可执行任意左侧功能（执行·开头的项会执行该功能一步）、执行脚本（嵌套跑完整个脚本再继续）或跳转；时间条件读取一次设备时钟后在本地等待到点（不再轮询，当天目标时刻已过则立即成立）；无障碍点击条件 = 在无障碍树中找到匹配节点并点击，点到了即成立（需设备已启用无障碍权限）；跳转目标用绝对步骤序号，排序或增删步骤后请重新核对
-                            </div>
-                            <div v-else-if="step.type === 'tts'" class="script-config-hint">
-                              通过探针 0x01 命令让设备朗读上方文本；需先在设备列表完成探针安装通讯，朗读最长约 90 秒
-                            </div>
-                            <div v-else-if="step.type === 'accClick'" class="script-config-hint">
-                              经探针 0x0D 在无障碍组件树中按 id/text/desc 匹配节点并直接执行无障碍点击（ACTION_CLICK）；至少填一项，多项同时满足才命中；需设备已启用无障碍权限
-                            </div>
-                            <div v-else-if="step.type === 'runScript'" class="script-config-hint">
-                              嵌套执行另一个已保存的脚本：按顺序跑完其全部步骤后继续；嵌套深度最多 3 层，执行中点「停止」会同时停止子脚本
-                            </div>
-                            <div v-else-if="SCRIPT_ADB_STEPS.some(a => a.type === step.type)" class="script-config-hint">
-                              设备动作步骤直接走 adb 命令，无需屏幕录制；可放在任意位置
-                            </div>
-                            <div v-else class="script-config-hint">
-                              开启「步骤」后可在画面上拖动该步骤的位置
                             </div>
                           </div>
                           </div>
