@@ -409,8 +409,8 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
             return f"第 {idx} 步的 {label} 动作无效: {action}（应为 {'/'.join(BRANCH_ACTIONS)} 或某个步骤功能）"
         if action == "goto":
             target = branch.get("target")
-            if not isinstance(target, int) or isinstance(target, bool) or not (idx < target <= total):
-                return f"第 {idx} 步的 {label} 跳转目标必须是第 {idx + 1}-{total} 步之间的序号"
+            if not isinstance(target, int) or isinstance(target, bool) or not (1 <= target <= total):
+                return f"第 {idx} 步的 {label} 跳转目标必须是第 1-{total} 步之间的序号"
         if action == "runScript":
             name = str(branch.get("script", "")).strip()
             if not name:
@@ -1612,7 +1612,7 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         if jumps > MAX_SCRIPT_JUMPS:
                             raise RuntimeError(f"判断步骤跳转次数超过上限 {MAX_SCRIPT_JUMPS}，可能存在死循环")
                         next_idx = int(branch.get("target", 0)) - 1
-                        if not (idx < next_idx < len(steps)):
+                        if not (0 <= next_idx < len(steps)):
                             raise RuntimeError(f"判断步骤跳转目标无效: 第 {branch.get('target')} 步")
                         idx = next_idx
                         continue
