@@ -1650,26 +1650,6 @@ const importScriptFromList = async () => {
   }
 }
 
-// 导入按钮：弹出选择（导出 zip 包 / 已保存列表）
-const openImportMenu = () => {
-  showList(
-    [
-      { value: 'zip', label: '从导出包（zip）导入', desc: '脚本 + 引用的 APK/模板图一次导入' },
-      { value: 'saved', label: '从已保存脚本载入', desc: '载入 data/scripts 下已有的脚本' },
-    ],
-    (choice?: string) => {
-      if (choice === 'zip') {
-        importScriptFromZip()
-      } else if (choice === 'saved') {
-        importScriptFromList()
-      }
-    },
-    '导入脚本',
-    '',
-    '确定'
-  )
-}
-
 // 添加一个独立的邮箱通知分类（不在执行脚本步骤序列里）
 const addScriptNotify = () => {
   if (scriptNotifyAdded.value) return
@@ -2180,9 +2160,16 @@ onUnmounted(() => {
                           >统一间隔</button>
                           <button
                             class="script-mini-btn"
-                            @click="openImportMenu"
+                            @click="importScriptFromZip"
                             :disabled="scriptSaving || scriptRunning"
+                            title="从导出的 zip 包导入（脚本 + 引用的 APK/模板图）"
                           >导入</button>
+                          <button
+                            class="script-mini-btn"
+                            @click="importScriptFromList"
+                            :disabled="scriptSaving || scriptRunning"
+                            title="从已保存脚本列表中载入"
+                          >仓库</button>
                           <button class="script-mini-btn" @click="clearScriptSteps" :disabled="scriptSteps.length === 0">清空</button>
                         </div>
                       </div>
