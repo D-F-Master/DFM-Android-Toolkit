@@ -55,6 +55,7 @@ import random
 import asyncio
 import threading
 import zipfile
+import shutil
 from pathlib import Path
 
 import cv2
@@ -134,6 +135,23 @@ def _safe_name(name: str) -> str:
     return name or "unnamed"
 
 
+def _safe_rel_dir(rel: str) -> Path:
+    """
+    把用户传入的相对目录路径解析为 SCRIPTS_DIR 下的安全子目录 Path。
+    逐段用 _safe_name 过滤，杜绝 .. / 绝对路径 / 反斜杠穿越；空路径返回根目录。
+    """
+    rel = (rel or "").strip().replace("\\", "/")
+    if not rel:
+        return SCRIPTS_DIR
+    parts = [_safe_name(seg) for seg in rel.split("/") if seg.strip()]
+    return SCRIPTS_DIR.joinpath(*parts) if parts else SCRIPTS_DIR
+
+
+def _script_file(name: str, rel: str = "") -> Path:
+    """脚本文件路径：目录下的 {safe_name(name)}.json"""
+    return _safe_rel_dir(rel) / f"{_safe_name(name)}.json"
+
+
 class ScriptSaveRequest(BaseModel):
     name: str
     repeat: int = 1
@@ -144,6 +162,18 @@ class ScriptSaveRequest(BaseModel):
 
 class ScriptNameRequest(BaseModel):
     name: str
+    path: str = ""   # 所在文件夹相对路径，"" 表示根目录（仓库文件夹功能）
+
+
+class FolderRequest(BaseModel):
+    path: str = ""   # 文件夹相对路径，"" 表示根目录
+    name: str = ""   # 新建/重命名时的名称
+
+
+class ScriptMoveRequest(BaseModel):
+    name: str
+    fromPath: str = ""   # 源文件夹相对路径
+    toPath: str = ""     # 目标文件夹相对路径
 
 
 class ScriptRunRequest(BaseModel):
@@ -635,7 +665,7 @@ def load_script(request: ScriptNameRequest):
     try:
         _ensure_scripts_dir()
         name = _safe_name(request.name)
-        path = SCRIPTS_DIR / f"{name}.json"
+        path = _script_file(name, request.path)
         if not path.exists():
             return {"code": 404, "message": f"脚本 {name} 不存在", "data": None}
         with open(path, "r", encoding="utf-8") as f:
@@ -651,13 +681,129 @@ def delete_script(request: ScriptNameRequest):
     try:
         _ensure_scripts_dir()
         name = _safe_name(request.name)
-        path = SCRIPTS_DIR / f"{name}.json"
+        path = _script_file(name, request.path)
         if path.exists():
             path.unlink()
             logger.info(f"Script deleted: {path}")
         return {"code": 200, "message": "success", "data": None}
     except Exception as e:
         return {"code": 500, "message": f"删除脚本失败: {str(e)}", "data": None}
+
+
+# ========== 仓库文件夹管理 ==========
+
+@router.post("/device/script/folder/list")
+def list_script_folder(request: dict):
+    """列出某文件夹下的子文件夹与脚本概要（path="" 表示根目录）"""
+    try:
+        _ensure_scripts_dir()
+        rel = str((request or {}).get("path", "") or "")
+        folder = _safe_rel_dir(rel)
+        if not folder.exists() or not folder.is_dir():
+            return {"code": 404, "message": "文件夹不存在", "data": None}
+        dirs, scripts = [], []
+        for child in sorted(folder.iterdir(), key=lambda p: p.name):
+            if child.is_dir():
+                dirs.append(child.name)
+            elif child.suffix == ".json":
+                try:
+                    with open(child, "r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    scripts.append({
+                        "name": data.get("name", child.stem),
+                        "fileName": child.stem,
+                        "repeat": data.get("repeat", 1),
+                        "stepCount": len(data.get("steps", [])),
+                    })
+                except Exception:
+                    continue
+        return {"code": 200, "message": "success", "data": {"path": rel, "dirs": dirs, "scripts": scripts}}
+    except Exception as e:
+        return {"code": 500, "message": f"读取文件夹失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/folder/create")
+def create_script_folder(request: FolderRequest):
+    """在当前路径下新建子文件夹"""
+    try:
+        _ensure_scripts_dir()
+        folder = _safe_rel_dir(request.path) / _safe_name(request.name)
+        if folder.exists():
+            return {"code": 400, "message": "文件夹已存在", "data": None}
+        folder.mkdir(parents=True)
+        logger.info(f"Script folder created: {folder}")
+        return {"code": 200, "message": "success", "data": {"name": folder.name}}
+    except Exception as e:
+        return {"code": 500, "message": f"创建文件夹失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/folder/delete")
+def delete_script_folder(request: FolderRequest):
+    """删除文件夹（含其中全部脚本，禁止删根目录）"""
+    try:
+        _ensure_scripts_dir()
+        target = _safe_rel_dir(request.path) / _safe_name(request.name)
+        if target == SCRIPTS_DIR or not target.exists() or not target.is_dir():
+            return {"code": 400, "message": "文件夹不存在或不可删除", "data": None}
+        shutil.rmtree(target)
+        logger.info(f"Script folder deleted: {target}")
+        return {"code": 200, "message": "success", "data": None}
+    except Exception as e:
+        return {"code": 500, "message": f"删除文件夹失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/rename")
+def rename_script(request: dict):
+    """重命名脚本文件（同一文件夹内改名）"""
+    try:
+        _ensure_scripts_dir()
+        body = request or {}
+        rel = str(body.get("path", "") or "")
+        old_name = _safe_name(str(body.get("name", "")))
+        new_name = _safe_name(str(body.get("newName", "")))
+        if not new_name:
+            return {"code": 400, "message": "新名称不能为空", "data": None}
+        src = _script_file(old_name, rel)
+        dst = _script_file(new_name, rel)
+        if not src.exists():
+            return {"code": 404, "message": "脚本不存在", "data": None}
+        if dst.exists():
+            return {"code": 400, "message": "同名脚本已存在", "data": None}
+        src.rename(dst)
+        # 同步更新脚本内的 name 字段，保证载入后显示的是新名
+        try:
+            with open(dst, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            data["name"] = new_name
+            with open(dst, "w", encoding="utf-8") as fp:
+                json.dump(data, fp, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        logger.info(f"Script renamed: {src} -> {dst}")
+        return {"code": 200, "message": "success", "data": {"name": new_name}}
+    except Exception as e:
+        return {"code": 500, "message": f"重命名失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/move")
+def move_script(request: ScriptMoveRequest):
+    """把脚本从源文件夹移动到目标文件夹"""
+    try:
+        _ensure_scripts_dir()
+        name = _safe_name(request.name)
+        src = _script_file(name, request.fromPath)
+        dst_dir = _safe_rel_dir(request.toPath)
+        if not src.exists():
+            return {"code": 404, "message": "脚本不存在", "data": None}
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / f"{name}.json"
+        if dst.exists():
+            return {"code": 400, "message": "目标文件夹已有同名脚本", "data": None}
+        src.rename(dst)
+        logger.info(f"Script moved: {src} -> {dst}")
+        return {"code": 200, "message": "success", "data": None}
+    except Exception as e:
+        return {"code": 500, "message": f"移动脚本失败: {str(e)}", "data": None}
 
 
 @router.post("/device/script/import")
