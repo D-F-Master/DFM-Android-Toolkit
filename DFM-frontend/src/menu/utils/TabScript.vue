@@ -216,15 +216,15 @@ const onScriptConditionKindChange = (step: any, kind: string) => {
   if (kind === 'template') fetchScriptTemplates()
 }
 
-// 只允许跳到本步骤之后的步骤（target 是 1-based 步骤序号）
+// 允许跳到任意步骤（含往前，target 是 1-based 步骤序号）；跳到第 1 步即「从头开始」
 const scriptGotoTargets = (idx: number): number[] => {
   const targets: number[] = []
-  for (let n = idx + 2; n <= scriptSteps.value.length; n++) targets.push(n)
+  for (let n = 1; n <= scriptSteps.value.length; n++) targets.push(n)
   return targets
 }
 
 const onScriptBranchActionChange = (branch: any, idx: number) => {
-  if (branch.action === 'goto') branch.target = idx + 2
+  if (branch.action === 'goto') branch.target = 1
   else delete branch.target
   if (branch.action === 'runScript') {
     branch.script = branch.script || ''
