@@ -895,6 +895,13 @@ const beginScriptStream = () => {
   startScriptStream()
 }
 
+// 重试：彻底断开当前连接后重新建立（先 stop 清理旧连接/decoder，再 begin 重连）
+const retryScriptStream = () => {
+  if (!selectedDevice.value) return
+  stopScriptStream()
+  beginScriptStream()
+}
+
 // 离开脚本页：不立即断开，改为 5 分钟后空闲断连；期间切回由 activeTab watch 取消计时并复用连接
 const scheduleScriptIdleClose = () => {
   cancelScriptIdleTimer()
@@ -1972,6 +1979,12 @@ onUnmounted(() => {
                     <div class="script-screen-header">
                       <span>屏幕预览</span>
                       <span class="script-ws-status" :class="{ live: scriptStreaming }">{{ scriptWsStatus }}</span>
+                      <button
+                        class="script-mini-btn"
+                        @click="retryScriptStream"
+                        :disabled="!selectedDevice"
+                        title="断开当前连接并重新连接屏幕预览"
+                      >重试</button>
                       <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
                       <label class="script-switch" :class="{ on: scriptShowTree }">
                         <input type="checkbox" v-model="scriptShowTree" />
