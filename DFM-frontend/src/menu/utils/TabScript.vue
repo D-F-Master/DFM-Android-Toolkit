@@ -230,6 +230,8 @@ const onScriptBranchActionChange = (branch: any, idx: number) => {
     branch.script = branch.script || ''
     if (scriptSavedOptions.value.length === 0) fetchSavedScriptOptions()
   }
+  // TTS 分支朗读文本：进入时确保字段存在。text 为 input/tts/accClick 共用字段，离开时不删，避免误删或切回丢失。
+  if (branch.action === 'tts' && branch.text === undefined) branch.text = ''
 }
 
 // 已上传的 APK 列表（安装APK步骤的下拉数据源）
@@ -2278,6 +2280,10 @@ onUnmounted(() => {
                                   <el-option v-for="s in scriptSavedOptions" :key="s.value" :value="s.value" :label="s.label" />
                                 </el-select>
                               </div>
+                              <div v-if="step.onTrue.action === 'tts'" class="script-config-row">
+                                <span>朗读文本</span>
+                                <el-input v-model="step.onTrue.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
+                              </div>
                               <div class="script-config-row">
                                 <span>不成立时</span>
                                 <el-select v-model="step.onFalse.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onFalse, idx)">
@@ -2301,6 +2307,10 @@ onUnmounted(() => {
                                 <el-select v-model="step.onFalse.script" class="ep-config-select" placeholder="选择已保存的脚本" :loading="scriptSavedLoading" filterable>
                                   <el-option v-for="s in scriptSavedOptions" :key="s.value" :value="s.value" :label="s.label" />
                                 </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'tts'" class="script-config-row">
+                                <span>朗读文本</span>
+                                <el-input v-model="step.onFalse.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
                               </div>
                             </template>
                             <!-- 设备动作类步骤的专属参数 -->
