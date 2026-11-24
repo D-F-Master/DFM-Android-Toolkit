@@ -886,6 +886,8 @@ const stopScriptStream = () => {
   scriptStreaming.value = false
   scriptWsStatus.value = '未连接'
   scriptRecording.value = false
+  // 流断开后退出无障碍获取模式，避免按钮状态与实际不符
+  finishScriptTreePick()
   // 流断开后不再接管键盘，避免打字继续发往已关闭的连接
   scriptReleaseKeyboard()
 }
@@ -1187,22 +1189,30 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
   if (scriptRemotePressing) scriptSendTouch(1, p)
   scriptRemotePressing = false
 
-  // 无障碍点击详情页展开 + 组件树开启 + 未开实时控制：点击组件 → 回填属性到详情页
-  // （纯编辑行为：不注入设备、不录新步骤；节点三项完全同步为该组件当前值）
+  // 无障碍属性回填：点「获取」进入的获取模式，或原有的展开 accClick 详情自动回填
+  // （纯编辑行为：不录新步骤；节点三项完全同步为该组件当前值）
+  const pickIdx = scriptTreePickStep.value
+  const backfillIdx = pickIdx !== null ? pickIdx : scriptEditingStep.value
+  const backfillStep = backfillIdx !== null ? scriptSteps.value[backfillIdx] : null
+  const isAccStep = !!backfillStep && (
+    backfillStep.type === 'accClick' ||
+    (backfillStep.type === 'condition' && backfillStep.kind === 'accClick')
+  )
   if (
     !scriptRecording.value &&
     !scriptLiveControl.value &&
     scriptShowTree.value &&
-    scriptEditingStep.value !== null &&
-    scriptSteps.value[scriptEditingStep.value]?.type === 'accClick'
+    isAccStep &&
+    backfillIdx !== null
   ) {
     const node = scriptTreeNodeAt(p.x, p.y)
     if (node) {
-      const editStep = scriptSteps.value[scriptEditingStep.value]
-      editStep.id = node.id || ''
-      editStep.text = node.text || ''
-      editStep.desc = node.desc || ''
-      showNotification(`已把组件属性填入第 ${scriptEditingStep.value + 1} 步（无障碍点击）`, 'success')
+      backfillStep!.id = node.id || ''
+      backfillStep!.text = node.text || ''
+      backfillStep!.desc = node.desc || ''
+      showNotification(`已把组件属性填入第 ${backfillIdx + 1} 步`, 'success')
+      // 获取模式：回填完成即退出并恢复组件树原开关状态
+      if (pickIdx !== null) finishScriptTreePick()
     } else {
       showNotification('该位置没有命中带 id/text/desc 的组件', 'info')
     }
@@ -1354,10 +1364,13 @@ const addScriptConditionStep = () => {
 }
 
 const removeScriptStep = (idx: number) => {
+  // 获取模式下删除目标步骤（或其之前的步骤会使下标错位）→ 退出并恢复组件树
+  if (scriptTreePickStep.value !== null && scriptTreePickStep.value >= idx) finishScriptTreePick()
   scriptSteps.value.splice(idx, 1)
 }
 
 const clearScriptSteps = () => {
+  finishScriptTreePick()
   scriptSteps.value = []
 }
 
@@ -1432,6 +1445,16 @@ const onScriptStepDrop = (idx: number, ev: DragEvent) => {
       scriptEditingStep.value -= 1
     } else if (from > scriptEditingStep.value && idx <= scriptEditingStep.value) {
       scriptEditingStep.value += 1
+    }
+  }
+  // 获取模式的目标下标同样跟随被移动的步骤，避免回填到错误步骤
+  if (scriptTreePickStep.value !== null) {
+    if (scriptTreePickStep.value === from) {
+      scriptTreePickStep.value = idx
+    } else if (from < scriptTreePickStep.value && idx >= scriptTreePickStep.value) {
+      scriptTreePickStep.value -= 1
+    } else if (from > scriptTreePickStep.value && idx <= scriptTreePickStep.value) {
+      scriptTreePickStep.value += 1
     }
   }
   showNotification(`已将步骤移动到第 ${idx + 1} 位`, 'info')
@@ -1787,6 +1810,29 @@ const scriptTreeInfo = ref<any>(null)
 const scriptTreeError = ref('')
 const scriptTreeLoading = ref(false)
 let scriptTreeTimer: number | null = null
+
+// 无障碍输入框「获取」：临时开启组件树，点选组件回填 id/text/desc 后恢复原开关状态
+const scriptTreePickStep = ref<number | null>(null) // 正在获取的目标步骤下标，null 表示未在获取
+let scriptTreePickPrevShow = false // 进入获取前组件树是否开启，退出时据此恢复
+const startScriptTreePick = (idx: number) => {
+  if (scriptTreePickStep.value === idx) { cancelScriptTreePick(); return }
+  // 若已在其它步骤的获取模式，先按原基准恢复，再以当前状态作为新基准
+  if (scriptTreePickStep.value !== null) finishScriptTreePick()
+  scriptTreePickStep.value = idx
+  scriptTreePickPrevShow = scriptShowTree.value
+  if (!scriptShowTree.value) scriptShowTree.value = true
+  showNotification('组件树已开启，请在左侧屏幕预览中点击要获取的无障碍组件', 'info')
+}
+const finishScriptTreePick = () => {
+  if (scriptTreePickStep.value === null) return
+  scriptTreePickStep.value = null
+  if (!scriptTreePickPrevShow) scriptShowTree.value = false
+}
+const cancelScriptTreePick = () => {
+  const idx = scriptTreePickStep.value
+  finishScriptTreePick()
+  if (idx !== null) showNotification('已取消获取', 'info')
+}
 const fetchScriptTree = async () => {
   if (!selectedDevice.value || scriptTreeLoading.value) return
   scriptTreeLoading.value = true
@@ -1820,6 +1866,7 @@ const fetchScriptTree = async () => {
     if (raw.includes('已在设备上打开无障碍设置页')) {
       stopScriptTreePolling()
       scriptShowTree.value = false
+      scriptTreePickStep.value = null // 权限未开启强制关树，退出获取模式（不恢复树）
     }
   } finally {
     scriptTreeLoading.value = false
@@ -2247,6 +2294,7 @@ onUnmounted(() => {
                               <div v-if="step.kind === 'accClick'" class="script-config-row">
                                 <span>resource-id</span>
                                 <el-input v-model="step.id" class="ep-config-input" placeholder="com.example:id/btn（精确匹配）" />
+                                <button class="script-add-btn" :disabled="!scriptStreaming || scriptRunning" :title="scriptTreePickStep === idx ? '取消获取并恢复组件树原状态' : '开启组件树，点选组件自动填入 id/text/desc'" @click="startScriptTreePick(idx)">{{ scriptTreePickStep === idx ? '取消获取' : '获取组件' }}</button>
                               </div>
                               <div v-if="step.kind === 'accClick'" class="script-config-row">
                                 <span>文本</span>
@@ -2375,6 +2423,7 @@ onUnmounted(() => {
                             <div v-if="step.type === 'accClick'" class="script-config-row">
                               <span>resource-id</span>
                               <el-input v-model="step.id" class="ep-config-input" placeholder="com.x:id/btn（精确匹配）" />
+                              <button class="script-add-btn" :disabled="!scriptStreaming || scriptRunning" :title="scriptTreePickStep === idx ? '取消获取并恢复组件树原状态' : '开启组件树，点选组件自动填入 id/text/desc'" @click="startScriptTreePick(idx)">{{ scriptTreePickStep === idx ? '取消获取' : '获取组件' }}</button>
                             </div>
                             <div v-if="step.type === 'accClick'" class="script-config-row">
                               <span>文本 text</span>
