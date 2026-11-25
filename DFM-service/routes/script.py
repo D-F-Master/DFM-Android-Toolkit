@@ -201,7 +201,8 @@ class ScriptImportRequest(BaseModel):
 class ScriptExportRequest(BaseModel):
     """导出脚本包：把脚本 JSON + 引用的 APK/模板图 打成 zip"""
     name: str
-    path: str = ""   # 脚本所在文件夹相对路径，"" 表示根目录（仓库子文件夹用）
+    path: str = ""       # 脚本所在文件夹相对路径，"" 表示根目录（仓库子文件夹用）
+    targetDir: str = ""  # 导出保存目录（绝对路径），空则用默认 D:\log\script_exports
 
 
 class ScriptImportZipResult(BaseModel):
@@ -1005,7 +1006,14 @@ def export_script_zip(request: ScriptExportRequest):
         if missing:
             return {"code": 400, "message": "以下资源缺失，请先补齐再导出: " + "、".join(missing), "data": None}
 
+        # 导出目录：前端目录选择框传入则用之（校验为绝对路径，拒绝相对路径防落到工作目录下），
+        # 未传则用默认 D:\log\script_exports
         export_root = r"D:\log\script_exports"
+        target_dir = str(request.targetDir or "").strip()
+        if target_dir:
+            if not os.path.isabs(target_dir):
+                return {"code": 400, "message": "导出目录必须是绝对路径", "data": None}
+            export_root = target_dir
         os.makedirs(export_root, exist_ok=True)
         zip_path = os.path.join(export_root, f"{name}.zip")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
