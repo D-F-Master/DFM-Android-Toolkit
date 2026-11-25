@@ -3600,6 +3600,16 @@ button.batch-remote-tile-tag.active,
   background: #e8f0fe !important;
 }
 
+/* 仓库拖拽：文件夹作为放置目标高亮，被拖的脚本半透明 */
+:deep(.script-repo-node.script-repo-drop-target) {
+  background: #d9f0d5 !important;
+  outline: 1px dashed #4caf50;
+}
+
+:deep(.script-repo-node.script-repo-dragging) {
+  opacity: 0.5;
+}
+
 :deep(.script-repo-arrow) {
   width: 14px;
   flex-shrink: 0;

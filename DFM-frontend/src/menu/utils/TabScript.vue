@@ -1831,6 +1831,67 @@ const repoMoveScript = async () => {
   } catch (error: any) { showNotification('移动失败: ' + error.message, 'error') }
 }
 
+// 仓库拖拽移动：脚本行拖到文件夹行上即移动（复用 /script/move）
+const repoDragging = ref<{ script: any; parent: RepoDirNode } | null>(null)
+const repoDragOverPath = ref<string | null>(null)
+const onRepoScriptDragStart = (script: any, parent: RepoDirNode, ev: DragEvent) => {
+  repoDragging.value = { script, parent }
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    // Firefox 需要 setData 才会进入拖拽状态
+    ev.dataTransfer.setData('text/plain', script.fileName)
+  }
+  closeRepoMenu()
+}
+const onRepoScriptDragEnd = () => {
+  repoDragging.value = null
+  repoDragOverPath.value = null
+}
+const onRepoDirDragOver = (node: RepoDirNode, ev: DragEvent) => {
+  if (!repoDragging.value) return
+  ev.preventDefault()
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+  // 拖到源文件夹本身不高亮（移到原地无意义）
+  repoDragOverPath.value = repoDragging.value.parent.path === node.path ? null : node.path
+}
+const onRepoDirDragLeave = (node: RepoDirNode) => {
+  if (repoDragOverPath.value === node.path) repoDragOverPath.value = null
+}
+const onRepoDirDrop = async (node: RepoDirNode, ev: DragEvent) => {
+  ev.preventDefault()
+  const from = repoDragging.value
+  repoDragOverPath.value = null
+  repoDragging.value = null
+  if (!from || from.parent.path === node.path) return
+  try {
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/move`, {
+      name: from.script.fileName, fromPath: from.parent.path, toPath: node.path,
+    })).data
+    if (d.code !== 200) { showNotification('移动失败: ' + (d.message || '未知错误'), 'error'); return }
+    showNotification(`已将「${from.script.name}」移动到「${node.name}」`, 'success')
+    node.expanded = true
+    // 目标文件夹可能还没加载过，先加载它（否则展开后看到空目录）
+    await repoLoadDir(node, true)
+    repoRefreshLoaded()
+  } catch (error: any) { showNotification('移动失败: ' + error.message, 'error') }
+}
+
+// 仓库右键导出：直接导出指定脚本（含子文件夹），不弹二次列表
+const repoExportScript = async (s: any, parent: RepoDirNode) => {
+  closeRepoMenu()
+  try {
+    const d = (await axios.post(`${API_BASE.value}/api/device/script/export-zip`, {
+      name: s.fileName, path: parent.path,
+    })).data
+    if (d.code !== 200) { showNotification('导出失败: ' + (d.message || '未知错误'), 'error'); return }
+    const info = d.data
+    const parts = [`脚本「${s.name}」导出成功: ${info.path}`, `大小 ${formatBytes(info.size)}`]
+    if (info.apkNames?.length) parts.push(`含 APK：${info.apkNames.join('、')}`)
+    if (info.templateNames?.length) parts.push(`含模板图：${info.templateNames.join('、')}`)
+    showNotification(parts.join('\n'), 'success')
+  } catch (error: any) { showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error') }
+}
+
 // 添加一个独立的邮箱通知分类（不在执行脚本步骤序列里）
 const addScriptNotify = () => {
   if (scriptNotifyAdded.value) return
@@ -2719,8 +2780,18 @@ onUnmounted(() => {
                           v-for="row in repoFlatRows"
                           :key="row.kind === 'dir' ? 'd:' + row.node.path : 's:' + row.parent.path + '/' + row.script.fileName"
                           class="script-repo-node"
-                          :class="{ 'script-repo-node-selected': repoMenu && repoMenu.row === row }"
+                          :class="{
+                            'script-repo-node-selected': repoMenu && repoMenu.row === row,
+                            'script-repo-drop-target': row.kind === 'dir' && repoDragOverPath === row.node.path,
+                            'script-repo-dragging': row.kind === 'script' && repoDragging?.script === row.script,
+                          }"
                           :style="{ paddingLeft: (8 + row.depth * 18) + 'px' }"
+                          :draggable="row.kind === 'script' && scriptRepoAction === ''"
+                          @dragstart="row.kind === 'script' && onRepoScriptDragStart(row.script, row.parent, $event)"
+                          @dragend="onRepoScriptDragEnd"
+                          @dragover="row.kind === 'dir' && onRepoDirDragOver(row.node, $event)"
+                          @dragleave="row.kind === 'dir' && onRepoDirDragLeave(row.node)"
+                          @drop="row.kind === 'dir' && onRepoDirDrop(row.node, $event)"
                           @contextmenu.prevent.stop="openRepoMenu($event, row)"
                         >
                           <!-- 文件夹节点 -->
@@ -2779,6 +2850,7 @@ onUnmounted(() => {
                     </template>
                     <template v-else>
                       <div class="script-repo-menu-item" @click="repoLoadScript(repoMenu.row.script, repoMenu.row.parent)">载入脚本</div>
+                      <div class="script-repo-menu-item" @click="repoExportScript(repoMenu.row.script, repoMenu.row.parent)">📤 导出脚本(zip)</div>
                       <div class="script-repo-menu-item" @click="repoStartAction('rename', repoMenu.row.script, repoMenu.row.parent, repoMenu.row.script.name)">重命名</div>
                       <div class="script-repo-menu-item" @click="repoStartAction('move', repoMenu.row.script, repoMenu.row.parent, '')">移动到文件夹...</div>
                       <div class="script-repo-menu-item danger" @click="repoStartAction('deleteScript', repoMenu.row.script, repoMenu.row.parent)">🗑 删除脚本</div>
