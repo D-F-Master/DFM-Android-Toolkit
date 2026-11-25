@@ -201,6 +201,7 @@ class ScriptImportRequest(BaseModel):
 class ScriptExportRequest(BaseModel):
     """导出脚本包：把脚本 JSON + 引用的 APK/模板图 打成 zip"""
     name: str
+    path: str = ""   # 脚本所在文件夹相对路径，"" 表示根目录（仓库子文件夹用）
 
 
 class ScriptImportZipResult(BaseModel):
@@ -976,7 +977,7 @@ def export_script_zip(request: ScriptExportRequest):
     try:
         _ensure_scripts_dir()
         name = _safe_name(request.name)
-        path = SCRIPTS_DIR / f"{name}.json"
+        path = _script_file(name, request.path)
         if not path.exists():
             return {"code": 404, "message": f"脚本 {name} 不存在", "data": None}
 
