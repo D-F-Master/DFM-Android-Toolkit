@@ -269,6 +269,127 @@ const getProbeAccessibilityTree = async () => {
     probeBusy.value = '';
   }
 };
+
+// ---------- 设备端离线脚本：0x0E 导入 / 0x0F 列表 / 0x10 执行 ----------
+
+// 0x0F 返回的 {scripts:[{name,steps,size,importedAt,error?}]} 格式化为多行文本
+const formatProbeScriptList = (info: any) => {
+  const scripts = info.scripts || [];
+  if (!scripts.length) return '设备端还没有脚本，请先用「导入脚本」把 zip 包推送到设备';
+  const lines = [`设备端脚本 ${scripts.length} 个：`];
+  scripts.forEach((s: any) => {
+    lines.push(`  • ${s.name} — ${s.steps ?? 0} 步 · ${s.size ?? 0} B · ${s.importedAt || '未知时间'}${s.error ? `（${s.error}）` : ''}`);
+  });
+  return lines.join('\n');
+};
+
+// 0x10 返回的 {script,ok,error,summary,logs[],truncated} 格式化为多行文本
+const formatProbeScriptRun = (info: any) => {
+  const s = info.summary || {};
+  const head = [
+    `脚本 ${info.script || '?'} ${info.ok ? '执行成功' : '执行失败'}${info.error ? `：${info.error}` : ''}`,
+    `轮数 ${s.rounds ?? '?'} · 步骤 ${s.steps ?? '?'} · 耗时 ${s.durationMs ?? '?'}ms${info.truncated ? '（日志已截断）' : ''}`,
+  ];
+  const logs = (info.logs || []).map((l: any) => `  ${l.no}. ${l.type} ${l.ok ? '✓' : '✗'} ${l.message || ''}`);
+  return [...head, ...logs].join('\n');
+};
+
+// 0x0E：把脚本页导出的 zip 推到设备并解压（后端 script-import 先 adb push 再发 0x0E）
+const importProbeScript = () => {
+  if (!probeReady()) return;
+  showPrompt('输入脚本 zip 的本地绝对路径（脚本页「导出」生成在 D:\\log\\script_exports\\）', (zipPath: string) => {
+    const p = (zipPath || '').trim();
+    if (!p.toLowerCase().endsWith('.zip')) {
+      nextTick(() => showMessage('路径需指向 .zip 文件', '导入脚本到设备'));
+      return;
+    }
+    probeBusy.value = 'script-import';
+    probeResult.value = '正在推送并解压脚本包到设备...';
+    probePost('/api/probe/script-import', { deviceId: selectedDevice.value, zipPath: p }, 600000)
+      .then((info: any) => {
+        probeResult.value = [
+          `已导入脚本「${info.script || '?'}」`,
+          `步骤 ${info.steps ?? 0} 个 · 文件 ${info.files ?? 0} 个`,
+          info.apks?.length ? `APK：${info.apks.join('、')}` : '',
+          info.templates?.length ? `模板图：${info.templates.join('、')}` : '',
+          `设备端目录：${info.path || ''}`,
+        ].filter(Boolean).join('\n');
+        showMessage(`脚本「${info.script || '?'}」已导入设备`, '导入脚本到设备');
+      })
+      .catch((e: any) => {
+        const text = `导入失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+        probeResult.value = text;
+        showMessage(text, '导入脚本到设备');
+      })
+      .finally(() => { probeBusy.value = ''; });
+  }, 'D:\\log\\script_exports\\', '导入脚本到设备');
+};
+
+// 0x0F：列出设备端已导入的脚本
+const listProbeScripts = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'script-list';
+  probeResult.value = '正在读取设备端脚本列表...';
+  try {
+    const info = await probePost('/api/probe/script-list', { deviceId: selectedDevice.value }, 60000);
+    probeResult.value = formatProbeScriptList(info);
+    showMessage(`设备端脚本 ${(info.scripts || []).length} 个`, '设备脚本列表');
+  } catch (e: any) {
+    const text = `读取失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '设备脚本列表');
+  } finally {
+    probeBusy.value = '';
+  }
+};
+
+// 0x10：先列出设备端脚本供选择，再输入轮数执行
+const runProbeScript = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'script-run';
+  probeResult.value = '正在读取设备端脚本列表...';
+  try {
+    const info = await probePost('/api/probe/script-list', { deviceId: selectedDevice.value }, 60000);
+    const scripts = info.scripts || [];
+    if (!scripts.length) throw new Error('设备端还没有脚本，请先用「导入脚本」推送');
+    // 先清 busy，否则后续弹窗回调里的操作会被 probeReady 守卫吞掉（同 onProbePhoto）
+    probeBusy.value = '';
+    const items = scripts.map((s: any) => ({
+      value: s.name,
+      label: s.name,
+      desc: `${s.steps ?? 0} 步 · ${s.importedAt || ''}`,
+    }));
+    showList(items, (name: string) => {
+      // handleModalConfirm 在回调返回后会 modalVisible=false，同步弹 prompt 会被立刻关掉，
+      // 故 nextTick 延迟到关闭之后（同 ModalDialog 里 watch 错开类型切换的时序处理）
+      nextTick(() => showPrompt('输入执行轮数（0=按脚本自身配置，1-1000）', (repeatText: string) => {
+        const repeat = repeatText.trim() === '' ? 1 : Number(repeatText.trim());
+        if (!Number.isInteger(repeat) || repeat < 0 || repeat > 1000) {
+          nextTick(() => showMessage('轮数需为 0-1000 的整数', '执行设备脚本'));
+          return;
+        }
+        probeBusy.value = 'script-run';
+        probeResult.value = `正在执行脚本「${name}」${repeat} 轮...`;
+        probePost('/api/probe/script-run', { deviceId: selectedDevice.value, script: name, repeat }, 200000)
+          .then((r: any) => {
+            probeResult.value = formatProbeScriptRun(r);
+            showMessage(`脚本「${name}」${r.ok ? '执行成功' : '执行失败'}`, '执行设备脚本');
+          })
+          .catch((e: any) => {
+            const text = `执行失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+            probeResult.value = text;
+            showMessage(text, '执行设备脚本');
+          })
+          .finally(() => { probeBusy.value = ''; });
+      }, '1', '执行设备脚本'));
+    }, '选择要执行的设备端脚本', '设备端还没有脚本', '执行');
+  } catch (e: any) {
+    const text = `读取失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '执行设备脚本');
+    probeBusy.value = '';
+  }
+};
 </script>
 
 <template>
@@ -319,6 +440,21 @@ const getProbeAccessibilityTree = async () => {
                         @click="getProbeAccessibilityTree"
                         :disabled="probeDisabled"
                       >{{ probeBusy === 'accessibility-tree' ? '读取中...' : '无障碍组件树' }}</button>
+                      <button
+                        class="check-button"
+                        @click="importProbeScript"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'script-import' ? '导入中...' : '导入脚本' }}</button>
+                      <button
+                        class="check-button"
+                        @click="listProbeScripts"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'script-list' ? '读取中...' : '设备脚本列表' }}</button>
+                      <button
+                        class="check-button"
+                        @click="runProbeScript"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'script-run' ? '执行中...' : '执行设备脚本' }}</button>
                     </div>
                     <div class="serial-row">
                       <label class="serial-check">
@@ -328,7 +464,7 @@ const getProbeAccessibilityTree = async () => {
                     </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C。TTS 与 Shell 会弹出输入框；拍照先读取摄像头列表供选择，照片回传后设备端立即删除；组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10。TTS、Shell 与导入脚本会弹出输入框；导入脚本填脚本页「导出」生成的 zip 绝对路径（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
                     </div>
                   </div>
                 </div>
