@@ -1529,52 +1529,6 @@ const applyImportedSteps = (steps: any[], repeat: number, name: string) => {
   showNotification(`已导入脚本「${name}」，共 ${steps.length} 个步骤`, 'success')
 }
 
-// ---------- 导出脚本包（zip：脚本 JSON + 引用的 APK/模板图） ----------
-
-const scriptExporting = ref(false)
-
-const exportScriptZip = async () => {
-  try {
-    const response = await axios.post(`${API_BASE.value}/api/device/script/list`)
-    if (response.data.code !== 200) {
-      showNotification('获取脚本列表失败: ' + (response.data.message || '未知错误'), 'error')
-      return
-    }
-    const scripts = response.data.data || []
-    // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
-    const items = scripts
-      .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
-      .map((s: any) => ({
-        value: s.name,
-        label: s.name,
-        desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
-      }))
-
-    showList(items, async (name?: string) => {
-      if (!name) return
-      scriptExporting.value = true
-      try {
-        const exported = await axios.post(`${API_BASE.value}/api/device/script/export-zip`, { name })
-        if (exported.data.code === 200) {
-          const d = exported.data.data
-          const parts = [`脚本「${d.path}」导出成功`, `大小 ${formatBytes(d.size)}`]
-          if (d.apkNames?.length) parts.push(`含 APK：${d.apkNames.join('、')}`)
-          if (d.templateNames?.length) parts.push(`含模板图：${d.templateNames.join('、')}`)
-          showNotification(parts.join('\n'), 'success')
-        } else {
-          showNotification('导出失败: ' + (exported.data.message || '未知错误'), 'error')
-        }
-      } catch (error: any) {
-        showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
-      } finally {
-        scriptExporting.value = false
-      }
-    }, '选择要导出的脚本', '还没有保存过脚本', '导出')
-  } catch (error: any) {
-    showNotification('获取脚本列表失败: ' + error.message, 'error')
-  }
-}
-
 // 从导出 zip 包一键导入：脚本 + 资源一次到位
 const importScriptFromZip = () => {
   const input = document.createElement('input')
@@ -1876,20 +1830,32 @@ const onRepoDirDrop = async (node: RepoDirNode, ev: DragEvent) => {
   } catch (error: any) { showNotification('移动失败: ' + error.message, 'error') }
 }
 
-// 仓库右键导出：直接导出指定脚本（含子文件夹），不弹二次列表
-const repoExportScript = async (s: any, parent: RepoDirNode) => {
+// 仓库右键导出：先选保存目录再导出指定脚本（含子文件夹），不弹二次脚本列表
+const repoExportScript = (s: any, parent: RepoDirNode) => {
   closeRepoMenu()
-  try {
-    const d = (await axios.post(`${API_BASE.value}/api/device/script/export-zip`, {
-      name: s.fileName, path: parent.path,
-    })).data
-    if (d.code !== 200) { showNotification('导出失败: ' + (d.message || '未知错误'), 'error'); return }
-    const info = d.data
-    const parts = [`脚本「${s.name}」导出成功: ${info.path}`, `大小 ${formatBytes(info.size)}`]
-    if (info.apkNames?.length) parts.push(`含 APK：${info.apkNames.join('、')}`)
-    if (info.templateNames?.length) parts.push(`含模板图：${info.templateNames.join('、')}`)
-    showNotification(parts.join('\n'), 'success')
-  } catch (error: any) { showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error') }
+  // uTools 环境用系统目录选择框选保存位置（不默认写死目录）；浏览器开发态回退手输
+  const doExport = (targetDir: string) => {
+    if (!targetDir || !targetDir.trim()) { showNotification('导出目录不能为空', 'error'); return }
+    axios.post(`${API_BASE.value}/api/device/script/export-zip`, {
+      name: s.fileName, path: parent.path, targetDir: targetDir.trim(),
+    }).then((res) => {
+      const d = res.data
+      if (d.code !== 200) { showNotification('导出失败: ' + (d.message || '未知错误'), 'error'); return }
+      const info = d.data
+      const parts = [`脚本「${s.name}」导出成功: ${info.path}`, `大小 ${formatBytes(info.size)}`]
+      if (info.apkNames?.length) parts.push(`含 APK：${info.apkNames.join('、')}`)
+      if (info.templateNames?.length) parts.push(`含模板图：${info.templateNames.join('、')}`)
+      showNotification(parts.join('\n'), 'success')
+    }).catch((error: any) => {
+      showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
+    })
+  }
+  if ((window as any).utools && (window as any).utools.showOpenDialog) {
+    const selected = (window as any).utools.showOpenDialog({ title: '选择导出目录', properties: ['openDirectory'] })
+    if (selected && selected.length > 0) doExport(selected[0])
+    return
+  }
+  showPrompt('请输入导出目录（绝对路径）', (dir: string) => doExport(dir), '例如 D:\\log\\script_exports', '导出脚本')
 }
 
 // 添加一个独立的邮箱通知分类（不在执行脚本步骤序列里）
@@ -2759,7 +2725,6 @@ onUnmounted(() => {
                         <button class="script-action-btn" @click="runCurrentSteps" :disabled="scriptRunning || scriptSaving">执行</button>
                         <button v-if="scriptRunning" class="script-action-btn script-stop-btn" @click="stopScriptRun">停止</button>
                         <button v-if="!scriptRunning" class="script-action-btn" @click="repeatRun" :disabled="scriptSaving">重复</button>
-                        <button class="script-action-btn" @click="exportScriptZip" :disabled="scriptExporting || scriptSaving" title="导出为 zip 包（脚本 + 引用的 APK/模板图），拷到其他电脑导入即可用">导出</button>
                       </div>
                     </div>
                   </div>
@@ -2850,7 +2815,7 @@ onUnmounted(() => {
                     </template>
                     <template v-else>
                       <div class="script-repo-menu-item" @click="repoLoadScript(repoMenu.row.script, repoMenu.row.parent)">载入脚本</div>
-                      <div class="script-repo-menu-item" @click="repoExportScript(repoMenu.row.script, repoMenu.row.parent)">📤 导出脚本(zip)</div>
+                      <div class="script-repo-menu-item" @click="repoExportScript(repoMenu.row.script, repoMenu.row.parent)">导出脚本(zip)</div>
                       <div class="script-repo-menu-item" @click="repoStartAction('rename', repoMenu.row.script, repoMenu.row.parent, repoMenu.row.script.name)">重命名</div>
                       <div class="script-repo-menu-item" @click="repoStartAction('move', repoMenu.row.script, repoMenu.row.parent, '')">移动到文件夹...</div>
                       <div class="script-repo-menu-item danger" @click="repoStartAction('deleteScript', repoMenu.row.script, repoMenu.row.parent)">🗑 删除脚本</div>
