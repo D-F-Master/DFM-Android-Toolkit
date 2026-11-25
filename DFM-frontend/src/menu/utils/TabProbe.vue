@@ -297,15 +297,26 @@ const formatProbeScriptRun = (info: any) => {
 // 0x0E：把脚本页导出的 zip 推到设备并解压（后端 script-import 先 adb push 再发 0x0E）
 const importProbeScript = () => {
   if (!probeReady()) return;
-  showPrompt('输入脚本 zip 的本地绝对路径（脚本页「导出」生成在 D:\\log\\script_exports\\）', (zipPath: string) => {
-    const p = (zipPath || '').trim();
-    if (!p.toLowerCase().endsWith('.zip')) {
-      nextTick(() => showMessage('路径需指向 .zip 文件', '导入脚本到设备'));
+  // 用系统文件对话框选 zip，取选中文件的本地绝对路径传给后端（后端 adb push 需要路径，不能传文件内容）
+  // File.path 是 Electron/uTools 渲染进程提供的字段（同 TabApps 里选 APK 取路径的做法）
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.zip,application/zip';
+  input.onchange = () => {
+    const file = input.files?.[0] as (File & { path?: string }) | undefined;
+    if (!file) return;
+    const zipPath = (file.path || '').trim();
+    if (!zipPath) {
+      showMessage('无法获取文件本地路径，请确认在 uTools/桌面端中使用（浏览器环境不支持）', '导入脚本到设备');
+      return;
+    }
+    if (!zipPath.toLowerCase().endsWith('.zip')) {
+      showMessage('请选择 .zip 文件', '导入脚本到设备');
       return;
     }
     probeBusy.value = 'script-import';
-    probeResult.value = '正在推送并解压脚本包到设备...';
-    probePost('/api/probe/script-import', { deviceId: selectedDevice.value, zipPath: p }, 600000)
+    probeResult.value = `正在推送并解压脚本包「${file.name}」到设备...`;
+    probePost('/api/probe/script-import', { deviceId: selectedDevice.value, zipPath }, 600000)
       .then((info: any) => {
         probeResult.value = [
           `已导入脚本「${info.script || '?'}」`,
@@ -322,7 +333,8 @@ const importProbeScript = () => {
         showMessage(text, '导入脚本到设备');
       })
       .finally(() => { probeBusy.value = ''; });
-  }, 'D:\\log\\script_exports\\', '导入脚本到设备');
+  };
+  input.click();
 };
 
 // 0x0F：列出设备端已导入的脚本
@@ -464,7 +476,7 @@ const runProbeScript = async () => {
                     </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10。TTS、Shell 与导入脚本会弹出输入框；导入脚本填脚本页「导出」生成的 zip 绝对路径（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
                     </div>
                   </div>
                 </div>
