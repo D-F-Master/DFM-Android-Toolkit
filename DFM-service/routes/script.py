@@ -50,6 +50,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import time
 import random
 import asyncio
@@ -66,7 +67,7 @@ from typing import Optional, List
 
 import logging
 from config import logger
-from utils.tool_manager import get_data_path, get_log_path
+from utils.tool_manager import get_adb_path, get_data_path, get_log_path
 from routes.adb_utils import execute_adb_command
 
 
@@ -217,6 +218,7 @@ INJECT_STEP_TYPES = ("tap", "swipe", "longpress", "input")
 ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
     "keyevent", "volume", "reboot", "tts", "accClick", "runScript",
+    "sleep", "shell", "screenshot",
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
@@ -226,6 +228,8 @@ CONDITION_KINDS = ("appInstalled", "template", "shell", "time", "accClick")
 BRANCH_ACTIONS = ("continue", "goto", "stop", "fail", "runScript")
 MAX_SCRIPT_JUMPS = 100  # 每轮脚本的跳转次数上限，防止分支构成死循环
 MAX_NESTED_SCRIPT_DEPTH = 3  # 嵌套执行脚本（runScript）的最大深度，防递归套娃
+MAX_STEP_RETRIES = 5  # 步骤级失败重试的最大次数（每次失败后重试一次）
+STEP_RETRY_INTERVAL_CAP = 600000  # 步骤重试间隔上限（毫秒）
 VALID_STEP_TYPES = INJECT_STEP_TYPES + ADB_STEP_TYPES + VISION_STEP_TYPES + CONDITION_STEP_TYPES
 
 
@@ -406,6 +410,42 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
             return f"第 {idx} 步的嵌套脚本 {sub_name} 不存在，请先保存"
         return ""
 
+    if step_type == "sleep":
+        # 固定延时：以 seconds 为准（count>1 时重复等待）
+        try:
+            seconds = float(step.get("seconds", 1))
+        except (TypeError, ValueError):
+            return f"第 {idx} 步的延时时长无效"
+        if not (0 < seconds <= 3600):
+            return f"第 {idx} 步的延时时长需在 0-3600 秒之间"
+        return ""
+
+    if step_type == "shell":
+        cmd = str(step.get("command", "")).strip()
+        if not cmd:
+            return f"第 {idx} 步未填写 Shell 命令"
+        if len(cmd) > 2000:
+            return f"第 {idx} 步的 Shell 命令过长（上限 2000 字符）"
+        lowered = cmd.lower()
+        if lowered.startswith("adb ") or lowered.startswith("adb.exe "):
+            return f"第 {idx} 步的 Shell 命令不要带 adb 前缀，命令会在设备 shell 中执行"
+        if '"' in cmd:
+            return f"第 {idx} 步的 Shell 命令不能包含双引号"
+        try:
+            timeout = int(step.get("timeout", 60))
+        except (TypeError, ValueError):
+            return f"第 {idx} 步的命令超时无效"
+        if not (1 <= timeout <= 600):
+            return f"第 {idx} 步的命令超时需在 1-600 秒之间"
+        return ""
+
+    if step_type == "screenshot":
+        # 截图存档：只校验保存文件名前缀，实际文件落在本次执行的日志目录
+        label = str(step.get("label", "") or "").strip()
+        if len(label) > 64:
+            return f"第 {idx} 步的截图名称过长（上限 64 字符）"
+        return ""
+
     return ""
 
 
@@ -568,7 +608,8 @@ def _normalize_steps(steps) -> List[dict]:
                 "interval": step.get("interval", 0),
                 "count": step.get("count", 1),
             }
-            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc", "x", "y"):
+            for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc", "x", "y",
+                          "seconds", "command", "timeout", "label", "expectOutput", "failOnError", "waitOnline", "onlineTimeout"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             if step["type"] == "runScript":
@@ -605,6 +646,10 @@ def _normalize_steps(steps) -> List[dict]:
         if step["type"] == "longpress":
             item["duration"] = step.get("duration", 800)
         normalized.append(item)
+    # 步骤级失败重试：所有类型通用，字段归一化后统一补（0=不重试）
+    for item, raw in zip(normalized, steps):
+        item["retry"] = max(0, min(MAX_STEP_RETRIES, int(raw.get("retry", 0) or 0)))
+        item["retryInterval"] = max(0, min(STEP_RETRY_INTERVAL_CAP, int(raw.get("retryInterval", 2000) or 0)))
     return normalized
 
 
@@ -1139,7 +1184,8 @@ def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w:
         _exec_adb_step(
             device_id,
             {**step, "_base_w": int(script.get("videoWidth") or 0), "_base_h": int(script.get("videoHeight") or 0),
-             "_screen_w": w, "_screen_h": h},
+             "_screen_w": w, "_screen_h": h,
+             "_log_dir": script.get("_log_dir"), "_stop_event": script.get("_stop_event")},
             1,
             round_no,
         )
@@ -1179,6 +1225,85 @@ def _check_package_installed(device_id: str, pkg: str) -> bool:
     """检查设备上是否安装了指定包（pm path 对不存在的包返回空输出且 exit 1）"""
     result = execute_adb_command(f'adb -s {device_id} shell pm path "{pkg}"', timeout=30)
     return bool(result["success"] and (result.get("stdout") or "").strip())
+
+
+def _run_device_shell(device_id: str, command: str, timeout: int = 60) -> dict:
+    """
+    在设备 shell 中执行一条命令，返回 {"code": 返回码, "stdout": 输出, "stderr": 错误}
+
+    不能用 execute_adb_command：它会把命令串里的 'adb ' 全局替换成 Windows adb 路径，
+    用户命令里只要出现 'adb ' 就会被污染（见 adb_utils.execute_adb_command 注释）。
+    这里用参数列表调用，命令作为单个参数交给 adb，不做任何字符串替换，
+    设备端的管道/重定向/分号串联都能原样生效。
+    """
+    try:
+        proc = subprocess.run(
+            [get_adb_path(), "-s", device_id, "shell", command],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=timeout,
+        )
+        return {"code": proc.returncode, "stdout": proc.stdout or "", "stderr": proc.stderr or ""}
+    except subprocess.TimeoutExpired:
+        return {"code": -1, "stdout": "", "stderr": f"命令超时（{timeout}s）"}
+    except Exception as e:
+        return {"code": -1, "stdout": "", "stderr": f"{type(e).__name__}: {e}"}
+
+
+def _wait_device_online(device_id: str, timeout: float = 180, stop_event=None) -> float:
+    """
+    等设备重新上线（reboot 后必用），返回实际等待秒数
+
+    两段等待：① 先等它从 adb devices 里消失（重启瞬间设备可能还在列表里，
+    立即判在线会误通过）；② 再等它带 device 状态重新出现。
+    超过 timeout 秒仍未上线抛 RuntimeError。
+    """
+    start = time.monotonic()
+    deadline = start + max(1.0, timeout)
+    gone = False
+    logger.info(f"[{device_id}] 等待设备重新上线（上限 {timeout:g}s）")
+    while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            raise _ScriptStopped()
+        online = _check_device_online(device_id)
+        if not gone:
+            # 设备还没断连：说明重启命令刚发出，继续等它掉线
+            if not online:
+                gone = True
+                logger.info(f"[{device_id}] 设备已断开，等待重新上线")
+        elif online:
+            elapsed = time.monotonic() - start
+            logger.info(f"[{device_id}] 设备已重新上线，耗时 {elapsed:.1f}s")
+            return elapsed
+        if stop_event is not None:
+            stop_event.wait(2.0)
+        else:
+            time.sleep(2.0)
+    raise RuntimeError(f"等待设备重新上线超时（{timeout:g}s 内未恢复）")
+
+
+def _save_step_screenshot(device_id: str, log_dir, label: str = "") -> Path:
+    """
+    截图步骤：把当前画面存进本次执行的日志目录，返回文件路径
+
+    与报错截图（_capture_error_screen）同一目录，方便事后把
+    「步骤 n 的画面」和 run.log 的时间线对照着看。
+    """
+    from routes.vision import capture_screen
+
+    if log_dir is None:
+        raise RuntimeError("截图步骤缺少日志目录（可能不在脚本执行流程中调用）")
+    frame = capture_screen(device_id)
+    if frame is None:
+        raise RuntimeError("截图失败：未取到设备画面")
+    prefix = _safe_name(label) if str(label or "").strip() else "step"
+    shot = Path(log_dir) / f"{prefix}_{time.strftime('%H%M%S')}.png"
+    if not cv2.imwrite(str(shot), frame):
+        raise RuntimeError(f"截图保存失败: {shot}")
+    logger.info(f"[{device_id}] 截图已保存: {shot.name}")
+    return shot
 
 
 # 嵌套执行脚本（runScript）的当前深度：同一执行线程内传递（asyncio/线程池下互不干扰）
@@ -1342,6 +1467,38 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             result = execute_adb_command(f"adb -s {device_id} reboot", timeout=30)
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "reboot failed").strip())
+            # 等待设备重新上线：reboot 只是发命令，设备随即断连，
+            # 不等待的话后续步骤必然报"设备不在线"。
+            # 只在最后一轮等（count>1 连发重启没有意义，且上线等待是分钟级阻塞）
+            if step.get("waitOnline", True) and i >= repeat_count - 1:
+                _wait_device_online(device_id, float(step.get("onlineTimeout", 180)), step.get("_stop_event"))
+
+        elif stype == "sleep":
+            # 固定延时步骤：只等待、不做任何设备操作
+            seconds = float(step.get("seconds", 1))
+            _interruptible_sleep(seconds * 1000, step.get("_stop_event"), raise_on_stop=True)
+            logger.info(f"[{device_id}] 固定延时 {seconds:g}s 完成")
+
+        elif stype == "shell":
+            # 自由 Shell 执行：命令直接交给设备 shell，输出整体记入日志
+            cmd = str(step.get("command", "")).strip()
+            timeout = max(1, min(600, int(step.get("timeout", 60) or 60)))
+            result = _run_device_shell(device_id, cmd, timeout)
+            stdout = (result.get("stdout") or "").strip()
+            stderr = (result.get("stderr") or "").strip()
+            summary = (stdout or stderr)[:500]
+            logger.info(f"[{device_id}] Shell「{cmd}」返回码 {result['code']}：{summary or '(无输出)'}")
+            # expectOutput 非空时要求输出包含该串，否则视为步骤失败
+            expect = str(step.get("expectOutput", "") or "")
+            if expect and expect not in stdout:
+                raise RuntimeError(f"Shell 步骤输出未包含「{expect}」：{summary[:200] or '(无输出)'}")
+            # failOnError=true 时命令返回码非 0 视为失败（默认只记录不判失败）
+            if step.get("failOnError") and result["code"] != 0:
+                raise RuntimeError(f"Shell 命令返回码 {result['code']}：{summary[:200] or '(无输出)'}")
+
+        elif stype == "screenshot":
+            # 截图存档：存进本次执行的日志目录，与 run.log/报错截图放一起
+            _save_step_screenshot(device_id, step.get("_log_dir"), step.get("label", ""))
 
         elif stype == "tts":
             # TTS 步骤走探针帧协议（0x01），与探针工具页一样复用已安装的探针服务
@@ -1430,7 +1587,7 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             raise RuntimeError(f"未知设备动作步骤类型: {stype}")
 
         if i < repeat_count - 1:
-            time.sleep(max(0, int(step.get("interval", 0))) / 1000)
+            _interruptible_sleep(max(0, int(step.get("interval", 0))), step.get("_stop_event"))
 
 
 def _load_scaled_template(device_id: str, step: dict, base_w: int, base_h: int):
@@ -1631,6 +1788,81 @@ def _eval_condition(device_id: str, step: dict, base_w: int, base_h: int, stop_e
     return ok, reason
 
 
+def _inject_gesture_step(session, step: dict, i: int, w: int, h: int, scale_x: float, scale_y: float,
+                         round_no: int, interval: int, stop_event, count: int):
+    """
+    执行一次手势注入（tap/longpress/swipe/input），供重试包装复用
+
+    从 _run_script_on_device 的循环体原样抽出，行为不变；
+    抽出的目的是让手势步骤也能套 _run_step_with_retry。
+    """
+    stype = step.get("type")
+
+    def _sx(v) -> float:
+        return v * scale_x
+
+    def _sy(v) -> float:
+        return v * scale_y
+
+    if stype == "tap":
+        session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
+        session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
+        time.sleep(0.05)
+    elif stype == "longpress":
+        session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
+        time.sleep(max(0.1, step.get("duration", 800)) / 1000)
+        session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
+    elif stype == "swipe":
+        # 滑动：down → 多段 move → up，模拟真实手势
+        x1, y1 = _sx(step["x1"]), _sy(step["y1"])
+        x2, y2 = _sx(step.get("x2", step["x1"])), _sy(step.get("y2", step["y1"]))
+        seg = 10
+        session.inject_touch(0, x1, y1, w, h)
+        for k in range(1, seg + 1):
+            session.inject_touch(2, x1 + (x2 - x1) * k / seg, y1 + (y2 - y1) * k / seg, w, h)
+            time.sleep(0.01)
+        session.inject_touch(1, x2, y2, w, h)
+    elif stype == "input":
+        # 输入文字：注入到设备当前聚焦的输入框
+        # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
+        text = _resolve_step_text(str(step.get("text") or ""), i + 1, round_no)
+        if text:
+            session.inject_text(text)
+            # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
+            time.sleep(0.1)
+        else:
+            logger.warning("Input step with empty text skipped")
+    else:
+        logger.warning(f"Unknown step type: {stype}")
+        return
+    if i < count - 1:
+        _interruptible_sleep(interval, stop_event)
+
+
+def _run_step_with_retry(step: dict, stop_event, runner, step_no: int = 0):
+    """
+    执行步骤，失败时按步骤的 retry/retryInterval 重试
+
+    retry=0（默认）等价于直接调用 runner 一次，行为与改造前完全一致。
+    重试只针对执行失败（RuntimeError 等）；用户停止（_ScriptStopped）不重试。
+    """
+    retries = max(0, int(step.get("retry", 0) or 0))
+    retry_interval = max(0, int(step.get("retryInterval", 2000) or 0))
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            return runner()
+        except _ScriptStopped:
+            raise
+        except Exception as e:
+            last_error = e
+            if attempt >= retries:
+                break
+            logger.warning(f"步骤 {step_no} 第 {attempt + 1} 次执行失败，{retry_interval / 1000:g}s 后重试: {e}")
+            _interruptible_sleep(retry_interval, stop_event, raise_on_stop=True)
+    raise last_error
+
+
 def _run_script_on_device(device_id: str, script: dict, repeat: int):
     """
     在设备上回放脚本（阻塞，运行于 task_queue 工作线程）
@@ -1731,19 +1963,28 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                     # 基准分辨率优先用脚本保存的录制尺寸，缺失则用会话尺寸
                     base_w = int(script.get("videoWidth") or 0) or w
                     base_h = int(script.get("videoHeight") or 0) or h
-                    for _ in range(count):
-                        if stop_event.is_set():
-                            break
-                        _exec_wait_step(device_id, step, base_w, base_h, stop_event)
+                    _run_step_with_retry(
+                        step,
+                        stop_event,
+                        lambda: [_exec_wait_step(device_id, step, base_w, base_h, stop_event) for _ in range(count)],
+                        current_step_no,
+                    )
                 # 设备动作类步骤走 adb 命令或探针帧（不依赖 scrcpy 会话），count 在函数内部循环
                 elif stype in ADB_STEP_TYPES:
                     # 传入录制基准分辨率：accClick 兜底坐标换算用（缺省 0 时兜底不可用）
-                    _exec_adb_step(
-                        device_id,
-                        {**step, "_base_w": int(script.get("videoWidth") or 0), "_base_h": int(script.get("videoHeight") or 0),
-                         "_screen_w": w, "_screen_h": h},
-                        count,
-                        round_no,
+                    # _log_dir 供截图步骤落盘，_stop_event 供延时/等上线步骤响应停止
+                    _run_step_with_retry(
+                        step,
+                        stop_event,
+                        lambda: _exec_adb_step(
+                            device_id,
+                            {**step, "_base_w": int(script.get("videoWidth") or 0), "_base_h": int(script.get("videoHeight") or 0),
+                             "_screen_w": w, "_screen_h": h,
+                             "_log_dir": log_dir, "_stop_event": stop_event},
+                            count,
+                            round_no,
+                        ),
+                        current_step_no,
                     )
                 # 判断步骤：求一次条件，按真/假分支动作决定下一步
                 elif stype in CONDITION_STEP_TYPES:
@@ -1775,45 +2016,15 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         # 把分支参数当作一个临时步骤执行（参数可省，用默认值）
                         _run_branch_step(device_id, action, branch, script, w, h, round_no)
                 else:
-                    for i in range(count):
-                        if stype == "tap":
-                            session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                            session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                            time.sleep(0.05)
-                        elif stype == "longpress":
-                            session.inject_touch(0, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                            time.sleep(max(0.1, step.get("duration", 800)) / 1000)
-                            session.inject_touch(1, _sx(step["x1"]), _sy(step["y1"]), w, h)
-                        elif stype == "swipe":
-                            # 滑动：down → 多段 move → up，模拟真实手势
-                            x1, y1 = _sx(step["x1"]), _sy(step["y1"])
-                            x2, y2 = _sx(step.get("x2", step["x1"])), _sy(step.get("y2", step["y1"]))
-                            seg = 10
-                            session.inject_touch(0, x1, y1, w, h)
-                            for k in range(1, seg + 1):
-                                session.inject_touch(
-                                    2,
-                                    x1 + (x2 - x1) * k / seg,
-                                    y1 + (y2 - y1) * k / seg,
-                                    w, h,
-                                )
-                                time.sleep(0.01)
-                            session.inject_touch(1, x2, y2, w, h)
-                        elif stype == "input":
-                            # 输入文字：注入到设备当前聚焦的输入框
-                            # （通常紧跟在一个点击步骤之后，点哪个框就往哪个框打字）
-                            text = _resolve_step_text(str(step.get("text") or ""), i + 1, round_no)
-                            if text:
-                                session.inject_text(text)
-                                # 给输入法/应用处理 IME 事件留出时间，避免后续步骤抢跑
-                                time.sleep(0.1)
-                            else:
-                                logger.warning("Input step with empty text skipped")
-                        else:
-                            logger.warning(f"Unknown step type: {stype}")
-                            break
-                        if i < count - 1:
-                            _interruptible_sleep(interval, stop_event)
+                    _run_step_with_retry(
+                        step,
+                        stop_event,
+                        lambda: [
+                            _inject_gesture_step(session, step, i, w, h, scale_x, scale_y, round_no, interval, stop_event, count)
+                            for i in range(count)
+                        ],
+                        current_step_no,
+                    )
                 # 步与步之间的间隔（interval 单位毫秒）
                 idx += 1
                 if idx < len(steps):
@@ -1841,11 +2052,21 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
 _script_runs: dict = {}
 
 
-def _interruptible_sleep(ms: float, stop_event: threading.Event):
-    """可被停止请求提前唤醒的等待"""
+def _interruptible_sleep(ms: float, stop_event: threading.Event, raise_on_stop: bool = False):
+    """
+    可被停止请求提前唤醒的等待
+
+    raise_on_stop=True 时，等待被停止请求打断会抛 _ScriptStopped（「固定延时」
+    这类纯等待步骤必须抛——否则会白白跑完剩余步骤，停不下来）。
+    """
     if ms <= 0:
         return
+    if stop_event is None:
+        time.sleep(ms / 1000)
+        return
     stop_event.wait(ms / 1000)
+    if raise_on_stop and stop_event.is_set():
+        raise _ScriptStopped()
 
 
 @router.post("/device/script/stop-run")
