@@ -156,6 +156,9 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'tts', label: 'TTS语音', icon: '🗣️' },
   { type: 'accClick', label: '无障碍点击', icon: '🎯' },
   { type: 'runScript', label: '执行脚本', icon: '🧩' },
+  { type: 'sleep', label: '固定延时', icon: '⏳' },
+  { type: 'shell', label: '执行Shell', icon: '💻' },
+  { type: 'screenshot', label: '截图存档', icon: '📸' },
 ]
 
 // 手势类步骤（手动添加：坐标默认屏幕中心，开启「显示步骤」后在画面上拖动标记调整）
@@ -351,6 +354,9 @@ const scriptAdbStepDefaults = (type: string): Record<string, any> => {
     case 'tts': return { text: '' }
     case 'accClick': return { id: '', text: '', desc: '' }
     case 'runScript': return { script: '', repeat: 1 }
+    case 'sleep': return { seconds: 3 }
+    case 'shell': return { command: '', timeout: 60 }
+    case 'screenshot': return { label: '' }
     default: return {}
   }
 }
@@ -1294,6 +1300,9 @@ const scriptOnPointerCancel = () => {  // 手势被中断，丢弃这次按下�
 }
 
 const addScriptStep = (step: any) => {
+  // 步骤级失败重试是所有类型通用的开关，统一在这里补默认值
+  if (step.retry === undefined) step.retry = 0
+  if (step.retryInterval === undefined) step.retryInterval = 2000
   scriptSteps.value.push(step)
   showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
 }
@@ -1317,7 +1326,7 @@ const addScriptAdbStep = (type: string) => {
     interval: 500,
     count: 1,
   })
-  if (type === 'runScript') {
+  if (type === 'runScript' || type === 'shell' || type === 'screenshot') {
     scriptEditingStep.value = scriptSteps.value.length - 1
   }
 }
@@ -2601,6 +2610,46 @@ onUnmounted(() => {
                             <div v-if="step.type === 'runScript'" class="script-config-row">
                               <span>执行轮数</span>
                               <el-input-number v-model="step.repeat" class="ep-config-num" :min="1" :max="99" controls-position="right" />
+                            </div>
+                            <div v-if="step.type === 'sleep'" class="script-config-row">
+                              <span>延时时长(秒)</span>
+                              <el-input-number v-model="step.seconds" class="ep-config-num" :min="0.1" :max="3600" :step="0.5" :precision="1" controls-position="right" />
+                            </div>
+                            <div v-if="step.type === 'shell'" class="script-config-row">
+                              <span>Shell 命令</span>
+                              <el-input v-model="step.command" class="ep-config-input" placeholder="在设备 shell 中执行，如 getprop ro.serialno" />
+                            </div>
+                            <div v-if="step.type === 'shell'" class="script-config-row">
+                              <span>期望输出</span>
+                              <el-input v-model="step.expectOutput" class="ep-config-input" placeholder="选填：输出须包含该内容，否则本步失败" />
+                            </div>
+                            <div v-if="step.type === 'shell'" class="script-config-row">
+                              <span>命令超时(秒)</span>
+                              <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="600" controls-position="right" />
+                            </div>
+                            <div v-if="step.type === 'shell'" class="script-config-row">
+                              <span>返回码非 0</span>
+                              <el-checkbox v-model="step.failOnError">判定为失败</el-checkbox>
+                            </div>
+                            <div v-if="step.type === 'screenshot'" class="script-config-row">
+                              <span>截图名称</span>
+                              <el-input v-model="step.label" class="ep-config-input" maxlength="64" placeholder="选填：文件名前缀，如 启动后" />
+                            </div>
+                            <div v-if="step.type === 'reboot'" class="script-config-row">
+                              <span>等待上线</span>
+                              <el-checkbox v-model="step.waitOnline">重启后等设备重新上线</el-checkbox>
+                            </div>
+                            <div v-if="step.type === 'reboot' && step.waitOnline !== false" class="script-config-row">
+                              <span>上线超时(秒)</span>
+                              <el-input-number v-model="step.onlineTimeout" class="ep-config-num" :min="10" :max="1800" controls-position="right" />
+                            </div>
+                            <div class="script-config-row">
+                              <span>失败重试(次)</span>
+                              <el-input-number v-model="step.retry" class="ep-config-num" :min="0" :max="5" controls-position="right" />
+                            </div>
+                            <div v-if="step.retry > 0" class="script-config-row">
+                              <span>重试间隔(ms)</span>
+                              <el-input-number v-model="step.retryInterval" class="ep-config-num" :min="0" :max="600000" controls-position="right" />
                             </div>
                             <div class="script-config-row">
                               <span>{{ step.type === 'condition' ? '轮询/步间(ms)' : '执行间隔(ms)' }}</span>

@@ -263,8 +263,11 @@ const scriptStepLabel = (step: any): string => {
   if (step.type === 'uninstallApp') return `卸载 ${step.packageName || '（未填写包名）'}`
   if (step.type === 'keyevent') return `按键 ${scriptKeyName(step.keycode)}`
   if (step.type === 'volume') return `音量${{ up: '+', down: '-', mute: '静音' }[step.action as string] || ''}`
-  if (step.type === 'reboot') return '重启设备'
+  if (step.type === 'reboot') return step.waitOnline === false ? '重启设备（不等上线）' : '重启设备并等待上线'
   if (step.type === 'tts') return `语音「${step.text ?? ''}」`
+  if (step.type === 'sleep') return `固定延时 ${step.seconds ?? 1}s`
+  if (step.type === 'shell') return `Shell「${step.command || '（未填写命令）'}」`
+  if (step.type === 'screenshot') return `截图存档${step.label ? ` ${step.label}` : ''}`
   if (step.type === 'runScript') return `执行脚本 ${step.script || '（未选择）'}${step.repeat && step.repeat > 1 ? ` ×${step.repeat} 轮` : ''}`
   if (step.type === 'accClick') {
     const parts = [
