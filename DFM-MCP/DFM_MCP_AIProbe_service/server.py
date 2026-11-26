@@ -1,12 +1,16 @@
 """
 MCP 服务端实现，封装 DFM-service（FastAPI，默认 http://127.0.0.1:3000）的设备探针接口。
 
-工具分三组（3 个）：
+工具分五组（5 个）：
 - 无障碍树：get_accessibility_tree
 - 组件点击：click_component
 - 屏幕截图：get_screenshot
+- 设备信息：device_info（0x02，支持关键字过滤）
+- 文本输入：input_text（0x0D 定位 + 0x08 shell 输入，仅 ASCII）
 
-三者都经 DFM-service 的探针帧接口 /api/probe/message 转发到设备上的 DFMProbe：
+五者都经 DFM-service 的探针帧接口 /api/probe/message 转发到设备上的 DFMProbe：
+- 0x02：返回设备基础信息、串口 / 摄像头 / 外设列表
+- 0x08：root shell，用于 input keyevent / input text
 - 0x0C：返回当前页面无障碍组件树
 - 0x0D：按 id/text/desc 匹配节点并执行 ACTION_CLICK
 - 0x09：设备端 screencap，返回设备路径，再经 /api/device/files/base64 读回本地保存
@@ -52,9 +56,16 @@ _LONG_TIMEOUT = 600      # 读回截图 base64（秒）
 SCREENSHOT_DIR = Path(os.environ.get("DFM_AIPROBE_SCREENSHOT_DIR", r"D:\log\screenshots"))
 
 # ========== 探针帧命令字（与 DFM-service/routes/probe.py 一致） ==========
+CMD_DEVICE_INFO = 0x02
+CMD_SHELL = 0x08
 CMD_SCREENSHOT = 0x09
 CMD_ACCESSIBILITY = 0x0C
 CMD_CLICK = 0x0D
+
+# 清空输入框用的退格次数上限（覆盖常见输入框，超出部分不会再有内容可删）
+_CLEAR_BACKSPACES = 123
+# 单条 shell 命令里拼接的 keyevent 个数上限，过长命令在部分设备上会被截断
+_KEYEVENT_BATCH = 30
 
 
 def _report_heartbeat(port: int):
@@ -130,6 +141,63 @@ def _probe_frame(device_id: str, cmd: int, data: dict | None = None) -> dict[str
     return {"code": 200, "message": "success", "data": response.get("data")}
 
 
+def _shell(device_id: str, command: str, timeout: int = 30) -> dict[str, Any]:
+    """执行设备端 shell（cmd=0x08，root=true）。
+
+    input / am 这类命令注入按键事件需要 INJECT_EVENTS 权限，非 root 会被拒绝
+    （实测 java.lang.SecurityException: Injecting to another application requires
+    INJECT_EVENTS permission），所以固定走 su。
+    成功返回 {"code":200,"message":"success","data":{stdout,stderr,exit,truncated}}。
+    """
+    return _probe_frame(device_id, CMD_SHELL, {"command": command, "root": True, "timeout": timeout})
+
+
+def _input_text_command(text: str) -> str:
+    """拼 input text 命令：双引号包住，转义 shell 会特殊解释的 \\ " $ `
+
+    实测（设备 202600210090 / Android 11）：
+    - % 在双引号内原样保留，转义成 %% 反而会输入字面量 %%；所以 % 不转义。
+    - $ 不转义会被 shell 当变量替换（a$b → a）；` 不转义会当命令替换。
+    - \\ 与 " 需反斜杠转义。; & | < > ( ) * 在双引号内安全，无需转义。
+    """
+    escaped = (text.replace("\\", "\\\\").replace('"', '\\"')
+                   .replace("$", "\\$").replace("`", "\\`"))
+    return f'input text "{escaped}"'
+
+
+def _match_keyword(value: Any, keyword: str) -> bool:
+    """字符串化后做不区分大小写的包含匹配；容器按 JSON 文本匹配"""
+    if isinstance(value, str):
+        return keyword.lower() in value.lower()
+    try:
+        return keyword.lower() in json.dumps(value, ensure_ascii=False).lower()
+    except (TypeError, ValueError):
+        return False
+
+
+def _filter_info(info: dict, keyword: str) -> dict[str, Any]:
+    """在 0x02 设备信息里按关键字过滤，返回命中项列表 + 未命中的顶层键名
+
+    命中项统一为 {"key": 顶层字段名, "path": 命中位置, "value": 命中的值}：
+    - 标量字段命中 → path 就是字段名；
+    - 列表字段（serialPorts/cameras/peripherals）逐个元素匹配，
+      path 形如 peripherals[2].name 或 peripherals[2]，既可按字段也可按整条命中。
+    """
+    hits = []
+    for key, value in info.items():
+        if isinstance(value, list):
+            for i, item in enumerate(value):
+                if _match_keyword(item, keyword):
+                    hits.append({"key": key, "path": f"{key}[{i}]", "value": item})
+                elif isinstance(item, dict):
+                    for sub_key, sub_value in item.items():
+                        if _match_keyword(sub_value, keyword):
+                            hits.append({"key": key, "path": f"{key}[{i}].{sub_key}", "value": sub_value})
+        elif _match_keyword(value, keyword):
+            hits.append({"key": key, "path": key, "value": value})
+    return {"hits": hits, "missingKeys": [k for k in info if k not in {h["key"] for h in hits}]}
+
+
 def _guard(**fields) -> dict[str, Any] | None:
     """必填字符串非空校验：任一为空返回 code=400 错误信封，全部通过返回 None"""
     for name, value in fields.items():
@@ -159,7 +227,7 @@ def _build_server() -> MCPServer:
     server = MCPServer(
         name="DFM-MCP-AIProbe-Service",
         version=SERVER_VERSION,
-        instructions="AI 探针 MCP 服务，读取设备无障碍树、点击组件、获取截图。"
+        instructions="AI 探针 MCP 服务，读取设备无障碍树、点击组件、获取截图、读取设备信息、输入文本。"
                      "前提：DFM-service 已运行（默认 http://127.0.0.1:3000，可用环境变量 DFM_SERVICE_URL 覆盖），"
                      "且目标设备已安装并运行 DFMProbe 探针。"
                      "所有工具返回统一信封 {code,message,data}：200 成功，400 参数错误，450 探针不在线，"
@@ -191,6 +259,87 @@ def _build_server() -> MCPServer:
         if not matched:
             return {"code": 400, "message": "参数错误：id/text/desc 至少填一项", "data": None}
         return _probe_frame(deviceId.strip(), CMD_CLICK, matched)
+
+    # --- 设备信息（0x02 + 服务端关键字过滤） ---
+    @server.tool(name="device_info", title="获取设备信息",
+                 description="读取设备信息（0x02）：androidVersion/sdk/model/manufacturer/device/displayVersion/"
+                             "sn/buildDate/kernelVersion，以及 serialPorts/cameras/peripherals 三个列表。"
+                             "可选 keyword：不传返回全量；传了则在服务端按关键字过滤（不区分大小写、包含匹配，"
+                             "列表项支持命中子字段），返回 data.hits（每项含 key/path/value）与 data.missingKeys"
+                             "（未命中的顶层字段名）。用于确认型号、摄像头、串口或 USB 外设是否在设备上")
+    def _device_info(deviceId: str, keyword: str = "") -> dict[str, Any]:
+        err = _guard(deviceId=deviceId)
+        if err:
+            return err
+        info = _probe_frame(deviceId.strip(), CMD_DEVICE_INFO)
+        if info.get("code") != 200:
+            return info
+        payload = info.get("data") if isinstance(info.get("data"), dict) else {}
+        word = keyword.strip() if isinstance(keyword, str) else ""
+        if not word:
+            return {"code": 200, "message": "success", "data": payload}
+        filtered = _filter_info(payload, word)
+        return {
+            "code": 200,
+            "message": "success" if filtered["hits"] else f"未匹配到关键字：{word}",
+            "data": {
+                "keyword": word,
+                "matched": len(filtered["hits"]),
+                **filtered,
+            },
+        }
+
+    # --- 文本输入 ---
+    @server.tool(name="input_text", title="输入文本",
+                 description="向输入框输入文本：可先按 id/text/desc 定位并点击输入框（都不填则直接对当前焦点输入），"
+                             "clear=true（默认）先清空原内容再输入。"
+                             "注意：仅支持 ASCII（设备端 input text 不支持非 ASCII，传中文会返回 400）；"
+                             "命令经 root shell 执行，\\ \" $ ` 会自动转义。"
+                             "返回 data.text 实际输入的文本、data.target 命中的输入框")
+    def _input_text(deviceId: str, text: str, clear: bool = True, id: str = "",
+                    elementText: str = "", desc: str = "") -> dict[str, Any]:
+        err = _guard(deviceId=deviceId)
+        if err:
+            return err
+        if not text:
+            return {"code": 400, "message": "参数错误：text 不能为空", "data": None}
+        # input text 无法传递非 ASCII 字符（设备端会抛 NullPointerException），本地直接拦掉
+        if not all(0x20 <= ord(ch) <= 0x7E for ch in text):
+            return {"code": 400,
+                    "message": "参数错误：text 仅支持 ASCII 可见字符（设备端 input text 不支持中文与换行）",
+                    "data": None}
+        device_id = deviceId.strip()
+        target = {k: v.strip() for k, v in (("id", id), ("text", elementText), ("desc", desc))
+                  if isinstance(v, str) and v.strip()}
+        if target:
+            clicked = _probe_frame(device_id, CMD_CLICK, target)
+            if clicked.get("code") != 200:
+                return clicked
+            time.sleep(0.3)  # 等软键盘与焦点就绪，否则清除退格可能落到旧焦点上
+
+        commands = []
+        if clear:
+            # KEYCODE_MOVE_END(123) 把光标移到文本末尾，再连发 DEL(67) 逐字删除；
+            # 分批发送：过长的单条命令在部分设备上会被截断
+            commands.append("input keyevent 123")
+            for _ in range(_CLEAR_BACKSPACES // _KEYEVENT_BATCH):
+                commands.append("input keyevent " + " ".join(["67"] * _KEYEVENT_BATCH))
+        commands.append(_input_text_command(text))
+
+        for command in commands:
+            result = _shell(device_id, command)
+            if result.get("code") != 200:
+                return result
+            body = result.get("data") or {}
+            if body.get("exit") != 0:
+                return {"code": 500,
+                        "message": f"设备端执行失败（exit={body.get('exit')}）：{(body.get('stderr') or '').strip()[:300]}",
+                        "data": body}
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"deviceId": device_id, "text": text, "clear": clear, "target": target or None},
+        }
 
     # --- 屏幕截图 ---
     @server.tool(name="get_screenshot", title="获取截图",
