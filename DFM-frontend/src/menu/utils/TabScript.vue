@@ -175,13 +175,14 @@ const SCRIPT_VARIABLE_HELP = `输入框支持的关键字：
 {执行轮数} → 当前第几轮
 {n位随机数} → n 位随机数字（n 取 1~18，如 {6位随机数}）`
 
-// 判断步骤：五种条件与分支动作
+// 判断步骤：六种条件与分支动作
 const SCRIPT_CONDITION_KINDS: Array<{ kind: string; label: string }> = [
   { kind: 'appInstalled', label: '应用已安装' },
   { kind: 'template', label: '组件出现' },
   { kind: 'shell', label: 'Shell 输出包含' },
   { kind: 'time', label: '设备时刻已到' },
   { kind: 'accClick', label: '无障碍点击' },
+  { kind: 'accExists', label: '无障碍组件存在' },
 ]
 const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
   { action: 'continue', label: '继续下一步' },
@@ -206,6 +207,8 @@ const scriptConditionDefaults = (kind: string): Record<string, any> => {
     case 'shell': return { command: '', expected: '' }
     case 'time': return { targetTime: '09:00', timeout: 3600 }
     case 'accClick': return { id: '', text: '', desc: '' }
+    // accExists 与 accClick 共用 id/text/desc，返回空对象保留已填值
+    case 'accExists': return {}
     default: return {}
   }
 }
@@ -1202,7 +1205,7 @@ const scriptOnPointerUp = (ev: PointerEvent) => {
   const backfillStep = backfillIdx !== null ? scriptSteps.value[backfillIdx] : null
   const isAccStep = !!backfillStep && (
     backfillStep.type === 'accClick' ||
-    (backfillStep.type === 'condition' && backfillStep.kind === 'accClick')
+    (backfillStep.type === 'condition' && (backfillStep.kind === 'accClick' || backfillStep.kind === 'accExists'))
   )
   if (
     !scriptRecording.value &&
@@ -2486,16 +2489,16 @@ onUnmounted(() => {
                                 <span>等待上限(秒)</span>
                                 <el-input-number v-model="step.timeout" class="ep-config-num" :min="1" :max="86400" controls-position="right" />
                               </div>
-                              <div v-if="step.kind === 'accClick'" class="script-config-row">
+                              <div v-if="step.kind === 'accClick' || step.kind === 'accExists'" class="script-config-row">
                                 <span>resource-id</span>
                                 <el-input v-model="step.id" class="ep-config-input" placeholder="com.example:id/btn（精确匹配）" />
                                 <button class="script-add-btn" :disabled="!scriptStreaming || scriptRunning" :title="scriptTreePickStep === idx ? '取消获取并恢复组件树原状态' : '开启组件树，点选组件自动填入 id/text/desc'" @click="startScriptTreePick(idx)">{{ scriptTreePickStep === idx ? '取消获取' : '获取组件' }}</button>
                               </div>
-                              <div v-if="step.kind === 'accClick'" class="script-config-row">
+                              <div v-if="step.kind === 'accClick' || step.kind === 'accExists'" class="script-config-row">
                                 <span>文本</span>
                                 <el-input v-model="step.text" class="ep-config-input" placeholder="包含匹配，如 确定" />
                               </div>
-                              <div v-if="step.kind === 'accClick'" class="script-config-row">
+                              <div v-if="step.kind === 'accClick' || step.kind === 'accExists'" class="script-config-row">
                                 <span>内容描述</span>
                                 <el-input v-model="step.desc" class="ep-config-input" placeholder="包含匹配，如 提交按钮" />
                               </div>

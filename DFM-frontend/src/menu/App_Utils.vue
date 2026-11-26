@@ -292,6 +292,14 @@ const scriptStepLabel = (step: any): string => {
       ].filter(Boolean)
       return `${prefix} 无障碍点击 ${parts.join(' ') || '（未设置条件）'}`
     }
+    if (step.kind === 'accExists') {
+      const parts = [
+        step.id ? `id=${step.id}` : '',
+        step.text ? `text=${step.text}` : '',
+        step.desc ? `desc=${step.desc}` : '',
+      ].filter(Boolean)
+      return `${prefix} 无障碍组件存在 ${parts.join(' ') || '（未设置条件）'}`
+    }
     return `${prefix} 条件（未设置）`
   }
   return step.type
