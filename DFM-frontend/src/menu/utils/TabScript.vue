@@ -194,11 +194,26 @@ const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
   ...SCRIPT_GESTURE_STEPS.map((g: any) => ({ action: g.type, label: `执行·${g.label}` })),
   ...SCRIPT_ADB_STEPS.map((a: any) => ({ action: a.type, label: `执行·${a.label}` })),
   { action: 'waitFor', label: '执行·等待组件(选图)' },
-  { action: 'condition', label: '执行·判断步骤' },
 ]
 
 // 分支动作是否需要展示嵌套脚本下拉（仅 runScript）
 const branchActionNeedsScript = (branch: any): boolean => branch?.action === 'runScript'
+
+// 分支动作=执行类功能时的默认参数种子（与普通步骤默认值一致；分支手势无画布标记，坐标填数字）
+const scriptBranchStepDefaults = (action: string): Record<string, any> => {
+  const cx = Math.round(scriptMeta.width / 2)
+  const cy = Math.round(scriptMeta.height / 2)
+  switch (action) {
+    case 'tap': return { x1: cx, y1: cy }
+    case 'longpress': return { x1: cx, y1: cy, duration: 1000 }
+    case 'swipe': return { x1: cx, y1: cy, x2: cx, y2: Math.min(scriptMeta.height - 1, cy + 300) }
+    case 'input': return { text: '' }
+    case 'waitFor': return { template: '', threshold: 0.85 }
+    // 分支对象的 action 键被分支动作占用，音量子动作存 volumeAction
+    case 'volume': return { volumeAction: 'up', stream: 'media' }
+    default: return scriptAdbStepDefaults(action)
+  }
+}
 
 const scriptConditionDefaults = (kind: string): Record<string, any> => {
   switch (kind) {
@@ -238,6 +253,14 @@ const onScriptBranchActionChange = (branch: any, idx: number) => {
   }
   // TTS 分支朗读文本：进入时确保字段存在。text 为 input/tts/accClick 共用字段，离开时不删，避免误删或切回丢失。
   if (branch.action === 'tts' && branch.text === undefined) branch.text = ''
+  // 执行类分支动作：补齐默认参数字段（已有值保留），并按需加载对应下拉数据源
+  const defaults = scriptBranchStepDefaults(branch.action)
+  for (const key of Object.keys(defaults)) {
+    if (branch[key] === undefined) branch[key] = defaults[key]
+  }
+  if (branch.action === 'installApk' && scriptApkOptions.value.length === 0) fetchScriptApks()
+  if (['startApp', 'stopApp', 'uninstallApp'].includes(branch.action) && scriptAppPackages.value.length === 0) fetchScriptApps()
+  if (branch.action === 'waitFor' && scriptTemplateOptions.value.length === 0) fetchScriptTemplates()
 }
 
 // 已上传的 APK 列表（安装APK步骤的下拉数据源）
@@ -2540,6 +2563,128 @@ onUnmounted(() => {
                                 <span>朗读文本</span>
                                 <el-input v-model="step.onTrue.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
                               </div>
+                              <!-- 执行类分支动作的专属参数（与普通步骤参数行一致；分支手势无画布标记，坐标用数字填写） -->
+                              <div v-if="step.onTrue.action === 'tap' || step.onTrue.action === 'longpress'" class="script-config-row">
+                                <span>X / Y 坐标</span>
+                                <el-input-number v-model="step.onTrue.x1" class="ep-config-num" :min="0" controls-position="right" />
+                                <el-input-number v-model="step.onTrue.y1" class="ep-config-num" :min="0" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'longpress'" class="script-config-row">
+                                <span>长按时长(ms)</span>
+                                <el-input-number v-model="step.onTrue.duration" class="ep-config-num" :min="100" :max="60000" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'swipe'" class="script-config-row">
+                                <span>起点 X / Y</span>
+                                <el-input-number v-model="step.onTrue.x1" class="ep-config-num" :min="0" controls-position="right" />
+                                <el-input-number v-model="step.onTrue.y1" class="ep-config-num" :min="0" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'swipe'" class="script-config-row">
+                                <span>终点 X / Y</span>
+                                <el-input-number v-model="step.onTrue.x2" class="ep-config-num" :min="0" controls-position="right" />
+                                <el-input-number v-model="step.onTrue.y2" class="ep-config-num" :min="0" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'input'" class="script-config-row">
+                                <span>输入内容</span>
+                                <el-input v-model="step.onTrue.text" class="ep-config-input" placeholder="输入到设备当前聚焦的输入框" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'waitFor'" class="script-config-row">
+                                <span>模板</span>
+                                <el-select v-model="step.onTrue.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
+                                  <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'waitFor'" class="script-config-row">
+                                <span>匹配阈值</span>
+                                <el-input-number v-model="step.onTrue.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'installApk'" class="script-config-row">
+                                <span>APK 文件</span>
+                                <el-select v-model="step.onTrue.apkName" class="ep-config-select" placeholder="选择 APK" :loading="scriptApkLoading">
+                                  <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'deleteFolder'" class="script-config-row">
+                                <span>文件夹路径</span>
+                                <el-input v-model="step.onTrue.path" class="ep-config-input" placeholder="/sdcard/xxx" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'startApp' || step.onTrue.action === 'stopApp' || step.onTrue.action === 'uninstallApp'" class="script-config-row">
+                                <span>应用</span>
+                                <el-select v-model="step.onTrue.packageName" class="ep-config-select" placeholder="选择应用" filterable :loading="scriptAppLoading">
+                                  <el-option v-for="p in scriptAppPackages" :key="p" :value="p" :label="scriptAppNames[p] || p" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'keyevent'" class="script-config-row">
+                                <span>按键</span>
+                                <el-select :model-value="scriptKeyPresetOf(step.onTrue)" class="ep-config-select" @change="onScriptKeyPresetChange(step.onTrue, $event)">
+                                  <el-option v-for="k in SCRIPT_COMMON_KEYS" :key="k.code" :value="String(k.code)" :label="`${k.name}（${k.code}）`" />
+                                  <el-option value="custom" label="自定义键值..." />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'keyevent' && scriptKeyPresetOf(step.onTrue) === 'custom'" class="script-config-row">
+                                <span>键值</span>
+                                <el-input-number v-model.number="step.onTrue.keycode" class="ep-config-num" :min="0" :max="65535" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'volume'" class="script-config-row">
+                                <span>音量动作</span>
+                                <el-select v-model="step.onTrue.volumeAction" class="ep-config-select">
+                                  <el-option value="up" label="音量+" />
+                                  <el-option value="down" label="音量-" />
+                                  <el-option value="mute" label="静音" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'volume' && step.onTrue.volumeAction === 'mute'" class="script-config-row">
+                                <span>音源</span>
+                                <el-select v-model="step.onTrue.stream" class="ep-config-select">
+                                  <el-option value="media" label="媒体" />
+                                  <el-option value="ring" label="铃声" />
+                                  <el-option value="alarm" label="闹钟" />
+                                  <el-option value="notification" label="通知" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onTrue.action === 'accClick'" class="script-config-row">
+                                <span>resource-id</span>
+                                <el-input v-model="step.onTrue.id" class="ep-config-input" placeholder="com.x:id/btn（精确匹配）" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'accClick'" class="script-config-row">
+                                <span>文本 text</span>
+                                <el-input v-model="step.onTrue.text" class="ep-config-input" placeholder="包含匹配，如「登录」" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'accClick'" class="script-config-row">
+                                <span>描述 desc</span>
+                                <el-input v-model="step.onTrue.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'sleep'" class="script-config-row">
+                                <span>延时时长(秒)</span>
+                                <el-input-number v-model="step.onTrue.seconds" class="ep-config-num" :min="0.1" :max="3600" :step="0.5" :precision="1" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'shell'" class="script-config-row">
+                                <span>Shell 命令</span>
+                                <el-input v-model="step.onTrue.command" class="ep-config-input" placeholder="在设备 shell 中执行，如 getprop ro.serialno" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'shell'" class="script-config-row">
+                                <span>期望输出</span>
+                                <el-input v-model="step.onTrue.expectOutput" class="ep-config-input" placeholder="选填：输出须包含该内容，否则本步失败" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'shell'" class="script-config-row">
+                                <span>命令超时(秒)</span>
+                                <el-input-number v-model="step.onTrue.timeout" class="ep-config-num" :min="1" :max="600" controls-position="right" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'shell'" class="script-config-row">
+                                <span>返回码非 0</span>
+                                <el-checkbox v-model="step.onTrue.failOnError">判定为失败</el-checkbox>
+                              </div>
+                              <div v-if="step.onTrue.action === 'screenshot'" class="script-config-row">
+                                <span>截图名称</span>
+                                <el-input v-model="step.onTrue.label" class="ep-config-input" maxlength="64" placeholder="选填：文件名前缀，如 启动后" />
+                              </div>
+                              <div v-if="step.onTrue.action === 'reboot'" class="script-config-row">
+                                <span>等待上线</span>
+                                <el-checkbox v-model="step.onTrue.waitOnline">重启后等设备重新上线</el-checkbox>
+                              </div>
+                              <div v-if="step.onTrue.action === 'reboot' && step.onTrue.waitOnline !== false" class="script-config-row">
+                                <span>上线超时(秒)</span>
+                                <el-input-number v-model="step.onTrue.onlineTimeout" class="ep-config-num" :min="10" :max="1800" controls-position="right" />
+                              </div>
                               <div class="script-config-row">
                                 <span>不成立时</span>
                                 <el-select v-model="step.onFalse.action" class="ep-config-select" @change="onScriptBranchActionChange(step.onFalse, idx)">
@@ -2567,6 +2712,128 @@ onUnmounted(() => {
                               <div v-if="step.onFalse.action === 'tts'" class="script-config-row">
                                 <span>朗读文本</span>
                                 <el-input v-model="step.onFalse.text" class="ep-config-input" placeholder="输入设备要朗读的文本" />
+                              </div>
+                              <!-- 执行类分支动作的专属参数（与成立时分支一致，绑定到 onFalse） -->
+                              <div v-if="step.onFalse.action === 'tap' || step.onFalse.action === 'longpress'" class="script-config-row">
+                                <span>X / Y 坐标</span>
+                                <el-input-number v-model="step.onFalse.x1" class="ep-config-num" :min="0" controls-position="right" />
+                                <el-input-number v-model="step.onFalse.y1" class="ep-config-num" :min="0" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'longpress'" class="script-config-row">
+                                <span>长按时长(ms)</span>
+                                <el-input-number v-model="step.onFalse.duration" class="ep-config-num" :min="100" :max="60000" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'swipe'" class="script-config-row">
+                                <span>起点 X / Y</span>
+                                <el-input-number v-model="step.onFalse.x1" class="ep-config-num" :min="0" controls-position="right" />
+                                <el-input-number v-model="step.onFalse.y1" class="ep-config-num" :min="0" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'swipe'" class="script-config-row">
+                                <span>终点 X / Y</span>
+                                <el-input-number v-model="step.onFalse.x2" class="ep-config-num" :min="0" controls-position="right" />
+                                <el-input-number v-model="step.onFalse.y2" class="ep-config-num" :min="0" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'input'" class="script-config-row">
+                                <span>输入内容</span>
+                                <el-input v-model="step.onFalse.text" class="ep-config-input" placeholder="输入到设备当前聚焦的输入框" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'waitFor'" class="script-config-row">
+                                <span>模板</span>
+                                <el-select v-model="step.onFalse.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
+                                  <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'waitFor'" class="script-config-row">
+                                <span>匹配阈值</span>
+                                <el-input-number v-model="step.onFalse.threshold" class="ep-config-num" :min="0.5" :max="1" :step="0.05" :precision="2" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'installApk'" class="script-config-row">
+                                <span>APK 文件</span>
+                                <el-select v-model="step.onFalse.apkName" class="ep-config-select" placeholder="选择 APK" :loading="scriptApkLoading">
+                                  <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'deleteFolder'" class="script-config-row">
+                                <span>文件夹路径</span>
+                                <el-input v-model="step.onFalse.path" class="ep-config-input" placeholder="/sdcard/xxx" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'startApp' || step.onFalse.action === 'stopApp' || step.onFalse.action === 'uninstallApp'" class="script-config-row">
+                                <span>应用</span>
+                                <el-select v-model="step.onFalse.packageName" class="ep-config-select" placeholder="选择应用" filterable :loading="scriptAppLoading">
+                                  <el-option v-for="p in scriptAppPackages" :key="p" :value="p" :label="scriptAppNames[p] || p" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'keyevent'" class="script-config-row">
+                                <span>按键</span>
+                                <el-select :model-value="scriptKeyPresetOf(step.onFalse)" class="ep-config-select" @change="onScriptKeyPresetChange(step.onFalse, $event)">
+                                  <el-option v-for="k in SCRIPT_COMMON_KEYS" :key="k.code" :value="String(k.code)" :label="`${k.name}（${k.code}）`" />
+                                  <el-option value="custom" label="自定义键值..." />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'keyevent' && scriptKeyPresetOf(step.onFalse) === 'custom'" class="script-config-row">
+                                <span>键值</span>
+                                <el-input-number v-model.number="step.onFalse.keycode" class="ep-config-num" :min="0" :max="65535" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'volume'" class="script-config-row">
+                                <span>音量动作</span>
+                                <el-select v-model="step.onFalse.volumeAction" class="ep-config-select">
+                                  <el-option value="up" label="音量+" />
+                                  <el-option value="down" label="音量-" />
+                                  <el-option value="mute" label="静音" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'volume' && step.onFalse.volumeAction === 'mute'" class="script-config-row">
+                                <span>音源</span>
+                                <el-select v-model="step.onFalse.stream" class="ep-config-select">
+                                  <el-option value="media" label="媒体" />
+                                  <el-option value="ring" label="铃声" />
+                                  <el-option value="alarm" label="闹钟" />
+                                  <el-option value="notification" label="通知" />
+                                </el-select>
+                              </div>
+                              <div v-if="step.onFalse.action === 'accClick'" class="script-config-row">
+                                <span>resource-id</span>
+                                <el-input v-model="step.onFalse.id" class="ep-config-input" placeholder="com.x:id/btn（精确匹配）" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'accClick'" class="script-config-row">
+                                <span>文本 text</span>
+                                <el-input v-model="step.onFalse.text" class="ep-config-input" placeholder="包含匹配，如「登录」" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'accClick'" class="script-config-row">
+                                <span>描述 desc</span>
+                                <el-input v-model="step.onFalse.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'sleep'" class="script-config-row">
+                                <span>延时时长(秒)</span>
+                                <el-input-number v-model="step.onFalse.seconds" class="ep-config-num" :min="0.1" :max="3600" :step="0.5" :precision="1" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'shell'" class="script-config-row">
+                                <span>Shell 命令</span>
+                                <el-input v-model="step.onFalse.command" class="ep-config-input" placeholder="在设备 shell 中执行，如 getprop ro.serialno" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'shell'" class="script-config-row">
+                                <span>期望输出</span>
+                                <el-input v-model="step.onFalse.expectOutput" class="ep-config-input" placeholder="选填：输出须包含该内容，否则本步失败" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'shell'" class="script-config-row">
+                                <span>命令超时(秒)</span>
+                                <el-input-number v-model="step.onFalse.timeout" class="ep-config-num" :min="1" :max="600" controls-position="right" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'shell'" class="script-config-row">
+                                <span>返回码非 0</span>
+                                <el-checkbox v-model="step.onFalse.failOnError">判定为失败</el-checkbox>
+                              </div>
+                              <div v-if="step.onFalse.action === 'screenshot'" class="script-config-row">
+                                <span>截图名称</span>
+                                <el-input v-model="step.onFalse.label" class="ep-config-input" maxlength="64" placeholder="选填：文件名前缀，如 启动后" />
+                              </div>
+                              <div v-if="step.onFalse.action === 'reboot'" class="script-config-row">
+                                <span>等待上线</span>
+                                <el-checkbox v-model="step.onFalse.waitOnline">重启后等设备重新上线</el-checkbox>
+                              </div>
+                              <div v-if="step.onFalse.action === 'reboot' && step.onFalse.waitOnline !== false" class="script-config-row">
+                                <span>上线超时(秒)</span>
+                                <el-input-number v-model="step.onFalse.onlineTimeout" class="ep-config-num" :min="10" :max="1800" controls-position="right" />
                               </div>
                             </template>
                             <!-- 设备动作类步骤的专属参数 -->
