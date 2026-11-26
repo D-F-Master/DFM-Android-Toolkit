@@ -1127,8 +1127,8 @@
 - `keyevent`: `keycode` 数字键值 0-65535（4=返回 3=主页 26=电源 24/25=音量）
 - `volume`: `action` 为 `up`/`down`/`mute`；`stream` 仅静音时生效（media/ring/alarm/notification）
 - `reboot`: 无参数
-- `camReplace`: 替换设备摄像头画面（HAL 层 hook，所有 App 看到假画面）。`file` 为摄像头素材文件名（`data/media/` 中的图片/视频，先经 `/api/device/script/upload-media` 上传），`dev` 可选（`/dev/videoN`，留空设备端自动探测），`mirror` 可选（画面左右镜像补偿）。**仅设备端离线脚本执行**（0x0E 导入 + 0x10 执行，素材需打包进脚本 zip 的 `media/` 目录）；PC 端回放执行到此步骤报错终止
-- `camRestore`: 恢复真实摄像头画面，无参数；同 `camReplace` 仅设备端离线脚本支持，PC 端回放报错终止
+- `camReplace`: 替换设备摄像头画面（HAL 层 hook，所有 App 看到假画面）。`file` 为摄像头素材文件名（`data/media/` 中的图片/视频，先经 `/api/device/script/upload-media` 上传），`dev` 可选（`/dev/videoN`，留空设备端自动探测），`mirror` 可选（画面左右镜像补偿）。两条执行路径：①设备端离线脚本（0x0E 导入 + 0x10 执行，素材打包进脚本 zip 的 `media/` 目录）；②PC 端回放也支持——素材 adb push 到设备后经探针帧 0x11 执行，依赖设备端探针在线（与 TTS 步骤同链路）
+- `camRestore`: 恢复真实摄像头画面，无参数；离线脚本与 PC 回放均支持（回放走探针帧 0x12，依赖设备端探针在线）
 - `waitFor`: 反复截屏搜索模板图，**组件出现才继续下一步**；`template` 为 `data/templates/` 中的文件名（禁止路径分隔符），`threshold` 匹配阈值 0.5-1.0（默认 0.85），`timeout` 超时秒数 0-600（默认 15，超时报错终止脚本）；模板按录制分辨率自动换算到当前屏幕尺寸
 
 **waitFor 实现说明**（`routes/vision.py`）:
