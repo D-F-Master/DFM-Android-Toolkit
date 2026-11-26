@@ -38,8 +38,18 @@ CMD_SCRIPT_UNZIP = 0x0E
 CMD_SCRIPT_LIST = 0x0F
 CMD_SCRIPT_RUN = 0x10
 
+# 摄像头画面替换命令字（0x11 替换 / 0x12 恢复真实画面，部署逻辑对齐 camreplace APK）
+CMD_CAM_REPLACE = 0x11
+CMD_CAM_RESTORE = 0x12
+
 # 脚本 zip 在设备端的固定推送地址（应用外部私有目录下）
 DEVICE_SCRIPT_DIR = "/sdcard/Android/data/com.dfm.probe/files/script_in"
+
+# 替换源媒体文件在设备端的固定推送地址（应用外部私有目录下）
+DEVICE_CAM_DIR = "/sdcard/Android/data/com.dfm.probe/files/cam_in"
+
+# 视频转码（最多 600 帧）+ su 部署可能超过默认 120s，摄像头替换响应超时放宽
+CAM_RESPONSE_TIMEOUT = 300.0
 
 ACK_TIMEOUT = 0.2
 MAX_RETRY = 3
@@ -215,10 +225,11 @@ def recv_ack(reader: FrameReader, conn: socket.socket, seq: int, cmd: int, frame
     return got_ack, pending, ack_raw
 
 
-def recv_response(reader: FrameReader, seq: int, cmd: int, pending: tuple = None) -> tuple:
+def recv_response(reader: FrameReader, seq: int, cmd: int, pending: tuple = None,
+                  timeout: float = RESPONSE_TIMEOUT) -> tuple:
     """取同帧序的响应帧（命令字 cmd|0x80 或 0xFF），返回 (解析后的 JSON, 原始帧字节)。"""
     if pending is None:
-        deadline = time.monotonic() + RESPONSE_TIMEOUT
+        deadline = time.monotonic() + timeout
         while True:
             r_seq, r_cmd, r_data, r_raw = reader.read_frame(deadline - time.monotonic())
             if r_seq == seq and r_cmd in (cmd | 0x80, CMD_ERROR):
@@ -285,7 +296,8 @@ def _drop_pooled(device_id: str) -> None:
         _close_pool_entry(entry)
 
 
-def _probe_via_pool(device_id: str, cmd: int, request: dict, payload: bytes):
+def _probe_via_pool(device_id: str, cmd: int, request: dict, payload: bytes,
+                    response_timeout: float = RESPONSE_TIMEOUT):
     """尝试复用池中连接完成一次请求，省去重复广播 / forward / 建连。
 
     命中且成功 → 连接放回池中并返回响应 dict；
@@ -309,7 +321,7 @@ def _probe_via_pool(device_id: str, cmd: int, request: dict, payload: bytes):
             _close_pool_entry(entry)
             logger.info(f"probe pool device={device_id} 复用失败（ACK 超时），转重建")
             return None
-        response, rx_raw = recv_response(reader, seq, cmd, pending)
+        response, rx_raw = recv_response(reader, seq, cmd, pending, response_timeout)
         frames["rx"] = rx_raw.hex(" ").upper()
         with _pool_lock:
             _conn_pool[device_id] = entry
@@ -355,7 +367,8 @@ def _heartbeat_precheck(device_id: str):
     return {"connected": False, "reason": f"探针不在线（{cold.get('reason', '心跳失败')}）"}
 
 
-def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
+def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None,
+              response_timeout: float = RESPONSE_TIMEOUT) -> dict:
     """对指定设备发一帧业务帧并取回响应。
 
     adb 只负责安装、启动广播与 USB 端口映射；业务数据全部走设备 21104 上的帧协议。
@@ -385,15 +398,16 @@ def run_probe(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dic
             if pre is not None:
                 return pre
         if not install:
-            pooled = _probe_via_pool(device_id, cmd, request, payload)
+            pooled = _probe_via_pool(device_id, cmd, request, payload, response_timeout)
             if pooled is not None:
                 return pooled
-        return _run_probe(device_id, install, cmd, request, payload)
+        return _run_probe(device_id, install, cmd, request, payload, response_timeout)
     finally:
         lock.release()
 
 
-def _run_probe(device_id: str, install: bool, cmd: int, request: dict, payload: bytes) -> dict:
+def _run_probe(device_id: str, install: bool, cmd: int, request: dict, payload: bytes,
+               response_timeout: float = RESPONSE_TIMEOUT) -> dict:
     conn = None
     forward_port = None
     try:
@@ -459,7 +473,7 @@ def _run_probe(device_id: str, install: bool, cmd: int, request: dict, payload: 
                 "reason": f"ACK 等待超时（共发 {MAX_RETRY + 1} 次）",
                 "frames": frames,
             }
-        response, rx_raw = recv_response(reader, seq, cmd, pending)
+        response, rx_raw = recv_response(reader, seq, cmd, pending, response_timeout)
         frames["rx"] = rx_raw.hex(" ").upper()
 
         # 请求成功，连接放入复用池（后续同设备请求直接在此连接上发帧）
@@ -504,11 +518,12 @@ def _run_probe(device_id: str, install: bool, cmd: int, request: dict, payload: 
         # 服务常驻监听 21104，不再 force-stop
 
 
-def _result(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None) -> dict:
+def _result(device_id: str, install: bool, cmd: int = CMD_HEARTBEAT, data: dict = None,
+            response_timeout: float = RESPONSE_TIMEOUT) -> dict:
     device_id = (device_id or "").strip()
     if not device_id:
         return {"code": 400, "message": "deviceId 不能为空", "data": {"connected": False}}
-    d = run_probe(device_id, install, cmd, data)
+    d = run_probe(device_id, install, cmd, data, response_timeout)
     connected = bool(d.get("connected"))
     logger.info(
         f"probe device={device_id} install={install} cmd=0x{cmd:02x} "
@@ -622,9 +637,69 @@ def probe_message(req: ProbeMessageRequest):
     0x0A 摄像头拍照 / 0x0B 跳转无障碍设置页 / 0x0C 无障碍组件树返回业务应答 /
     0x0D 无障碍点击（设备端按 id/text/desc 匹配节点并执行 ACTION_CLICK），
     0x0E 脚本 zip 解压 / 0x0F 脚本列表 / 0x10 脚本执行，
+    0x11 摄像头画面替换 / 0x12 恢复摄像头真实画面，
     其余命令字由设备端回 0xFF CMD_ERROR。
     """
     return _result(req.deviceId, False, req.cmd, req.data)
+
+
+class ProbeCamReplaceRequest(BaseModel):
+    deviceId: str
+    filePath: str
+    cameraId: str = ""
+    dev: str = ""
+    mirror: bool = False
+
+
+@router.post("/probe/cam-replace")
+def probe_cam_replace(req: ProbeCamReplaceRequest):
+    """上传照片/视频并替换摄像头画面。
+
+    本地媒体文件先 adb push 到 DEVICE_CAM_DIR，再发 0x11 由设备端转换
+    （图片 1 帧 / 视频 15fps 最多 600 帧，可选镜像补偿）并经 su 部署 camhook、
+    重启 camera provider；cameraId 为 0x02 相机列表返回的 id，设备端映射
+    /dev/video{cameraId}，也可用 dev 显式指定节点（如 /dev/video2）。
+    成功后删除设备端源文件避免残留；视频转码耗时较长，响应超时放宽到 300s。
+    """
+    device_id = (req.deviceId or "").strip()
+    if not device_id:
+        return {"code": 400, "message": "deviceId 不能为空", "data": None}
+    import os
+    file_path = (req.filePath or "").strip()
+    if not file_path or not os.path.isfile(file_path):
+        return {"code": 400, "message": f"媒体文件不存在: {file_path}", "data": None}
+    name = os.path.basename(file_path)
+    if not name.lower().endswith(
+            (".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi", ".webm", ".3gp", ".mkv")):
+        return {"code": 400, "message": "仅支持图片（jpg/jpeg/png）或视频（mp4/mov/avi/webm/3gp/mkv）",
+                "data": None}
+    # 先确保目录存在（旧 APK 上可能还没有 cam_in/）
+    rc, out, err = _adb(device_id, "shell", "mkdir", "-p", DEVICE_CAM_DIR)
+    if rc != 0:
+        return {"code": 500, "message": f"创建设备目录失败: {err or out}", "data": None}
+    rc, out, err = _adb(device_id, "push", file_path, f"{DEVICE_CAM_DIR}/{name}", timeout=600)
+    if rc != 0:
+        return {"code": 500, "message": f"adb push 失败: {err or out}", "data": None}
+    data = {"file": name, "mirror": req.mirror}
+    if req.dev:
+        data["dev"] = req.dev
+    if req.cameraId:
+        data["cameraId"] = req.cameraId
+    result = _result(device_id, False, CMD_CAM_REPLACE, data,
+                     response_timeout=CAM_RESPONSE_TIMEOUT)
+    resp = (result.get("data") or {}).get("response") or {}
+    if resp.get("code") == 200:
+        try:
+            _adb(device_id, "shell", "rm", "-f", f"{DEVICE_CAM_DIR}/{name}")
+        except Exception as e:
+            logger.warning(f"probe 删除设备端媒体文件失败 device={device_id}: {e}")
+    return result
+
+
+@router.post("/probe/cam-restore")
+def probe_cam_restore(req: ProbeRequest):
+    """恢复真实摄像头画面（0x12）：设备端写 enabled=0 配置并重启 camera provider。"""
+    return _result(req.deviceId, False, CMD_CAM_RESTORE, {})
 
 
 class ProbeScriptImportRequest(BaseModel):
