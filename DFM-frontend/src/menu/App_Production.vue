@@ -70,6 +70,39 @@ const clearSelection = () => {
   screenTiles.value.clear();
 };
 
+// ===== 无线连接（与 ADB 工具页同款：adb connect IP[:端口]，默认 5555）=====
+const wirelessIp = ref('');
+const wirelessStatus = ref('');
+
+const connectWireless = async () => {
+  if (!wirelessIp.value) {
+    wirelessStatus.value = '请输入设备IP地址';
+    return;
+  }
+
+  try {
+    wirelessStatus.value = '正在连接...';
+    await axios.post(`${API_BASE.value}/api/command`, {
+      command: 'adb start-server'
+    });
+
+    const target = wirelessIp.value.includes(':') ? wirelessIp.value.trim() : `${wirelessIp.value.trim()}:5555`;
+    const response = await axios.post(`${API_BASE.value}/api/command`, {
+      command: `adb connect ${target}`,
+    });
+
+    if (response.data.code === 200) {
+      wirelessStatus.value = '连接成功';
+      fetchDevices();
+    } else {
+      wirelessStatus.value = '连接失败: ' + (response.data.message || '未知错误');
+    }
+  } catch (error) {
+    console.error('无线连接失败:', error);
+    wirelessStatus.value = '连接失败: ' + (error instanceof Error ? error.message : String(error));
+  }
+};
+
 // ===== 脚本列表（快捷执行下拉）=====
 const scriptOptions = ref<string[]>([]);
 
@@ -320,6 +353,23 @@ onUnmounted(() => {
               </label>
             </template>
           </div>
+
+          <!-- 无线连接：与 ADB 工具页一致，连接后设备出现在上方列表 -->
+          <div class="wireless-connect">
+            <h3>无线连接</h3>
+            <div class="wireless-input-group">
+              <input
+                type="text"
+                v-model="wirelessIp"
+                placeholder="输入设备IP地址（端口可选，默认5555）"
+                class="wireless-input"
+              >
+              <button class="wireless-button" @click="connectWireless">连接</button>
+            </div>
+            <div v-if="wirelessStatus" class="wireless-status">
+              {{ wirelessStatus }}
+            </div>
+          </div>
         </div>
 
         <!-- 右侧：设备画面 + 快捷执行 + 日志 -->
@@ -502,6 +552,49 @@ onUnmounted(() => {
 
 .status-offline-item {
   opacity: 0.55;
+}
+
+/* ===== 无线连接（与 ADB 工具页同款） ===== */
+.wireless-connect {
+  border-top: 1px solid #e0e0e0;
+  padding-top: 10px;
+}
+
+.wireless-input-group {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.wireless-input {
+  width: 150px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.wireless-button {
+  height: 32px;
+  padding: 0 16px;
+  background-color: #4caf50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.wireless-button:hover {
+  background-color: #45a049;
+}
+
+.wireless-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #666;
+  min-height: 16px;
 }
 
 /* ===== 右栏：卡片布局（与 ADB 工具的 scrcpy-card 同风格） ===== */
