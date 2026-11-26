@@ -225,20 +225,49 @@ def _heartbeat_online(name: str) -> bool:
         return False
 
 
-def _stop_process(name: str) -> None:
-    """终止 server 进程树（Windows 下 taskkill 整树清理，与 adb_utils 一致）"""
+def _find_pid_by_port(port: int) -> Optional[int]:
+    """用 netstat 查找监听指定 TCP 端口的进程 PID（找不到返回 None）"""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True,
+            timeout=10,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        for line in result.stdout.decode("gbk", errors="replace").splitlines():
+            parts = line.split()
+            # 形如: TCP  127.0.0.1:3013  0.0.0.0:0  LISTENING  50932
+            if (
+                len(parts) >= 5
+                and parts[0] == "TCP"
+                and parts[3] == "LISTENING"
+                and parts[1].rsplit(":", 1)[-1] == str(port)
+            ):
+                return int(parts[4])
+    except Exception as e:
+        logger.error(f"查找端口 {port} 监听进程失败: {e}")
+    return None
+
+
+def _stop_process(name: str, port: Optional[int] = None) -> None:
+    """终止 server 进程树（Windows 下 taskkill 整树清理，与 adb_utils 一致）
+
+    管理端重启等场景下进程未被 _processes 跟踪但心跳仍在线时，
+    按固定端口兜底找到监听进程并终止，否则停止接口返回成功但进程仍在运行。
+    """
     info = _processes.get(name)
-    if not info:
-        return
-    proc = info["proc"]
-    if proc.poll() is None:
+    pid = info["proc"].pid if info and info["proc"].poll() is None else None
+    if pid is None and port is not None:
+        pid = _find_pid_by_port(port)
+    if pid is not None:
         try:
             subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 timeout=10,
                 creationflags=_CREATE_NO_WINDOW,
             )
+            logger.info(f"MCP server {name} 进程已终止: pid={pid}")
         except Exception as e:
             logger.error(f"停止 MCP server {name} 失败: {e}")
     with _state_lock:
@@ -677,7 +706,10 @@ def stop_server(request: ServerNameRequest):
     name = request.name.strip()
     if not _processes.get(name) and not _heartbeat_online(name):
         return {"code": 400, "message": f"server {name} 未在运行", "data": None}
-    _stop_process(name)
+    # 固定端口用于兜底：进程未被跟踪（管理端重启后心跳仍在线）时按端口终止
+    manifest = _read_manifest(_server_dir(name))
+    port = (_manifest_port(manifest) if manifest else None) or (_heartbeats.get(name) or {}).get("port")
+    _stop_process(name, port)
     logger.info(f"MCP server {name} 已停止")
     return {"code": 200, "message": "success", "data": {"name": name}}
 
