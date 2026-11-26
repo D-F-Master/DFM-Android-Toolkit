@@ -581,16 +581,27 @@ public class ProbeService extends Service {
     /** CMD_CAM_REPLACE (0x11)：PC 端先 adb push 媒体到 files/cam_in/，本端转成 640x480 JPEG 帧流
      *  （图片 1 帧 / 视频 15fps 最多 600 帧，可选镜像补偿），经 su 部署 camhook 并重启 camera provider。
      *  请求 {"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}；cameraId 为 0x02 相机列表返回的 id，
-     *  映射 /dev/video{cameraId}（外部相机 id 即 video 节点号），节点不存在回 400 并列出可用节点。 */
-    private JSONObject camReplace(JSONObject req) throws Exception {
+     *  映射 /dev/video{cameraId}（外部相机 id 即 video 节点号），节点不存在回 400 并列出可用节点。
+     *  可选 srcPath（绝对路径）：脚本步骤（ScriptEngine）媒体在脚本包 media/ 目录内，直接指定源文件，
+     *  绕过 cam_in 查找；public 供 ScriptEngine 复用。 */
+    public JSONObject camReplace(JSONObject req) throws Exception {
         String file = req.optString("file", "").trim();
         if (file.isEmpty() || file.contains("/") || file.contains("\\") || file.contains("..")) {
             throw new IllegalArgumentException("file is required (file name only)");
         }
-        File camDir = new File(ensureFilesDir(), "cam_in");
-        File src = new File(camDir, file);
-        if (!src.isFile()) {
-            throw new IllegalArgumentException("file not pushed to device: " + src.getAbsolutePath());
+        File src;
+        String srcPath = req.optString("srcPath", "").trim();
+        if (!srcPath.isEmpty()) {
+            src = new File(srcPath);
+            if (!src.isFile()) {
+                throw new IllegalArgumentException("srcPath not found: " + src.getAbsolutePath());
+            }
+        } else {
+            File camDir = new File(ensureFilesDir(), "cam_in");
+            src = new File(camDir, file);
+            if (!src.isFile()) {
+                throw new IllegalArgumentException("file not pushed to device: " + src.getAbsolutePath());
+            }
         }
         boolean mirror = req.optBoolean("mirror", false);
 
@@ -701,8 +712,9 @@ public class ProbeService extends Service {
         return data;
     }
 
-    /** CMD_CAM_RESTORE (0x12)：写 enabled=0 配置并重启 camera provider，恢复真实摄像头画面（su，需 root）。 */
-    private JSONObject camRestore() throws Exception {
+    /** CMD_CAM_RESTORE (0x12)：写 enabled=0 配置并重启 camera provider，恢复真实摄像头画面（su，需 root）。
+     *  public 供脚本步骤（ScriptEngine camRestore）复用。 */
+    public JSONObject camRestore() throws Exception {
         String out = runSuScript(new String[]{
                 "printf 'enabled=0\\ndev=/dev/video2\\nmode=0\\nsource=" + CAM_STREAM_DST + "\\nquality=" + CAM_JPEG_Q + "\\n' > " + CAM_CONF_PATH,
                 "chmod 644 " + CAM_CONF_PATH,
