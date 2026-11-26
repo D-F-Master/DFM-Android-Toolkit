@@ -24,7 +24,8 @@ import java.util.zip.ZipInputStream;
  *
  * 脚本包由 PC 端 adb push 到固定地址 script_in/（应用外部私有目录下），
  * 解压到同层 script_store/<脚本名>/，布局与服务端导出一致：
- *   script.json + apk/（脚本引用的安装包）+ templates/（模板图，设备端暂不使用）。
+ *   script.json + apk/（脚本引用的安装包）+ templates/（模板图，设备端暂不使用）
+ *   + media/（摄像头替换素材，camReplace 步骤用）。
  * 执行引擎在设备本地复刻服务端回放逻辑：goto/stop/fail 分支、runScript 嵌套、
  * count/interval 每步骤循环；注入类步骤用 shell input 命令实现（设备已 root）。
  * 模板匹配类步骤（waitFor / condition-template）设备端没有 OpenCV，明确报"不支持"，
@@ -304,7 +305,8 @@ public class ScriptEngine {
                 || "stopApp".equals(type) || "uninstallApp".equals(type)
                 || "keyevent".equals(type) || "volume".equals(type)
                 || "reboot".equals(type) || "tts".equals(type)
-                || "accClick".equals(type);
+                || "accClick".equals(type)
+                || "camReplace".equals(type) || "camRestore".equals(type);
     }
 
     /** 执行单个步骤并记日志；ok=false 抛 StepFail 中止脚本。 */
@@ -470,6 +472,43 @@ public class ScriptEngine {
             return "无障碍点击成功（id=" + step.optString("id", "-")
                     + " text=" + step.optString("text", "-")
                     + " desc=" + step.optString("desc", "-") + "）";
+        }
+        if ("camReplace".equals(type)) {
+            String file = step.optString("file", "").trim();
+            if (file.isEmpty() || file.contains("/") || file.contains("\\") || file.contains("..")) {
+                throw new Exception("file 仅支持 media/ 下的文件名: " + file);
+            }
+            File media = new File(new File(scriptDir, "media"), file);
+            if (!media.isFile()) {
+                throw new Exception("脚本包内找不到媒体文件: media/" + file);
+            }
+            String dev = step.optString("dev", "").trim();
+            if (dev.isEmpty()) {
+                // 留空自动探测：取 ls /dev/video* 的第一个节点（外部相机节点通常唯一）
+                ShellResult r = shell("ls /dev/video* 2>/dev/null", true, 15);
+                Matcher m = Pattern.compile("/dev/video\\d+").matcher(r.stdout);
+                if (!m.find()) {
+                    throw new Exception("设备上没有可用的 video 节点（ls /dev/video* 为空）");
+                }
+                dev = m.group();
+            }
+            if (!dev.matches("/dev/video\\d+")) {
+                throw new Exception("dev 必须为 /dev/video<数字>: " + dev);
+            }
+            JSONObject req = new JSONObject();
+            req.put("file", file);
+            req.put("srcPath", media.getAbsolutePath());
+            req.put("dev", dev);
+            req.put("mirror", step.optBoolean("mirror", false));
+            // camReplace 抛异常即步骤失败（素材缺失/节点不存在/转码0帧等）；成功返回部署详情
+            JSONObject data = probe.camReplace(req);
+            return "替换摄像头画面 dev=" + data.optString("dev", dev)
+                    + " 帧=" + data.optInt("frames", 0)
+                    + (data.optBoolean("rebootRequired", false) ? "（首次部署已写入 RC，需重启设备生效）" : "");
+        }
+        if ("camRestore".equals(type)) {
+            probe.camRestore();
+            return "已恢复摄像头真实画面";
         }
         throw new Exception("未知步骤类型: " + type);
     }
