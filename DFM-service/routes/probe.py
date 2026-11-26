@@ -680,6 +680,16 @@ def probe_cam_replace(req: ProbeCamReplaceRequest):
     rc, out, err = _adb(device_id, "push", file_path, f"{DEVICE_CAM_DIR}/{name}", timeout=600)
     if rc != 0:
         return {"code": 500, "message": f"adb push 失败: {err or out}", "data": None}
+    # adb 以 root 运行时（如 RK3568 出厂 userdebug），push 的文件/目录属 root，而该 ROM 的
+    # Android/data 直接绑定 f2fs（无 sdcardfs uid 映射），探针应用读不到 → 0x11 报
+    # "file not pushed to device"。把 cam_in 及其内容 chown 成 app 外部目录的属主
+    # （从 files 目录 stat 推导，各设备 uid 不同）；非 root adb 下 chown 失败则忽略。
+    files_dir = "/sdcard/Android/data/com.dfm.probe/files"
+    _adb(device_id, "shell", "sh", "-c",
+         f"O=$(stat -c %U {files_dir} 2>/dev/null); G=$(stat -c %G {files_dir} 2>/dev/null); "
+         f"[ -n \"$O\" ] && chown -R $O:$G {DEVICE_CAM_DIR} && "
+         f"chmod 2770 {DEVICE_CAM_DIR} && chmod 664 '{DEVICE_CAM_DIR}/{name}'",
+         timeout=30)
     data = {"file": name, "mirror": req.mirror}
     if req.dev:
         data["dev"] = req.dev
@@ -738,6 +748,13 @@ def probe_script_import(req: ProbeScriptImportRequest):
     rc, out, err = _adb(device_id, "push", zip_path, f"{DEVICE_SCRIPT_DIR}/{zip_name}", timeout=600)
     if rc != 0:
         return {"code": 500, "message": f"adb push 失败: {err or out}", "data": None}
+    # 同 cam-replace：adb 为 root 时 push 出的文件属 root，应用读不到，这里同样修正属主
+    _adb(device_id, "shell", "sh", "-c",
+         f"O=$(stat -c %U /sdcard/Android/data/com.dfm.probe/files 2>/dev/null); "
+         f"G=$(stat -c %G /sdcard/Android/data/com.dfm.probe/files 2>/dev/null); "
+         f"[ -n \"$O\" ] && chown $O:$G {DEVICE_SCRIPT_DIR}/{zip_name} && "
+         f"chmod 2770 {DEVICE_SCRIPT_DIR} && chmod 664 '{DEVICE_SCRIPT_DIR}/{zip_name}'",
+         timeout=30)
     result = _result(device_id, False, CMD_SCRIPT_UNZIP, {"zip": zip_name})
     resp = (result.get("data") or {}).get("response") or {}
     if resp.get("code") == 200:
