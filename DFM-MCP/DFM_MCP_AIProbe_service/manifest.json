@@ -1,7 +1,7 @@
 {
   "name": "DFM_MCP_AIProbe_service",
   "version": "0.1.0",
-  "description": "AI 探针 MCP 服务：经设备探针（DFMProbe）读取当前无障碍树、按 id/text/desc 点击组件、截取当前屏幕、读取设备信息（支持关键字过滤）、向输入框输入文本（仅 ASCII）",
+  "description": "AI 探针 MCP 服务：经设备探针（DFMProbe）读取当前无障碍树、按 id/text/desc 点击组件、截取当前屏幕、读取设备信息（支持关键字过滤）、向输入框输入文本（仅 ASCII）、获取已安装应用列表、启动应用",
   "entry": "server:server",
   "requirements": "requirements.txt",
   "tools": [
@@ -9,6 +9,8 @@
     { "name": "click_component", "description": "按组件 id/text/desc 匹配设备当前页面组件并点击" },
     { "name": "get_screenshot", "description": "截取设备当前屏幕，返回本地图片路径与设备端文件大小" },
     { "name": "device_info", "description": "读取设备信息（型号/系统/串口/摄像头/外设）；keyword 非空时按关键字过滤" },
-    { "name": "input_text", "description": "向输入框输入文本（可先定位点击、默认先清空；仅支持 ASCII）" }
+    { "name": "input_text", "description": "向输入框输入文本（可先定位点击、默认先清空；仅支持 ASCII）" },
+    { "name": "list_apps", "description": "获取设备上已安装的第三方应用包名列表" },
+    { "name": "start_app", "description": "启动设备上已安装的应用（按包名；可选指定 activity）" }
   ]
 }

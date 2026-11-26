@@ -22,7 +22,7 @@ AI 探针 MCP 服务：经设备探针 [DFMProbe](../../DFM-probe)（由 [DFM-se
 Compress-Archive -Path manifest.json, server.py, requirements.txt, README.md -DestinationPath ..\DFM_MCP_AIProbe_service.zip -Force
 ```
 
-## 工具清单（5 个）
+## 工具清单（7 个）
 
 所有工具返回 DFM-service 统一信封 `{code, message, data}`：`code=200` 成功；
 `code=400` 参数错误；`code=450` 探针不在线；`code=500` 设备端返回错误；
@@ -35,6 +35,8 @@ Compress-Archive -Path manifest.json, server.py, requirements.txt, README.md -De
 | `get_screenshot` | `/api/probe/message` cmd=`0x09` + `/api/device/files/base64` | 设备端 screencap → 服务端读回 base64 → 保存为本地 PNG，返回 `localPath` / `localSize` / `devicePath` / `via` |
 | `device_info` | `/api/probe/message` cmd=`0x02` | 不传 `keyword` 返回全量（型号/系统/SN/串口/摄像头/外设）；传了则**服务端过滤**，返回 `hits`（每项 `key`/`path`/`value`，列表项 path 形如 `peripherals[2].name`）与 `missingKeys`（未命中的顶层字段） |
 | `input_text` | `0x0D` 定位 + `0x08` root shell | 参数 `text`（必填，**仅 ASCII**）、`clear`（默认 true，先清空）、`id`/`elementText`/`desc`（可选，定位并点击输入框；都不填则直接对当前焦点输入） |
+| `list_apps` | `/api/device/apps` | 获取设备上已安装的第三方应用包名列表（`pm list packages -3`），返回 `data` 为包名数组 |
+| `start_app` | `/api/device/app/start` | 按 `packageName` 启动应用；`activity` 可选（填了用 `am start -n`，不填用 monkey LAUNCHER 方式）|
 
 典型串联：`get_screenshot` 看当前界面 → `get_accessibility_tree` 拿到可点节点的 `id`/`text`/`desc`
 → `click_component` 点击 → `input_text` 填写 → 再次 `get_screenshot` 确认。
