@@ -983,6 +983,8 @@ const showMessage = (message: string, title: string = '提示') => {
   modalType.value = 'message'
   modalTitle.value = title
   modalMessage.value = message
+  // 重置确认按钮文案：showList/批量 Shell 会改它，不重置会残留「拍照」「执行」等文案
+  modalConfirmText.value = '确定'
   modalVisible.value = true
   modalCallback.value = null
 };
@@ -991,6 +993,7 @@ const showConfirm = (message: string, callback: Function, title: string = '确�
   modalType.value = 'confirm'
   modalTitle.value = title
   modalMessage.value = message
+  modalConfirmText.value = '确定'
   modalVisible.value = true
   modalCallback.value = callback
 };
@@ -1000,6 +1003,7 @@ const showPrompt = (message: string, callback: Function, placeholder: string = '
   modalTitle.value = title
   modalMessage.value = message
   modalPlaceholder.value = placeholder
+  modalConfirmText.value = '确定'
   modalVisible.value = true
   modalCallback.value = callback
 };
