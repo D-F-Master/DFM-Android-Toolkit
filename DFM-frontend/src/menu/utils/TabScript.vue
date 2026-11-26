@@ -262,6 +262,8 @@ const onScriptBranchActionChange = (branch: any, idx: number) => {
   }
   if (branch.action === 'installApk' && scriptApkOptions.value.length === 0) fetchScriptApks()
   if (branch.action === 'camReplace' && scriptCamMediaOptions.value.length === 0) fetchScriptCamMedia()
+  // video 节点依赖当前设备，每次进入 camReplace 配置都刷新一次
+  if (branch.action === 'camReplace') fetchScriptCamDevNodes()
   if (['startApp', 'stopApp', 'uninstallApp'].includes(branch.action) && scriptAppPackages.value.length === 0) fetchScriptApps()
   if (branch.action === 'waitFor' && scriptTemplateOptions.value.length === 0) fetchScriptTemplates()
 }
@@ -324,6 +326,39 @@ const uploadScriptCamMedia = () => {
     }
   }
   input.click()
+}
+
+// video 节点列表（替换摄像头画面步骤的下拉数据源；探针 0x08 关键字 ls /dev/video* 从设备实时获取，
+// 不用 0x02 相机列表：USB 相机可能不在 camera2 枚举里，cameraId 与 video 节点号也不一定对应）
+const scriptCamDevOptions = ref<string[]>([])
+const scriptCamDevLoading = ref(false)
+
+const fetchScriptCamDevNodes = async () => {
+  if (!selectedDevice.value) {
+    showNotification('请先选择设备后再获取摄像头节点', 'error')
+    return
+  }
+  scriptCamDevLoading.value = true
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
+      deviceId: selectedDevice.value,
+      cmd: 0x08,
+      data: { command: 'ls /dev/video*', root: true, timeout: 30 }
+    }, { timeout: 60000 })
+    const d = res.data
+    if (d?.code !== 200 || d?.data?.connected !== true) throw new Error(d?.message || '通讯失败')
+    const r = d.data.response || {}
+    if (r.code !== 200) throw new Error(r.message || '设备返回错误')
+    const nodes = String(r.data?.stdout || '').match(/\/dev\/video\d+/g) || []
+    if (nodes.length === 0) {
+      showNotification('设备上未找到 /dev/video* 节点' + (r.data?.stderr ? '：' + r.data.stderr : ''), 'error')
+    }
+    scriptCamDevOptions.value = nodes
+  } catch (error: any) {
+    showNotification('获取摄像头节点失败: ' + (error?.response?.data?.message || error.message), 'error')
+  } finally {
+    scriptCamDevLoading.value = false
+  }
 }
 
 // 应用列表（启动/停止/卸载步骤的下拉数据源；中文名 -> 包名映射）
@@ -1384,6 +1419,10 @@ const addScriptAdbStep = (type: string) => {
   // 替换摄像头画面步骤用素材列表做下拉
   if (type === 'camReplace' && scriptCamMediaOptions.value.length === 0) {
     fetchScriptCamMedia()
+  }
+  // video 节点依赖当前设备，每次添加 camReplace 步骤都刷新一次
+  if (type === 'camReplace') {
+    fetchScriptCamDevNodes()
   }
   // 应用管理类步骤用应用列表做下拉：进脚本页时可能列表还是旧的（刚卸载过应用），刷新一次
   if (type === 'startApp' || type === 'stopApp' || type === 'uninstallApp') {
@@ -2662,7 +2701,11 @@ onUnmounted(() => {
                               </div>
                               <div v-if="step.onTrue.action === 'camReplace'" class="script-config-row">
                                 <span>video 节点</span>
-                                <el-input v-model="step.onTrue.dev" class="ep-config-input" placeholder="留空自动探测 /dev/videoN" />
+                                <el-select v-model="step.onTrue.dev" class="ep-config-select" placeholder="自动探测" :loading="scriptCamDevLoading" clearable>
+                                  <el-option value="" label="自动探测 /dev/videoN" />
+                                  <el-option v-for="n in scriptCamDevOptions" :key="n" :value="n" :label="n" />
+                                </el-select>
+                                <button class="script-mini-btn" @click="fetchScriptCamDevNodes" :disabled="!selectedDevice || scriptCamDevLoading" title="从设备实时获取 /dev/video* 节点">刷新</button>
                               </div>
                               <div v-if="step.onTrue.action === 'camReplace'" class="script-config-row">
                                 <span>镜像补偿</span>
@@ -2827,7 +2870,11 @@ onUnmounted(() => {
                               </div>
                               <div v-if="step.onFalse.action === 'camReplace'" class="script-config-row">
                                 <span>video 节点</span>
-                                <el-input v-model="step.onFalse.dev" class="ep-config-input" placeholder="留空自动探测 /dev/videoN" />
+                                <el-select v-model="step.onFalse.dev" class="ep-config-select" placeholder="自动探测" :loading="scriptCamDevLoading" clearable>
+                                  <el-option value="" label="自动探测 /dev/videoN" />
+                                  <el-option v-for="n in scriptCamDevOptions" :key="n" :value="n" :label="n" />
+                                </el-select>
+                                <button class="script-mini-btn" @click="fetchScriptCamDevNodes" :disabled="!selectedDevice || scriptCamDevLoading" title="从设备实时获取 /dev/video* 节点">刷新</button>
                               </div>
                               <div v-if="step.onFalse.action === 'camReplace'" class="script-config-row">
                                 <span>镜像补偿</span>
@@ -2932,7 +2979,11 @@ onUnmounted(() => {
                             </div>
                             <div v-if="step.type === 'camReplace'" class="script-config-row">
                               <span>video 节点</span>
-                              <el-input v-model="step.dev" class="ep-config-input" placeholder="留空自动探测 /dev/videoN" />
+                              <el-select v-model="step.dev" class="ep-config-select" placeholder="自动探测" :loading="scriptCamDevLoading" clearable>
+                                <el-option value="" label="自动探测 /dev/videoN" />
+                                <el-option v-for="n in scriptCamDevOptions" :key="n" :value="n" :label="n" />
+                              </el-select>
+                              <button class="script-mini-btn" @click="fetchScriptCamDevNodes" :disabled="!selectedDevice || scriptCamDevLoading" title="从设备实时获取 /dev/video* 节点">刷新</button>
                             </div>
                             <div v-if="step.type === 'camReplace'" class="script-config-row">
                               <span>镜像补偿</span>
