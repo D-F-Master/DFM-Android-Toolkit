@@ -125,10 +125,17 @@ router = APIRouter(
 SCRIPTS_DIR = get_data_path() / "scripts"
 APKS_DIR = get_data_path() / "apk"
 TEMPLATES_DIR = get_data_path() / "templates"   # 视觉匹配模板图（等待组件出现）
+MEDIA_DIR = get_data_path() / "media"           # 摄像头替换素材（camReplace 步骤引用）
+# 摄像头替换素材允许的扩展名（图片 1 帧 / 视频抽帧，与设备端白名单一致）
+CAM_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi", ".webm", ".3gp", ".mkv")
 
 
 def _ensure_scripts_dir():
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_media_dir():
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _safe_name(name: str) -> str:
@@ -231,6 +238,8 @@ ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
     "keyevent", "volume", "reboot", "tts", "accClick", "runScript",
     "sleep", "shell", "screenshot",
+    # 摄像头替换：仅设备端离线脚本（0x0E 导入 + 0x10 执行）支持，PC 端回放明确报错
+    "camReplace", "camRestore",
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
@@ -341,6 +350,23 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
     if step_type == "installApk":
         if not str(step.get("apkName", "")).strip():
             return f"第 {idx} 步未选择 APK 文件"
+        return ""
+
+    if step_type == "camReplace":
+        name = str(step.get("file", "")).strip()
+        if not name:
+            return f"第 {idx} 步未选择摄像头替换素材"
+        if "/" in name or "\\" in name or ".." in name:
+            return f"第 {idx} 步的素材名不能包含路径分隔符"
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in ("jpg", "jpeg", "png", "mp4", "mov", "avi", "webm", "3gp", "mkv"):
+            return f"第 {idx} 步的素材仅支持图片(jpg/png)或视频(mp4/mov/avi/webm/3gp/mkv)"
+        dev = str(step.get("dev", "")).strip()
+        if dev and not re.match(r"^/dev/video\d+$", dev):
+            return f"第 {idx} 步的 video 节点必须为 /dev/video<数字>: {dev}"
+        return ""
+
+    if step_type == "camRestore":
         return ""
 
     if step_type == "deleteFolder":
@@ -637,7 +663,8 @@ def _normalize_steps(steps) -> List[dict]:
                 "count": step.get("count", 1),
             }
             for field in ("apkName", "path", "packageName", "activity", "keycode", "action", "stream", "text", "id", "desc", "x", "y",
-                          "seconds", "command", "timeout", "label", "expectOutput", "failOnError", "waitOnline", "onlineTimeout"):
+                          "seconds", "command", "timeout", "label", "expectOutput", "failOnError", "waitOnline", "onlineTimeout",
+                          "file", "dev", "mirror"):
                 if step.get(field) is not None:
                     item[field] = step.get(field)
             if step["type"] == "runScript":
@@ -950,6 +977,7 @@ def import_script(request: ScriptImportRequest):
 # 导出包内各资源的子目录名（zip 内的固定布局）
 EXPORT_APK_DIR = "apk"
 EXPORT_TEMPLATE_DIR = "templates"
+EXPORT_MEDIA_DIR = "media"
 # 导出包签名文件名与校验密钥：导入时验证包由本工具导出且未被篡改
 EXPORT_SIGNATURE_MEMBER = "signature.txt"
 EXPORT_SECRET = b"DFM-Android-Toolkit::script-bundle::v1"
@@ -968,14 +996,15 @@ def _manifest_line(filename: str, file_bytes: bytes) -> str:
     return f"{filename} {len(file_bytes)} {hashlib.sha256(file_bytes).hexdigest()}"
 
 
-def _script_referenced_files(script: dict) -> tuple[List[str], List[str]]:
+def _script_referenced_files(script: dict) -> tuple[List[str], List[str], List[str]]:
     """
-    扫描脚本步骤，收集引用的 APK 文件名与模板图文件名（去重、保持出现顺序）
+    扫描脚本步骤，收集引用的 APK 文件名、模板图文件名与摄像头替换素材名（去重、保持出现顺序）
 
-    返回 (apk_names, template_names)
+    返回 (apk_names, template_names, media_names)
     """
     apk_names: List[str] = []
     template_names: List[str] = []
+    media_names: List[str] = []
     for step in script.get("steps", []):
         if not isinstance(step, dict):
             continue
@@ -989,18 +1018,23 @@ def _script_referenced_files(script: dict) -> tuple[List[str], List[str]]:
             tpl = str(step.get("template", "")).strip()
             if tpl and tpl not in template_names:
                 template_names.append(tpl)
-    return apk_names, template_names
+        elif step.get("type") == "camReplace":
+            media = str(step.get("file", "")).strip()
+            if media and media not in media_names:
+                media_names.append(media)
+    return apk_names, template_names, media_names
 
 
 @router.post("/device/script/export-zip")
 def export_script_zip(request: ScriptExportRequest):
     """
-    导出脚本为可迁移的 zip 包：脚本 JSON + 它引用的全部 APK/模板图
+    导出脚本为可迁移的 zip 包：脚本 JSON + 它引用的全部 APK/模板图/摄像头素材
 
     zip 布局：
       script.json          脚本原文（与 data/scripts/{name}.json 完全一致）
       apk/{apkName}        脚本引用的 APK（installApk 步骤）
       templates/{tpl}.png  脚本引用的模板图（waitFor 步骤）
+      media/{file}         脚本引用的摄像头替换素材（camReplace 步骤）
       signature.txt        HMAC 签名（对以上全部成员的清单），导入时强制校验
 
     zip 写到 D:\\log\\script_exports\\{name}.zip，前端提示保存位置。
@@ -1015,7 +1049,7 @@ def export_script_zip(request: ScriptExportRequest):
         with open(path, "r", encoding="utf-8") as f:
             script = json.load(f)
 
-        apk_names, template_names = _script_referenced_files(script)
+        apk_names, template_names, media_names = _script_referenced_files(script)
 
         # 先收集缺失的资源，全部列出后一次性报错，避免导出一个不完整的包
         missing = []
@@ -1033,6 +1067,13 @@ def export_script_zip(request: ScriptExportRequest):
                 tpl_paths.append(p)
             else:
                 missing.append(f"模板图 {tpl}")
+        media_paths: List = []
+        for media in media_names:
+            p = MEDIA_DIR / media
+            if p.exists():
+                media_paths.append(p)
+            else:
+                missing.append(f"摄像头素材 {media}")
         if missing:
             return {"code": 400, "message": "以下资源缺失，请先补齐再导出: " + "、".join(missing), "data": None}
 
@@ -1062,12 +1103,17 @@ def export_script_zip(request: ScriptExportRequest):
                 b = p.read_bytes()
                 zf.writestr(arc, b)
                 members.append((arc, b))
+            for p in media_paths:
+                arc = f"{EXPORT_MEDIA_DIR}/{p.name}"
+                b = p.read_bytes()
+                zf.writestr(arc, b)
+                members.append((arc, b))
             # 对全部成员做内容签名（成员名+字节数+sha256），任何篡改都会导致签名不匹配
             manifest = "\n".join(_manifest_line(arc, b) for arc, b in members)
             zf.writestr(EXPORT_SIGNATURE_MEMBER, _bundle_signature(manifest))
 
         size = os.path.getsize(zip_path)
-        logger.info(f"Script exported: {zip_path} (apk={len(apk_paths)}, templates={len(tpl_paths)}, {size} bytes)")
+        logger.info(f"Script exported: {zip_path} (apk={len(apk_paths)}, templates={len(tpl_paths)}, media={len(media_paths)}, {size} bytes)")
         return {
             "code": 200,
             "message": "success",
@@ -1076,6 +1122,7 @@ def export_script_zip(request: ScriptExportRequest):
                 "size": size,
                 "apkNames": [p.name for p in apk_paths],
                 "templateNames": [p.name for p in tpl_paths],
+                "mediaNames": [p.name for p in media_paths],
             },
         }
     except Exception as e:
@@ -1086,7 +1133,7 @@ def export_script_zip(request: ScriptExportRequest):
 @router.post("/device/script/import-zip")
 async def import_script_zip(script: UploadFile = File(..., description="脚本导出包(.zip)")):
     """
-    导入脚本 zip 包：落脚本 JSON + 把包内 apk/templates 资源还原到对应目录
+    导入脚本 zip 包：落脚本 JSON + 把包内 apk/templates/media 资源还原到对应目录
 
     与 /script/import 相同的校验链：内容不可信，先校验再落盘。
     """
@@ -1144,16 +1191,18 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
             raw_name = data.get("name") or os.path.splitext(os.path.basename(script_member))[0]
             name = _safe_name(str(raw_name))
 
-            # 还原资源：只收 apk/ 与 templates/ 顶层目录下的文件，防路径穿越
+            # 还原资源：只收 apk/ templates/ media/ 顶层目录下的文件，防路径穿越
             imported_apks: List[str] = []
             imported_templates: List[str] = []
+            imported_media: List[str] = []
             _ensure_templates_dir()
+            _ensure_media_dir()
             for member in names:
                 if member.endswith("/"):
                     continue
                 parts = member.split("/")
                 if len(parts) != 2:
-                    continue  # 只认顶层 apk/xxx、templates/xxx，忽略嵌套与杂项
+                    continue  # 只认顶层 apk/xxx、templates/xxx、media/xxx，忽略嵌套与杂项
                 folder, filename = parts
                 filename = os.path.basename(filename)  # 双重保险：去掉任何路径成分
                 if not filename:
@@ -1164,6 +1213,9 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
                 elif folder == EXPORT_TEMPLATE_DIR and filename.lower().endswith(".png"):
                     target_dir = TEMPLATES_DIR
                     imported_templates.append(filename)
+                elif folder == EXPORT_MEDIA_DIR and filename.lower().endswith(CAM_MEDIA_EXTS):
+                    target_dir = MEDIA_DIR
+                    imported_media.append(filename)
                 else:
                     continue
                 target_dir.mkdir(parents=True, exist_ok=True)
@@ -1182,7 +1234,7 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
             with open(target, "w", encoding="utf-8") as f:
                 json.dump(normalized, f, ensure_ascii=False, indent=2)
 
-        logger.info(f"Script zip imported: {target} (apk={len(imported_apks)}, templates={len(imported_templates)})")
+        logger.info(f"Script zip imported: {target} (apk={len(imported_apks)}, templates={len(imported_templates)}, media={len(imported_media)})")
         return {
             "code": 200,
             "message": "success",
@@ -1194,11 +1246,52 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
                 "overwritten": existed,
                 "apkNames": imported_apks,
                 "templateNames": imported_templates,
+                "mediaNames": imported_media,
             },
         }
     except Exception as e:
         logger.error(f"导入脚本包失败: {e}")
         return {"code": 500, "message": f"导入脚本包失败: {str(e)}", "data": None}
+
+
+# ========== 摄像头替换素材库（camReplace 步骤引用） ==========
+
+@router.post("/device/script/upload-media")
+async def upload_script_media(media: UploadFile = File(..., description="摄像头替换素材(图片/视频)")):
+    """上传摄像头替换素材到 data/media/，供「替换摄像头画面」步骤引用"""
+    try:
+        _ensure_media_dir()
+        ext = os.path.splitext(media.filename or "")[1].lower()
+        if ext not in CAM_MEDIA_EXTS:
+            return {"code": 400, "message": "素材仅支持图片(jpg/png)或视频(mp4/mov/avi/webm/3gp/mkv)", "data": None}
+        filename = _safe_name(os.path.splitext(media.filename or "")[0]) + ext
+        path = MEDIA_DIR / filename
+        with open(path, "wb") as f:
+            while True:
+                chunk = await media.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        size = path.stat().st_size
+        logger.info(f"Script media uploaded: {path} ({size} bytes)")
+        return {"code": 200, "message": "success", "data": {"name": filename, "size": size}}
+    except Exception as e:
+        logger.error(f"上传摄像头素材失败: {e}")
+        return {"code": 500, "message": f"上传摄像头素材失败: {str(e)}", "data": None}
+
+
+@router.post("/device/script/list-media")
+def list_script_media():
+    """列出已上传的摄像头替换素材"""
+    try:
+        _ensure_media_dir()
+        items = []
+        for f in sorted(MEDIA_DIR.iterdir()):
+            if f.is_file() and f.suffix.lower() in CAM_MEDIA_EXTS:
+                items.append({"name": f.name, "size": f.stat().st_size})
+        return {"code": 200, "message": "success", "data": items}
+    except Exception as e:
+        return {"code": 500, "message": f"获取摄像头素材列表失败: {str(e)}", "data": None}
 
 
 def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w: int, h: int, round_no: int,
@@ -1441,6 +1534,10 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             result = execute_adb_command(f'adb -s {device_id} install -r "{path}"', timeout=600)
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "install failed").strip())
+
+        elif stype in ("camReplace", "camRestore"):
+            # 摄像头替换依赖 camhook 部署与媒体转码，只在设备端离线脚本（0x0E 导入 + 0x10 执行）实现
+            raise RuntimeError("摄像头替换/恢复步骤仅支持设备端离线脚本执行（0x0E 导入 + 0x10 执行），PC 端回放不支持")
 
         elif stype == "deleteFolder":
             target = str(step.get("path", "")).strip()
