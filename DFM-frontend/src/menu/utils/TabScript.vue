@@ -193,7 +193,7 @@ const SCRIPT_BRANCH_ACTIONS: Array<{ action: string; label: string }> = [
   // 执行左边功能区的某个步骤功能（把该功能当作分支命中后的单步执行）
   ...SCRIPT_GESTURE_STEPS.map((g: any) => ({ action: g.type, label: `执行·${g.label}` })),
   ...SCRIPT_ADB_STEPS.map((a: any) => ({ action: a.type, label: `执行·${a.label}` })),
-  { action: 'waitFor', label: '执行·等待组件(选图)' },
+  { action: 'waitFor', label: '执行·等待组件' },
 ]
 
 // 分支动作是否需要展示嵌套脚本下拉（仅 runScript）
@@ -609,26 +609,16 @@ const scriptMoveMarker = (target: { stepIndex: number; part: 'start' | 'end' }, 
   }
 }
 
-// ---------- 框选模板（等待组件出现步骤） ----------
+// ---------- 框选模板（等待组件 / 判断步骤「组件出现」的配置行） ----------
 
 // 框选模式：开启后在画面上拖框，松开即把框内画面存为模板
 const scriptCropMode = ref(false)
 // 正在框选的区域（设备坐标）
 const scriptCropRegion = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
-// 判断步骤「组件出现」现截图时，保存后回填该步骤；空则沿用「等待组件(框选)」新增步骤的旧行为
+// 配置行发起框选时记录目标步骤，保存后回填该步骤的模板，不新增步骤
 const scriptCropTargetStep = ref<any>(null)
 
-const toggleCropMode = () => {
-  scriptCropMode.value = !scriptCropMode.value
-  scriptCropRegion.value = null
-  scriptCropTargetStep.value = null
-  if (scriptCropMode.value) {
-    showNotification('框选模式：在画面上拖出组件所在区域，松开保存为模板', 'info')
-  }
-  scriptRedrawMarkers()
-}
-
-// 判断步骤「组件出现」现截图：沿用框选交互，但保存后只回填该步骤的模板，不新增等待步骤
+// 等待组件/判断步骤「组件出现」现截图：沿用框选交互，保存后只回填该步骤的模板
 const startCropForCondition = (step: any) => {
   scriptCropTargetStep.value = step
   scriptCropRegion.value = null
@@ -1374,7 +1364,7 @@ const addScriptGestureStep = (type: string) => {
   addScriptStep(step)
 }
 
-// 等待组件（选图）：直接新增等待步骤并展开参数，模板从已有模板图列表手动选择
+// 等待组件：直接新增等待步骤并展开参数，模板从已有模板图列表手动选择，或在模板行点「框选」现截
 const addScriptWaitStep = () => {
   fetchScriptTemplates()
   addScriptStep({
@@ -2350,16 +2340,9 @@ onUnmounted(() => {
                           <button
                             class="script-add-btn"
                             :disabled="scriptRunning"
-                            title="新增等待组件步骤，在步骤参数里从已有模板图中手动选择"
+                            title="新增等待组件步骤，在步骤参数里从已有模板中选择，或点「框选」在画面上现截"
                             @click="addScriptWaitStep"
-                          >🖼 等待组件(选图)</button>
-                          <button
-                            class="script-add-btn"
-                            :class="{ cropping: scriptCropMode }"
-                            :disabled="!scriptStreaming || scriptRunning"
-                            title="开启后在画面上框住组件，松开保存为模板并添加等待步骤"
-                            @click="toggleCropMode"
-                          >{{ scriptCropMode ? '✕ 取消框选' : '👁 等待组件(框选)' }}</button>
+                          >🖼 等待组件</button>
                           <button
                             class="script-add-btn"
                             :disabled="scriptRunning"
@@ -2456,6 +2439,12 @@ onUnmounted(() => {
                               <el-select v-model="step.template" class="ep-config-select" placeholder="选择模板" :loading="scriptTemplateLoading">
                                 <el-option v-for="t in scriptTemplateOptions" :key="t.name" :value="t.name" :label="`${t.name}（${t.width}x${t.height}）`" />
                               </el-select>
+                              <button
+                                class="script-add-btn"
+                                :disabled="!scriptStreaming || scriptRunning"
+                                title="在画面上框住组件，保存为模板并设为当前等待步骤的模板"
+                                @click="startCropForCondition(step)"
+                              >📷 框选</button>
                             </div>
                             <div v-if="step.type === 'waitFor' && step.template && scriptTemplatePreview" class="script-config-row script-template-preview-row">
                               <img
