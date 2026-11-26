@@ -46,7 +46,7 @@
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe/接口文档.md` |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe/接口文档.md` |
 | `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe/接口文档.md` |
-| `0x11` | CMD_CAM_REPLACE | PC → 设备 | `{"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}` 或 `{"file":"...","dev":"/dev/video2"}` | 摄像头画面替换：转换媒体为 640x480 帧流并经 root 部署 camhook、重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
+| `0x11` | CMD_CAM_REPLACE | PC → 设备 | `{"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}` 或 `{"file":"...","dev":"/dev/video2"}`（另有内部参数 `srcPath`：设备端媒体绝对路径，离线脚本 `camReplace` 步骤用，PC 直发不需要） | 摄像头画面替换：转换媒体为 640x480 帧流并经 root 部署 camhook、重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
 | `0x12` | CMD_CAM_RESTORE | PC → 设备 | `{}` | 恢复真实摄像头画面：写 `enabled=0` 配置并重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
 | `0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x91` ~ `0x92` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
 | `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
