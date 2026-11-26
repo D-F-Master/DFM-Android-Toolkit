@@ -307,11 +307,15 @@ const fetchSavedScriptOptions = async () => {
       // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
       scriptSavedOptions.value = scripts
         .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
-        .map((s: any) => ({
-          value: s.name,
-          label: s.name,
-          desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
-        }))
+        .map((s: any) => {
+          // 子文件夹脚本引用为「path/名字」（相对 scripts 根），下拉展示目录前缀
+          const value = s.path ? `${s.path}/${s.name}` : s.name
+          return {
+            value,
+            label: s.path ? `${s.path} / ${s.name}` : s.name,
+            desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+          }
+        })
     }
   } catch {
     /* 脚本列表拉取失败不阻断脚本编辑 */
@@ -1585,17 +1589,23 @@ const importScriptFromList = async () => {
     // 过滤掉自动生成的临时脚本（current_xxx），它们是执行过程产生的中间产物
     const items = scripts
       .filter((s: any) => !String(s.name).startsWith('current_') && !String(s.name).startsWith('_current_'))
-      .map((s: any) => ({
-        value: s.name,
-        label: s.name,
-        desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
-      }))
+      .map((s: any) => {
+        // 子文件夹脚本引用为「path/名字」，载入时拆回 name + path 传给 load 接口
+        const value = s.path ? `${s.path}/${s.name}` : s.name
+        return {
+          value,
+          label: s.path ? `${s.path} / ${s.name}` : s.name,
+          desc: `${s.stepCount} 个步骤 · 重复 ${s.repeat} 轮`,
+        }
+      })
 
-    showList(items, async (name?: string) => {
-      if (!name) return
+    showList(items, async (ref?: string) => {
+      if (!ref) return
       try {
         scriptSaving.value = true
-        const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, { name })
+        const sep = ref.lastIndexOf('/')
+        const payload = sep >= 0 ? { name: ref.slice(sep + 1), path: ref.slice(0, sep) } : { name: ref }
+        const loaded = await axios.post(`${API_BASE.value}/api/device/script/load`, payload)
         if (loaded.data.code !== 200) {
           showNotification('读取脚本失败: ' + (loaded.data.message || '未知错误'), 'error')
           return
