@@ -14,7 +14,10 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.ImageFormat;
+import android.graphics.Matrix;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.hardware.input.InputManager;
@@ -22,6 +25,7 @@ import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaMetadataRetriever;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -52,6 +56,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
@@ -101,6 +106,8 @@ public class ProbeService extends Service {
     private static final int CMD_SCRIPT_IMPORT = 0x0E;
     private static final int CMD_SCRIPT_LIST = 0x0F;
     private static final int CMD_SCRIPT_RUN = 0x10;
+    private static final int CMD_CAM_REPLACE = 0x11;
+    private static final int CMD_CAM_RESTORE = 0x12;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -362,7 +369,8 @@ public class ProbeService extends Service {
                     && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE
                     && cmd != CMD_ACCESSIBILITY_CLICK
                     && cmd != CMD_SCRIPT_IMPORT && cmd != CMD_SCRIPT_LIST
-                    && cmd != CMD_SCRIPT_RUN;
+                    && cmd != CMD_SCRIPT_RUN
+                    && cmd != CMD_CAM_REPLACE && cmd != CMD_CAM_RESTORE;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -492,6 +500,17 @@ public class ProbeService extends Service {
                 return fail(500, "script cmd failed: " + e);
             }
         }
+        if (cmd == CMD_CAM_REPLACE || cmd == CMD_CAM_RESTORE) {
+            try {
+                return ok(cmd == CMD_CAM_REPLACE ? camReplace(req) : camRestore());
+            } catch (IllegalArgumentException e) {
+                Log.w(TAG, "cam cmd param error: " + e);
+                return fail(400, e.getMessage());
+            } catch (Exception e) {
+                Log.w(TAG, "cam cmd 0x" + Integer.toHexString(cmd) + " failed: " + e);
+                return fail(500, "cam cmd failed: " + e);
+            }
+        }
         return fail(400, "unknown cmd: 0x" + Integer.toHexString(cmd));
     }
 
@@ -540,6 +559,330 @@ public class ProbeService extends Service {
         int repeat = req.optInt("repeat", 1);
         return scriptEngine().run(name, repeat);
     }
+
+    // ===== 摄像头画面替换（0x11 替换 / 0x12 恢复），部署命令对齐 camreplace APK 已验证流程 =====
+
+    /** 替换源统一缩放到 640x480（camhook 与相机 HAL 协商的实际分辨率）。 */
+    private static final int CAM_W = 640;
+    private static final int CAM_H = 480;
+    /** 视频采样帧率与帧数上限（同 camreplace APK）。 */
+    private static final int CAM_SAMPLE_FPS = 15;
+    private static final int CAM_MAX_FRAMES = 600;
+    private static final int CAM_JPEG_Q = 85;
+
+    private static final String CAM_RC_PATH =
+            "/vendor/etc/init/android.hardware.camera.provider@2.4-external-service.rc";
+    private static final String CAM_SO_DST = "/vendor/lib/camhook.so";
+    private static final String CAM_STREAM_DST = "/dev/camhook.stream";
+    private static final String CAM_CONF_PATH = "/dev/camhook.conf";
+    private static final String CAM_STATUS_PATH = "/dev/camhook.status";
+    private static final String CAM_ASSET_SO = "camhook.so";
+
+    /** CMD_CAM_REPLACE (0x11)：PC 端先 adb push 媒体到 files/cam_in/，本端转成 640x480 JPEG 帧流
+     *  （图片 1 帧 / 视频 15fps 最多 600 帧，可选镜像补偿），经 su 部署 camhook 并重启 camera provider。
+     *  请求 {"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}；cameraId 为 0x02 相机列表返回的 id，
+     *  映射 /dev/video{cameraId}（外部相机 id 即 video 节点号），节点不存在回 400 并列出可用节点。 */
+    private JSONObject camReplace(JSONObject req) throws Exception {
+        String file = req.optString("file", "").trim();
+        if (file.isEmpty() || file.contains("/") || file.contains("\\") || file.contains("..")) {
+            throw new IllegalArgumentException("file is required (file name only)");
+        }
+        File camDir = new File(ensureFilesDir(), "cam_in");
+        File src = new File(camDir, file);
+        if (!src.isFile()) {
+            throw new IllegalArgumentException("file not pushed to device: " + src.getAbsolutePath());
+        }
+        boolean mirror = req.optBoolean("mirror", false);
+
+        // 目标节点：显式 dev 优先，否则按 0x02 相机列表的 cameraId 映射 /dev/video{id}
+        String dev = req.optString("dev", "").trim();
+        if (dev.isEmpty()) {
+            String cameraId = req.optString("cameraId", "").trim();
+            if (!cameraId.matches("\\d+")) {
+                throw new IllegalArgumentException("cameraId (number) or dev is required");
+            }
+            dev = "/dev/video" + cameraId;
+        }
+        if (!dev.matches("/dev/video\\d+")) {
+            throw new IllegalArgumentException("dev must match /dev/video<id>");
+        }
+
+        String ext = "";
+        int dot = file.lastIndexOf('.');
+        if (dot >= 0) ext = file.substring(dot + 1).toLowerCase(Locale.US);
+        boolean isImage = false;
+        for (String e : new String[]{"jpg", "jpeg", "png"}) {
+            if (e.equals(ext)) {
+                isImage = true;
+                break;
+            }
+        }
+        boolean isVideo = false;
+        for (String e : new String[]{"mp4", "mov", "avi", "webm", "3gp", "mkv"}) {
+            if (e.equals(ext)) {
+                isVideo = true;
+                break;
+            }
+        }
+        if (!isImage && !isVideo) {
+            throw new IllegalArgumentException("unsupported file type: ." + ext);
+        }
+
+        // 目标 video 节点必须存在，不存在时列出全部节点便于排查 cameraId 与节点号的映射差异
+        String check = runSuScript(new String[]{
+                "[ -e " + dev + " ] && echo NODE_OK || echo NODE_MISSING",
+                "ls /dev/video* 2>/dev/null || echo none"
+        }, 15000);
+        if (check.contains("NODE_MISSING")) {
+            throw new IllegalArgumentException("camera node missing: " + dev
+                    + ", available: " + camVideoNodes(check));
+        }
+
+        byte[] stream;
+        int frames;
+        if (isImage) {
+            stream = camImageToStream(src, mirror);
+            frames = 1;
+        } else {
+            stream = camVideoToStream(src, mirror);
+            frames = camCountFrames(stream);
+        }
+        if (stream == null || stream.length <= 4 || frames <= 0) {
+            throw new Exception("media converted to 0 frames");
+        }
+
+        // camhook.so 从 APK assets 解出（与 camreplace APK assets 同一 so）
+        File soFile = new File(getFilesDir(), "camhook.so");
+        copyAssetFile(CAM_ASSET_SO, soFile);
+        File streamFile = new File(getFilesDir(), "camhook.stream");
+        FileOutputStream fo = new FileOutputStream(streamFile);
+        try {
+            fo.write(stream);
+        } finally {
+            fo.close();
+        }
+        String files = getFilesDir().getAbsolutePath();
+
+        String out = runSuScript(new String[]{
+                "mount -o remount,rw /vendor 2>/dev/null",
+                "[ -f " + CAM_SO_DST + " ] || cp " + files + "/camhook.so " + CAM_SO_DST,
+                "chmod 644 " + CAM_SO_DST,
+                "grep -q camhook.so " + CAM_RC_PATH + " 2>/dev/null || sed -i \"s/user cameraserver/user cameraserver\\n    setenv LD_PRELOAD " + CAM_SO_DST + "/\" " + CAM_RC_PATH,
+                "printf 'enabled=1\\ndev=" + dev + "\\nmode=1\\nsource=" + CAM_STREAM_DST + "\\nquality=" + CAM_JPEG_Q + "\\n' > " + CAM_CONF_PATH,
+                "chmod 644 " + CAM_CONF_PATH,
+                "cp " + files + "/camhook.stream " + CAM_STREAM_DST,
+                "chmod 644 " + CAM_STREAM_DST,
+                "touch " + CAM_STATUS_PATH + " && chmod 666 " + CAM_STATUS_PATH,
+                "echo RCCHK:$(grep -c LD_PRELOAD " + CAM_RC_PATH + ")"
+        }, 60000);
+        boolean rebootRequired = out.contains("RCCHK:0");
+        String restart = "";
+        if (!rebootRequired) {
+            restart = runSuScript(new String[]{
+                    "kill $(pgrep -f external-service) 2>/dev/null",
+                    "echo restart_done"
+            }, 30000);
+        }
+        String status = runSuScript(new String[]{
+                "cat " + CAM_STATUS_PATH + " 2>/dev/null | head -20 || echo nostatus"
+        }, 15000);
+
+        JSONObject data = new JSONObject();
+        data.put("dev", dev);
+        data.put("frames", frames);
+        data.put("streamSize", stream.length);
+        data.put("mirror", mirror);
+        data.put("rebootRequired", rebootRequired);
+        data.put("deployOutput", camTail(out));
+        if (!restart.isEmpty()) {
+            data.put("restartOutput", camTail(restart));
+        }
+        data.put("status", camTail(status));
+        return data;
+    }
+
+    /** CMD_CAM_RESTORE (0x12)：写 enabled=0 配置并重启 camera provider，恢复真实摄像头画面（su，需 root）。 */
+    private JSONObject camRestore() throws Exception {
+        String out = runSuScript(new String[]{
+                "printf 'enabled=0\\ndev=/dev/video2\\nmode=0\\nsource=" + CAM_STREAM_DST + "\\nquality=" + CAM_JPEG_Q + "\\n' > " + CAM_CONF_PATH,
+                "chmod 644 " + CAM_CONF_PATH,
+                "kill $(pgrep -f external-service) 2>/dev/null",
+                "echo restore_done"
+        }, 30000);
+        JSONObject data = new JSONObject();
+        data.put("conf", "enabled=0");
+        data.put("output", camTail(out));
+        return data;
+    }
+
+    /** 以 root 顺序执行多条命令：本设备 su 不支持 -c，固定 "su 0 sh -c <script>"；
+     *  每条命令后回显 EXIT:$? 定位失败行；合并 stdout/stderr，超时强杀。 */
+    private String runSuScript(String[] cmds, long timeoutMs) throws Exception {
+        StringBuilder script = new StringBuilder();
+        for (String c : cmds) {
+            script.append(c).append("; echo EXIT:$?; ");
+        }
+        script.append("exit 0");
+        ProcessBuilder pb = new ProcessBuilder("su", "0", "sh", "-c", script.toString());
+        pb.redirectErrorStream(true);
+        final Process proc = pb.start();
+        final boolean[] trunc = new boolean[1];
+        final AtomicReference<byte[]> outRef = new AtomicReference<>(new byte[0]);
+        Thread reader = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    outRef.set(drainStream(proc.getInputStream(), trunc));
+                } catch (Exception ignored) {
+                }
+            }
+        }, "dfm-probe-su-out");
+        reader.start();
+        if (!proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+            proc.destroyForcibly();
+            reader.join(2000);
+            throw new Exception("su script timeout");
+        }
+        reader.join(2000);
+        return new String(outRef.get(), UTF8);
+    }
+
+    /** 把 APK assets 里的文件复制到目标位置（覆盖）。 */
+    private void copyAssetFile(String name, File dst) throws Exception {
+        InputStream is = getAssets().open(name);
+        try {
+            OutputStream os = new FileOutputStream(dst);
+            try {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = is.read(buf)) > 0) {
+                    os.write(buf, 0, n);
+                }
+            } finally {
+                os.close();
+            }
+        } finally {
+            is.close();
+        }
+    }
+
+    /** 图片解码缩放后压成单帧 .stream（[u32 LE len][JPEG q85]）。 */
+    private byte[] camImageToStream(File f, boolean mirror) throws Exception {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        InputStream is = new FileInputStream(f);
+        BitmapFactory.decodeStream(is, null, bounds);
+        is.close();
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw new Exception("image decode failed: " + f.getName());
+        }
+        int sample = 1;
+        while (bounds.outWidth / sample > CAM_W * 2 || bounds.outHeight / sample > CAM_H * 2) {
+            sample *= 2;
+        }
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = sample;
+        is = new FileInputStream(f);
+        Bitmap b = BitmapFactory.decodeStream(is, null, opts);
+        is.close();
+        if (b == null) {
+            throw new Exception("image decode failed: " + f.getName());
+        }
+        ByteArrayOutputStream st = new ByteArrayOutputStream(256 * 1024);
+        camAppendFrame(st, b, mirror);
+        b.recycle();
+        return st.toByteArray();
+    }
+
+    /** 视频按 15fps 抽帧（最多 600 帧），逐帧缩放压成 .stream。 */
+    private byte[] camVideoToStream(File f, boolean mirror) throws Exception {
+        MediaMetadataRetriever m = new MediaMetadataRetriever();
+        try {
+            m.setDataSource(f.getAbsolutePath());
+            String durStr = m.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+            long durMs = durStr == null ? 0 : Long.parseLong(durStr);
+            long stepUs = 1000000L / CAM_SAMPLE_FPS;
+            int maxF = (int) Math.min(CAM_MAX_FRAMES, durMs * 1000L / stepUs);
+            if (maxF <= 0) {
+                maxF = 1;
+            }
+            ByteArrayOutputStream st = new ByteArrayOutputStream(64 * 1024 * 1024);
+            int count = 0;
+            for (int i = 0; i < maxF; i++) {
+                Bitmap frame = m.getFrameAtTime(i * stepUs, MediaMetadataRetriever.OPTION_CLOSEST);
+                if (frame == null) {
+                    break;
+                }
+                camAppendFrame(st, frame, mirror);
+                count++;
+            }
+            if (count == 0) {
+                throw new Exception("video has 0 decodable frames: " + f.getName());
+            }
+            return st.toByteArray();
+        } finally {
+            try {
+                m.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 缩放到 640x480（可选镜像补偿）、JPEG q85 压缩后按 [u32 LE len][JPEG] 追加到流。 */
+    private static void camAppendFrame(ByteArrayOutputStream st, Bitmap frame, boolean mirror) {
+        Bitmap b = (frame.getWidth() == CAM_W && frame.getHeight() == CAM_H)
+                ? frame : Bitmap.createScaledBitmap(frame, CAM_W, CAM_H, true);
+        if (mirror) {
+            Matrix m2 = new Matrix();
+            m2.preScale(-1f, 1f);
+            Bitmap mirrored = Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), m2, false);
+            if (mirrored != b) {
+                b.recycle();
+            }
+            b = mirrored;
+        }
+        ByteArrayOutputStream jb = new ByteArrayOutputStream(64 * 1024);
+        b.compress(Bitmap.CompressFormat.JPEG, CAM_JPEG_Q, jb);
+        b.recycle();
+        byte[] jd = jb.toByteArray();
+        ByteBuffer lb = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+        lb.putInt(jd.length);
+        st.write(lb.array(), 0, 4);
+        st.write(jd, 0, jd.length);
+    }
+
+    /** 校验 .stream 完整性：按 [u32 LE len][jpeg] 链遍历，返回帧数（尾部截断则小于实际帧数）。 */
+    private static int camCountFrames(byte[] stream) {
+        int frames = 0;
+        int i = 0;
+        while (i + 4 <= stream.length) {
+            int len = (stream[i] & 0xFF) | ((stream[i + 1] & 0xFF) << 8)
+                    | ((stream[i + 2] & 0xFF) << 16) | ((stream[i + 3] & 0xFF) << 24);
+            if (len <= 0 || i + 4 + len > stream.length) {
+                break;
+            }
+            frames++;
+            i += 4 + len;
+        }
+        return frames;
+    }
+
+    /** 从 "ls /dev/video*" 输出里取含 /dev/video 的那一行作为可用节点列表。 */
+    private static String camVideoNodes(String out) {
+        for (String line : out.split("\n")) {
+            if (line.contains("/dev/video")) {
+                return line.trim();
+            }
+        }
+        return "(no /dev/video* nodes)";
+    }
+
+    /** 清掉逐条命令的 EXIT:0 回显行，输出过长时只留尾部。 */
+    private static String camTail(String s) {
+        s = s == null ? "" : s.replaceAll("(?m)^EXIT:\\d+\\s*$", "").trim();
+        return s.length() <= 3000 ? s : s.substring(s.length() - 3000);
+    }
+
     /** CMD_DEVICE_INFO (0x02)：基础信息 + 串口 / 摄像头 / 外设列表，采集失败降级为空或 Unknown。 */
     private JSONObject deviceInfo() throws Exception {
         JSONObject data = new JSONObject();
