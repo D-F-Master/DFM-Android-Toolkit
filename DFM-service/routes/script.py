@@ -35,7 +35,8 @@
 
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
 TTS 步骤走探针帧协议（0x01）；accClick 步骤走探针 0x0D，设备端在无障碍组件树
-中按 id/text/desc 匹配节点并直接执行 ACTION_CLICK（不走坐标注入）；其余注入类
+中按 id/text/desc 匹配节点并直接执行 ACTION_CLICK（不走坐标注入）；accExists
+判断走探针 0x0C 拉组件树后在服务端匹配（只查不点）；其余注入类
 步骤走 scrcpy 会话。判断步骤（condition）
 求一次条件后按真/假分支动作（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，
 走 adb 或截屏，不占会话。
@@ -226,7 +227,7 @@ ADB_STEP_TYPES = (
 VISION_STEP_TYPES = ("waitFor",)
 # 判断步骤：求一次条件，按真/假分支动作决定下一步
 CONDITION_STEP_TYPES = ("condition",)
-CONDITION_KINDS = ("appInstalled", "template", "shell", "time", "accClick")
+CONDITION_KINDS = ("appInstalled", "template", "shell", "time", "accClick", "accExists")
 BRANCH_ACTIONS = ("continue", "goto", "stop", "fail", "runScript")
 MAX_SCRIPT_JUMPS = 100  # 每轮脚本的跳转次数上限，防止分支构成死循环
 MAX_NESTED_SCRIPT_DEPTH = 3  # 嵌套执行脚本（runScript）的最大深度，防递归套娃
@@ -542,6 +543,16 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
         for label, value in (("resource-id", acc_id), ("文本", acc_text), ("内容描述", acc_desc)):
             if len(value) > 200:
                 return f"第 {idx} 步的无障碍点击条件 {label} 过长（≤200 字符）"
+    elif kind == "accExists":
+        # 无障碍组件存在判断：id/text/desc 至少一项，只查不点（与 accClick 同一匹配语义）
+        acc_id = str(step.get("id", "") or "").strip()
+        acc_text = str(step.get("text", "") or "").strip()
+        acc_desc = str(step.get("desc", "") or "").strip()
+        if not (acc_id or acc_text or acc_desc):
+            return f"第 {idx} 步的无障碍组件判断需至少填写 resource-id / 文本 / 内容描述 一项"
+        for label, value in (("resource-id", acc_id), ("文本", acc_text), ("内容描述", acc_desc)):
+            if len(value) > 200:
+                return f"第 {idx} 步的无障碍组件判断 {label} 过长（≤200 字符）"
 
     # 分支动作 = runScript 时：必须指定嵌套脚本名，且脚本文件存在
     for label in ("onTrue", "onFalse"):
@@ -1678,6 +1689,36 @@ def _current_screen_size(device_id: str, base_w: int, base_h: int):
     return int(m.group(1)), int(m.group(2))
 
 
+def _acc_node_matches(node: dict, acc_id: str, acc_text: str, acc_desc: str) -> bool:
+    """
+    服务端复刻探针设备端 nodeMatches（ProbeService.java:1279）：
+    id 精确相等、text/desc 包含，填了的条件需同时满足。
+    """
+    if acc_id and str(node.get("id", "") or "") != acc_id:
+        return False
+    if acc_text and acc_text not in str(node.get("text", "") or ""):
+        return False
+    if acc_desc and acc_desc not in str(node.get("desc", "") or ""):
+        return False
+    return True
+
+
+def _acc_tree_find(root: dict, acc_id: str, acc_text: str, acc_desc: str) -> bool:
+    """
+    在探针 0x0C 返回的无障碍树 JSON 中深度优先查找匹配节点。
+    设备端 matchWithAncestorId 的祖先组合对纯存在判断是冗余的
+    （完整匹配的祖先本身也会被 DFS 访问到），故只做直接匹配即可与
+    0x0D 点击保持同一命中语义。
+    """
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict) and _acc_node_matches(node, acc_id, acc_text, acc_desc):
+            return True
+        stack.extend(node.get("children") or [])
+    return False
+
+
 def _eval_condition(device_id: str, step: dict, base_w: int, base_h: int, stop_event=None):
     """
     求一次判断条件，返回 (成立?, 说明文字)
@@ -1788,6 +1829,37 @@ def _eval_condition(device_id: str, step: dict, base_w: int, base_h: int, stop_e
                 message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
                 ok = False
                 reason = f"无障碍点击未成功: {message}"
+    elif kind == "accExists":
+        # 无障碍组件存在判断：经探针 0x0C 拉当前窗口组件树，服务端按与 0x0D 相同的
+        # 匹配语义（id 精确、text/desc 包含）查找节点，存在 = 条件成立（只查不点）
+        from routes.probe import run_probe
+
+        acc_id = str(step.get("id", "") or "").strip()
+        acc_text = str(step.get("text", "") or "").strip()
+        acc_desc = str(step.get("desc", "") or "").strip()
+        d = run_probe(device_id, False, 0x0C, {})
+        if not d.get("connected"):
+            ok = False
+            reason = f"探针通讯失败: {d.get('reason', '未知原因')}"
+        else:
+            response = d.get("response") or {}
+            data = (response.get("data") or {}) if isinstance(response, dict) else {}
+            if isinstance(response, dict) and response.get("code") == 200:
+                root = data.get("root")
+                if isinstance(root, dict):
+                    cond_text = f"id={acc_id or '-'} text={acc_text or '-'} desc={acc_desc or '-'}"
+                    ok = _acc_tree_find(root, acc_id, acc_text, acc_desc)
+                    reason = f"无障碍组件{'存在' if ok else '不存在'}（{cond_text}）"
+                    # 树超过 150 节点被截断时，未命中可能是漏扫而非真不存在，明示出来
+                    if not ok and data.get("truncated"):
+                        reason += "；组件树超出 150 节点上限被截断，结果可能不完整"
+                else:
+                    ok = False
+                    reason = "无障碍树返回异常（root 缺失）"
+            else:
+                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                ok = False
+                reason = f"读取无障碍树失败: {message}"
     else:
         reason = f"未知判断类型: {kind}"
 
