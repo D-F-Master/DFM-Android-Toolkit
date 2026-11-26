@@ -475,34 +475,54 @@ const onProbeCamReplace = () => {
       label: `摄像头 ${c.id} · ${probeFacing(c.facing)}`,
       desc: c.resolution || ''
     }));
+    // 节点不存在（如 USB 相机不在 camera2 列表里）时，解析 available 节点让用户手动指定重试
+    const doReplace = (params: { cameraId?: string; dev?: string }) => {
+      probeBusy.value = 'cam-replace';
+      probeResult.value = params.dev
+        ? `正在替换摄像头画面（${params.dev}）...`
+        : `正在替换摄像头画面（摄像头 ${params.cameraId}）...`;
+      probePost('/api/probe/cam-replace', {
+        deviceId: selectedDevice.value,
+        filePath,
+        cameraId: params.cameraId || '',
+        dev: params.dev || '',
+        mirror: probeCamMirror.value
+      }, 400000)
+        .then((info: any) => {
+          probeResult.value = [
+            `替换完成：${info.dev || '?'} · ${info.frames ?? '?'} 帧 · ${info.streamSize ?? 0} B${info.mirror ? ' · 已镜像补偿' : ''}`,
+            info.rebootRequired
+              ? '⚠ 首次安装：rc 已写入 LD_PRELOAD，需重启设备后再次替换才能生效'
+              : 'camera provider 已重启，画面替换立即生效',
+            info.status || '',
+          ].filter(Boolean).join('\n');
+          showMessage(info.rebootRequired ? '已部署，需重启设备生效' : '摄像头画面替换完成', '替换摄像头画面');
+        })
+        .catch((e: any) => {
+          const msg = e?.response?.data?.message || e?.message || '请求异常';
+          const m = /camera node missing: .+? available: (.+)$/.exec(msg);
+          if (!m) {
+            probeResult.value = `替换失败：${msg}`;
+            showMessage(`替换失败：${msg}`, '替换摄像头画面');
+            return;
+          }
+          // 先清 busy，否则弹窗回调里的操作会被 probeReady 守卫吞掉（同上）
+          probeBusy.value = '';
+          probeResult.value = `替换失败：${msg}`;
+          nextTick(() => showPrompt(`设备上不存在该映射节点，输入实际节点重试（可用：${m[1]}）`, (dev: string) => {
+            const d = (dev || '').trim();
+            if (!/^\/dev\/video\d+$/.test(d)) {
+              nextTick(() => showMessage('节点格式必须为 /dev/video<数字>，已取消替换', '替换摄像头画面'));
+              return;
+            }
+            nextTick(() => doReplace({ dev: d }));
+          }));
+        })
+        .finally(() => { probeBusy.value = ''; });
+    };
     showList(items, (cameraId: string) => {
       // handleModalConfirm 回调返回后才会关闭弹窗，同步发请求会被守卫吞掉，故 nextTick 错开（同 runProbeScript）
-      nextTick(() => {
-        probeBusy.value = 'cam-replace';
-        probeResult.value = `正在替换摄像头画面（摄像头 ${cameraId}）...`;
-        probePost('/api/probe/cam-replace', {
-          deviceId: selectedDevice.value,
-          filePath,
-          cameraId,
-          mirror: probeCamMirror.value
-        }, 400000)
-          .then((info: any) => {
-            probeResult.value = [
-              `替换完成：${info.dev || '?'} · ${info.frames ?? '?'} 帧 · ${info.streamSize ?? 0} B${info.mirror ? ' · 已镜像补偿' : ''}`,
-              info.rebootRequired
-                ? '⚠ 首次安装：rc 已写入 LD_PRELOAD，需重启设备后再次替换才能生效'
-                : 'camera provider 已重启，画面替换立即生效',
-              info.status || '',
-            ].filter(Boolean).join('\n');
-            showMessage(info.rebootRequired ? '已部署，需重启设备生效' : '摄像头画面替换完成', '替换摄像头画面');
-          })
-          .catch((e: any) => {
-            const text = `替换失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
-            probeResult.value = text;
-            showMessage(text, '替换摄像头画面');
-          })
-          .finally(() => { probeBusy.value = ''; });
-      });
+      nextTick(() => doReplace({ cameraId }));
     }, '选择要替换的摄像头（id 映射 /dev/video{id}）', '未检测到摄像头', '替换');
   };
   input.click();
@@ -620,7 +640,7 @@ const onProbeCamRestore = async () => {
                     </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10 / 相机列表 0x02 / 替换摄像头画面 0x11 / 恢复真实画面 0x12。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。替换摄像头画面打开文件选择框选照片/视频，再从相机列表（0x02）选目标相机，设备端把画面缩放成 640x480 帧流（视频 15fps 最多 600 帧）经 root 部署后替换；首次安装需重启设备再替换一次才生效，恢复真实画面一键还原。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10 / 相机列表 0x02 / 替换摄像头画面 0x11 / 恢复真实画面 0x12。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。替换摄像头画面打开文件选择框选照片/视频，再从相机列表（0x02）选目标相机；若映射节点不存在（USB 相机不在列表里），可按提示手动输入 /dev/video<数字> 重试，设备端把画面缩放成 640x480 帧流（视频 15fps 最多 600 帧）经 root 部署后替换；首次安装需重启设备再替换一次才生效，恢复真实画面一键还原。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
                     </div>
                   </div>
                 </div>
