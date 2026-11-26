@@ -17,7 +17,7 @@ for (const [, src] of tags) {
   if (/\bimport\s*\(/.test(js) || /\bimport\.meta\b/.test(js) || /\bexport\s*\{/.test(js)) {
     throw new Error(`${src} 含 ESM 专用语法，不能转成经典脚本`)
   }
-  const patched = js.replace(/export default (\w+)\(\);\s*$/, '$1();')
+  const patched = js.replace(/export default (\$?\w+)\(\);\s*$/, '$1();')
   if (patched === js) throw new Error(`${src} 末尾未找到 "export default X();"，构建产物格式可能已变化`)
   writeFileSync(jsPath, patched, 'utf8')
 }
