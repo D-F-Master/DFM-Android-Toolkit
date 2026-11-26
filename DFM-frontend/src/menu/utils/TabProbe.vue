@@ -434,7 +434,8 @@ const listProbeCameras = async () => {
   }
 };
 
-// 0x11：选媒体文件 → 选相机（复用 0x02 列表）→ 后端 adb push 后发帧（视频转码耗时较长，超时放宽）
+// 0x11：选媒体文件 → 设备端 ls /dev/video* 找实际节点（单个直接用，多个弹窗选）→ 后端 adb push 后发帧
+// （不用 0x02 相机列表：USB 相机可能不在 camera2 枚举里，cameraId 与 video 节点号也不一定对应）
 const onProbeCamReplace = () => {
   if (!probeReady()) return;
   // 同导入脚本：系统文件对话框选文件，取本地绝对路径给后端 adb push（不能传文件内容）
@@ -449,20 +450,22 @@ const onProbeCamReplace = () => {
       showMessage('无法获取文件本地路径，请确认在 uTools/桌面端中使用（浏览器环境不支持）', '替换摄像头画面');
       return;
     }
-    // 先取相机列表（0x02）供选择替换目标；列表失败直接终止，不推送文件
+    // 设备端自己找摄像头节点（0x08 shell，root 与部署路径一致）；失败直接终止，不推送文件
     probeBusy.value = 'cam-replace';
-    probeResult.value = '正在获取摄像头列表...';
-    let cameras: any[] = [];
+    probeResult.value = '正在查找设备摄像头节点（ls /dev/video*）...';
+    let nodes: string[] = [];
     try {
-      const res = await axios.post(`${API_BASE.value}/api/probe/cameras`, {
-        deviceId: selectedDevice.value
-      }, { timeout: 60000 });
-      cameras = res.data?.data?.cameras || [];
-      if (res.data?.code !== 200 || cameras.length === 0) {
-        throw new Error(res.data?.message || '未检测到摄像头');
+      const res = await probePost('/api/probe/message', {
+        deviceId: selectedDevice.value,
+        cmd: 0x08,
+        data: { command: 'ls /dev/video*', root: true, timeout: 30 }
+      }, 60000);
+      nodes = String(res?.stdout || '').match(/\/dev\/video\d+/g) || [];
+      if (nodes.length === 0) {
+        throw new Error(`未找到 /dev/video* 节点（exit ${res?.exit ?? '?'}）：${res?.stderr || res?.stdout || '无输出'}`);
       }
     } catch (e: any) {
-      const text = `获取摄像头列表失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+      const text = `查找摄像头节点失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
       probeResult.value = text;
       showMessage(text, '替换摄像头画面');
       probeBusy.value = '';
@@ -470,12 +473,7 @@ const onProbeCamReplace = () => {
     }
     // 先清 busy，否则弹窗回调里的操作会被 probeReady 守卫吞掉（同 onProbePhoto / runProbeScript）
     probeBusy.value = '';
-    const items = cameras.map((c: any) => ({
-      value: String(c.id),
-      label: `摄像头 ${c.id} · ${probeFacing(c.facing)}`,
-      desc: c.resolution || ''
-    }));
-    // 节点不存在（如 USB 相机不在 camera2 列表里）时，解析 available 节点让用户手动指定重试
+    // 节点不存在（如节点刚被拔出）时，解析 available 节点让用户手动指定重试
     const doReplace = (params: { cameraId?: string; dev?: string }) => {
       probeBusy.value = 'cam-replace';
       probeResult.value = params.dev
@@ -509,7 +507,7 @@ const onProbeCamReplace = () => {
           // 先清 busy，否则弹窗回调里的操作会被 probeReady 守卫吞掉（同上）
           probeBusy.value = '';
           probeResult.value = `替换失败：${msg}`;
-          nextTick(() => showPrompt(`设备上不存在该映射节点，输入实际节点重试（可用：${m[1]}）`, (dev: string) => {
+          nextTick(() => showPrompt(`设备上不存在该节点，输入实际节点重试（可用：${m[1]}）`, (dev: string) => {
             const d = (dev || '').trim();
             if (!/^\/dev\/video\d+$/.test(d)) {
               nextTick(() => showMessage('节点格式必须为 /dev/video<数字>，已取消替换', '替换摄像头画面'));
@@ -520,10 +518,16 @@ const onProbeCamReplace = () => {
         })
         .finally(() => { probeBusy.value = ''; });
     };
-    showList(items, (cameraId: string) => {
+    // 只有一个节点直接替换；多个（USB 相机常带 metadata 副节点）才弹窗选择
+    if (nodes.length === 1) {
+      nextTick(() => doReplace({ dev: nodes[0] }));
+      return;
+    }
+    const items = nodes.map((n: string) => ({ value: n, label: n, desc: '' }));
+    showList(items, (dev: string) => {
       // handleModalConfirm 回调返回后才会关闭弹窗，同步发请求会被守卫吞掉，故 nextTick 错开（同 runProbeScript）
-      nextTick(() => doReplace({ cameraId }));
-    }, '选择要替换的摄像头（id 映射 /dev/video{id}）', '未检测到摄像头', '替换');
+      nextTick(() => doReplace({ dev }));
+    }, '选择要替换的摄像头节点（若替换后画面未变，换一个节点重试）', '未检测到摄像头节点', '替换');
   };
   input.click();
 };
@@ -640,7 +644,7 @@ const onProbeCamRestore = async () => {
                     </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10 / 相机列表 0x02 / 替换摄像头画面 0x11 / 恢复真实画面 0x12。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。替换摄像头画面打开文件选择框选照片/视频，再从相机列表（0x02）选目标相机；若映射节点不存在（USB 相机不在列表里），可按提示手动输入 /dev/video<数字> 重试，设备端把画面缩放成 640x480 帧流（视频 15fps 最多 600 帧）经 root 部署后替换；首次安装需重启设备再替换一次才生效，恢复真实画面一键还原。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10 / 相机列表 0x02 / 替换摄像头画面 0x11 / 恢复真实画面 0x12。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。替换摄像头画面打开文件选择框选照片/视频，设备端自动 ls /dev/video* 找实际摄像头节点（只有一个节点直接替换，多个弹窗选择；替换后画面未变可能是 metadata 副节点，换一个重试），设备端把画面缩放成 640x480 帧流（视频 15fps 最多 600 帧）经 root 部署后替换；首次安装需重启设备再替换一次才生效，恢复真实画面一键还原。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
                     </div>
                   </div>
                 </div>
