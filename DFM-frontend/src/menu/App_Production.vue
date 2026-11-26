@@ -71,7 +71,7 @@ const clearSelection = () => {
 };
 
 // ===== 无线连接（与 ADB 工具页同款：adb connect IP[:端口]，默认 5555）=====
-const wirelessIp = ref('');
+const wirelessIp = ref('192.168.0.');
 const wirelessStatus = ref('');
 
 const connectWireless = async () => {
