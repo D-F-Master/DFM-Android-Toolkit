@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>html,body{margin:0;padding:0;background:#fff;}svg{display:block;}</style>
+</head>
+<body>
+<svg width="1560" height="1080" viewBox="0 0 1560 1080" xmlns="http://www.w3.org/2000/svg" font-family="Microsoft YaHei, PingFang SC, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0284c7"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1560" height="1080" fill="#ffffff"/>
+  <text x="780" y="40" text-anchor="middle" font-size="26" font-weight="bold" fill="#0f172a">DFM-Android-Toolkit 项目架构图</text>
+
+  <!-- ============ 入口层 ============ -->
+  <text x="40" y="72" font-size="14" font-weight="bold" fill="#0369a1">① 入口层</text>
+
+  <!-- DFM-frontend -->
+  <rect x="40" y="84" width="460" height="150" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="56" y="110" font-size="16" font-weight="bold" fill="#0c4a6e">DFM-frontend — uTools 插件（主前端）</text>
+  <text x="56" y="134" font-size="13" fill="#334155">Vue 3 + Vite · CodeMirror 6 · ECharts</text>
+  <text x="56" y="154" font-size="13" fill="#334155">plugin.json 入口 + preload 注入 window.services</text>
+  <text x="56" y="174" font-size="13" fill="#334155">App.vue 菜单注册表切页（无 vue-router / pinia）</text>
+  <text x="56" y="194" font-size="13" fill="#334155">功能页：ADB 工具 / 端口 / 生产 / jar / MCP / 设置</text>
+  <text x="56" y="214" font-size="12" fill="#64748b">API 基址：public/config.json → http://localhost:3000</text>
+
+  <!-- DFM-desktop -->
+  <rect x="560" y="84" width="460" height="150" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="576" y="110" font-size="16" font-weight="bold" fill="#0c4a6e">DFM-desktop — Electron 桌面壳</text>
+  <text x="576" y="134" font-size="13" fill="#334155">单实例锁 · 启动查更新 · 拉起后端进程</text>
+  <text x="576" y="154" font-size="13" fill="#334155">轮询 :3000 就绪后开窗，加载后端托管页面</text>
+  <text x="576" y="174" font-size="13" fill="#334155">frontend/ 分叉副本（与主前端已分叉，无 MCP 页）</text>
+  <text x="576" y="194" font-size="13" fill="#334155">退出 taskkill /T /F 清理后端进程树</text>
+  <text x="576" y="214" font-size="12" fill="#64748b">update-server :8080（latest.yml + 安装包，electron-updater）</text>
+
+  <!-- browser -->
+  <rect x="1080" y="84" width="440" height="150" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="1096" y="110" font-size="16" font-weight="bold" fill="#0c4a6e">浏览器直接访问</text>
+  <text x="1096" y="134" font-size="13" fill="#334155">http://localhost:3000（同源托管页面）</text>
+  <text x="1096" y="154" font-size="13" fill="#334155">Swagger 接口文档：/docs</text>
+  <text x="1096" y="174" font-size="13" fill="#334155">service --mode desktop 时的 pywebview 窗口</text>
+  <text x="1096" y="194" font-size="13" fill="#334155">加载同一 http://127.0.0.1:3000 页面</text>
+  <text x="1096" y="214" font-size="12" fill="#64748b">三种入口加载的都是后端托管的同一前端产物</text>
+
+  <!-- arrows entry -> service -->
+  <line x1="270" y1="234" x2="270" y2="296" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <text x="280" y="262" font-size="13" fill="#0369a1" font-weight="bold">REST + WebSocket（/ws/remote 批量投屏）</text>
+  <line x1="790" y1="234" x2="790" y2="296" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <text x="800" y="262" font-size="13" fill="#0369a1" font-weight="bold">拉起 / 清理后端进程（exe 或 venv python）</text>
+  <line x1="1300" y1="234" x2="1300" y2="296" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <text x="1310" y="262" font-size="13" fill="#0369a1" font-weight="bold">HTTP</text>
+
+  <!-- ============ 后端 ============ -->
+  <rect x="40" y="300" width="1480" height="340" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
+  <text x="60" y="330" font-size="18" font-weight="bold" fill="#14532d">DFM-service — FastAPI 本地服务端（唯一后端）</text>
+  <text x="620" y="330" font-size="14" fill="#166534">0.0.0.0:3000（conf/conf.json）· 版本 2.0.3 · 启动校验 adb/scrcpy/aapt/data（tool_check）</text>
+  <text x="40" y="360" font-size="13" fill="#64748b">　　　　　　　　　　　　　　② 后端层 · 响应信封 {code, message, data} · 无鉴权 · CORS * · lifespan 挂内存任务队列</text>
+
+  <!-- col1 静态托管 -->
+  <rect x="60" y="375" width="340" height="245" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="76" y="400" font-size="14" font-weight="bold" fill="#166534">静态托管与数据</text>
+  <text x="76" y="426" font-size="13" fill="#334155">data/dist → 前端构建产物</text>
+  <text x="76" y="446" font-size="13" fill="#334155">SPA 兜底路由 /{full_path:path}</text>
+  <text x="76" y="466" font-size="12" fill="#dc2626">⚠ 必须最后注册（main.py:42）</text>
+  <text x="76" y="492" font-size="13" fill="#334155">data/apk/DFMProbe.apk（探针安装包）</text>
+  <text x="76" y="512" font-size="13" fill="#334155">data/app_labels.json（应用名缓存）</text>
+  <text x="76" y="532" font-size="13" fill="#334155">data/scripts · data/certs · data/templates</text>
+  <text x="76" y="558" font-size="13" fill="#334155">conf/conf.json：HOST / PORT / VERSION</text>
+  <text x="76" y="584" font-size="13" fill="#334155">main.py 入口：server / desktop 两模式</text>
+  <text x="76" y="604" font-size="12" fill="#64748b">打包：pyinstaller main.spec → ylx-utools-server</text>
+
+  <!-- col2 路由 -->
+  <rect x="420" y="375" width="640" height="245" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="436" y="400" font-size="14" font-weight="bold" fill="#166534">路由层（14 个 router，前缀 /api，测试在 /test）</text>
+  <text x="436" y="426" font-size="12.5" fill="#334155">adb_utils　/api/device/*　设备/应用/文件/按键/日志/音量/证书 ~40 端点</text>
+  <text x="436" y="446" font-size="12.5" fill="#334155">remote_ws　/ws/remote　批量投屏（JSON 控制帧 + 二进制 H.264）</text>
+  <text x="436" y="466" font-size="12.5" fill="#334155">port_utils / ip_utils　端口检查/杀进程/portproxy · IP 扫描/批量 connect</text>
+  <text x="436" y="486" font-size="12.5" fill="#334155">script　模拟脚本 CRUD/zip 导入导出/回放</text>
+  <text x="436" y="506" font-size="12.5" fill="#334155">serial　模拟串口（serial-writer / pty-inject 回环 + 按键注入）</text>
+  <text x="436" y="526" font-size="12.5" fill="#334155">pipeline　生产流水线（素材库/快照/run-script/增量日志）</text>
+  <text x="436" y="546" font-size="12.5" fill="#334155">probe　探针对接（check / connect / message）</text>
+  <text x="436" y="566" font-size="12.5" fill="#334155">jar_diff /api/jardiff · jar_edit /api/jaredit　CFR 对比 / javac 改码</text>
+  <text x="436" y="586" font-size="12.5" fill="#334155">sqlite_utils　拉取设备 SQLite 增删改查推送</text>
+  <text x="436" y="606" font-size="12.5" fill="#334155">mcp_utils　MCP 模板/安装(venv)/启停/心跳 · common /cp/decode 截屏</text>
+
+  <!-- col3 utils -->
+  <rect x="1080" y="375" width="420" height="245" rx="8" fill="#ffffff" stroke="#86efac"/>
+  <text x="1096" y="400" font-size="14" font-weight="bold" fill="#166534">lib/ 内置工具与 utils</text>
+  <text x="1096" y="426" font-size="13" fill="#334155">lib/　adb · scrcpy · aapt · cfr.jar</text>
+  <text x="1096" y="446" font-size="13" fill="#334155">（内置优先，缺失回退系统 PATH）</text>
+  <text x="1096" y="472" font-size="13" fill="#334155">utils/tool_manager.py　工具路径统一解析</text>
+  <text x="1096" y="492" font-size="13" fill="#334155">（支持 PyInstaller _internal 布局）</text>
+  <text x="1096" y="518" font-size="13" fill="#334155">utils/jar_diff_core.py　zip 对比 + CFR/javap</text>
+  <text x="1096" y="538" font-size="13" fill="#334155">utils/md_export.py　差异导出 markdown</text>
+  <text x="1096" y="564" font-size="13" fill="#334155">utils/app_label_utils.py　aapt 应用名缓存</text>
+  <text x="1096" y="590" font-size="13" fill="#334155">batch_remote.py　scrcpy v3.3.3 协议自实现</text>
+  <text x="1096" y="610" font-size="13" fill="#334155">（push server + adb forward + 双 TCP 会话）</text>
+
+  <!-- arrows service -> process -->
+  <line x1="180" y1="640" x2="180" y2="694" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="490" y1="640" x2="490" y2="694" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="800" y1="640" x2="800" y2="694" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1090" y1="640" x2="1090" y2="694" stroke="#475569" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+  <line x1="1390" y1="640" x2="1390" y2="694" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="196" y="672" font-size="12.5" fill="#475569">subprocess（Popen）</text>
+  <text x="380" y="676" font-size="12.5" fill="#475569">Popen / 协议会话</text>
+  <text x="700" y="676" font-size="12.5" fill="#475569">反编译/重编译</text>
+  <text x="1110" y="676" font-size="12.5" fill="#475569">启停 / 心跳上报</text>
+  <text x="1400" y="676" font-size="12.5" fill="#475569">安装 / 激活</text>
+
+  <!-- ============ 进程层 ============ -->
+  <text x="40" y="668" font-size="14" font-weight="bold" fill="#a16207">③ 本地进程 / 工具层</text>
+
+  <rect x="40" y="700" width="280" height="90" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="56" y="726" font-size="14" font-weight="bold" fill="#713f12">adb 子进程</text>
+  <text x="56" y="748" font-size="12.5" fill="#334155">设备管理 · shell · 文件推送拉取</text>
+  <text x="56" y="768" font-size="12.5" fill="#334155">安装/广播/forward（USB / 网络）</text>
+
+  <rect x="350" y="700" width="280" height="90" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="366" y="726" font-size="14" font-weight="bold" fill="#713f12">scrcpy</text>
+  <text x="366" y="748" font-size="12.5" fill="#334155">单设备弹窗投屏（Popen）</text>
+  <text x="366" y="768" font-size="12.5" fill="#334155">批量投屏 DeviceSession 双 TCP</text>
+
+  <rect x="660" y="700" width="280" height="90" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="676" y="726" font-size="14" font-weight="bold" fill="#713f12">aapt + javac + CFR</text>
+  <text x="676" y="748" font-size="12.5" fill="#334155">APK 应用名识别</text>
+  <text x="676" y="768" font-size="12.5" fill="#334155">jar 反编译对比 / 在线改码</text>
+
+  <rect x="970" y="700" width="240" height="90" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="986" y="726" font-size="14" font-weight="bold" fill="#713f12">MCP server × N</text>
+  <text x="986" y="748" font-size="12.5" fill="#334155">独立 venv 进程</text>
+  <text x="986" y="768" font-size="12.5" fill="#334155">各占 :3010–3050</text>
+
+  <rect x="1240" y="700" width="280" height="90" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="1256" y="726" font-size="14" font-weight="bold" fill="#713f12">DFMProbe.apk 分发</text>
+  <text x="1256" y="748" font-size="12.5" fill="#334155">安装 APK · 广播 com.dfm.probe.START</text>
+  <text x="1256" y="768" font-size="12.5" fill="#334155">adb forward tcp:21104</text>
+
+  <!-- arrows process -> device -->
+  <line x1="180" y1="790" x2="180" y2="844" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1380" y1="790" x2="1380" y2="844" stroke="#a21caf" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="192" y="822" font-size="12.5" fill="#475569">ADB 协议（USB / TCP）</text>
+  <text x="1300" y="822" font-size="12.5" fill="#a21caf">TCP 连入 :21104</text>
+
+  <!-- ============ 设备层 ============ -->
+  <text x="40" y="838" font-size="14" font-weight="bold" fill="#86198f">④ 设备层</text>
+
+  <rect x="40" y="850" width="620" height="130" rx="10" fill="#fae8ff" stroke="#a21caf" stroke-width="1.5"/>
+  <text x="56" y="878" font-size="16" font-weight="bold" fill="#701a75">Android 设备（USB 调试 / 网络 adb）</text>
+  <text x="56" y="902" font-size="13" fill="#334155">设备管理 · 应用管理 · 文件浏览/上传下载 · 按键模拟</text>
+  <text x="56" y="922" font-size="13" fill="#334155">日志查看 · SQLite 拉取与回推 · 模拟脚本回放 · 模拟串口</text>
+  <text x="56" y="942" font-size="13" fill="#334155">生产流水线批量 run-script · 批量投屏（H.264 → /ws/remote）</text>
+  <text x="56" y="962" font-size="12" fill="#64748b">串口透传会话需 root，经探针 stty + 节点读写完成</text>
+
+  <rect x="700" y="850" width="820" height="130" rx="10" fill="#fae8ff" stroke="#a21caf" stroke-width="1.5"/>
+  <text x="716" y="878" font-size="16" font-weight="bold" fill="#701a75">DFM-probe APK — 无界面常驻探针（TCP 0.0.0.0:21104）</text>
+  <text x="716" y="902" font-size="13" fill="#334155">ProbeService 前台服务 · 每连接单线程 · 增量解帧 / CRC / 粘包</text>
+  <text x="716" y="922" font-size="13" fill="#334155">AA 55 帧：帧序 1B · 长度 2B · 命令字 1B · JSON 数据区 · CRC16-Modbus · ACK(0x06) 停等重传 200ms×3</text>
+  <text x="716" y="942" font-size="13" fill="#334155">命令：0x00 心跳 · 0x01 TTS 朗读 · 0x02 设备详细信息 · 0x03/04/05/07 串口会话</text>
+  <text x="716" y="962" font-size="12" fill="#64748b">开机自启 + 60s 看门狗 + START_STICKY 保活 · adb 仅负责安装/广播/forward，不承载业务数据</text>
+
+  <!-- ============ 独立组件 ============ -->
+  <rect x="40" y="1000" width="400" height="56" rx="8" fill="#f1f5f9" stroke="#64748b" stroke-dasharray="6 4"/>
+  <text x="56" y="1024" font-size="14" font-weight="bold" fill="#334155">DFM-ui — 组件库演示站</text>
+  <text x="56" y="1044" font-size="12" fill="#64748b">Vite + Vue 3 + TS · 零后端依赖 · 不参与运行链路</text>
+
+  <!-- legend -->
+  <rect x="1120" y="1000" width="400" height="56" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <rect x="1136" y="1014" width="14" height="12" fill="#e0f2fe" stroke="#0284c7"/><text x="1156" y="1024" font-size="12" fill="#334155">入口层</text>
+  <rect x="1216" y="1014" width="14" height="12" fill="#f0fdf4" stroke="#16a34a"/><text x="1236" y="1024" font-size="12" fill="#334155">后端层</text>
+  <rect x="1296" y="1014" width="14" height="12" fill="#fef9c3" stroke="#ca8a04"/><text x="1316" y="1024" font-size="12" fill="#334155">进程/工具层</text>
+  <rect x="1406" y="1014" width="14" height="12" fill="#fae8ff" stroke="#a21caf"/><text x="1426" y="1024" font-size="12" fill="#334155">设备层</text>
+  <text x="1136" y="1046" font-size="11.5" fill="#64748b">依据：项目架构总览.md（2026-11-14 源码研读版）</text>
+</svg>
+</body>
+</html>
