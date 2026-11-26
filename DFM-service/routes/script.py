@@ -36,7 +36,9 @@
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
 TTS 步骤走探针帧协议（0x01）；accClick 步骤走探针 0x0D，设备端在无障碍组件树
 中按 id/text/desc 匹配节点并直接执行 ACTION_CLICK（不走坐标注入）；accExists
-判断走探针 0x0C 拉组件树后在服务端匹配（只查不点）；其余注入类
+判断走探针 0x0C 拉组件树后在服务端匹配（只查不点）；camReplace/camRestore
+步骤走探针 0x11/0x12（素材先 adb push 到设备 cam_in/，依赖设备端探针在线）；
+其余注入类
 步骤走 scrcpy 会话。判断步骤（condition）
 求一次条件后按真/假分支动作（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，
 走 adb 或截屏，不占会话。
@@ -1535,9 +1537,49 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "install failed").strip())
 
-        elif stype in ("camReplace", "camRestore"):
-            # 摄像头替换依赖 camhook 部署与媒体转码，只在设备端离线脚本（0x0E 导入 + 0x10 执行）实现
-            raise RuntimeError("摄像头替换/恢复步骤仅支持设备端离线脚本执行（0x0E 导入 + 0x10 执行），PC 端回放不支持")
+        elif stype == "camReplace":
+            # 与探针工具页同链路：素材先 adb push 到设备 cam_in/，再发 0x11 由设备端
+            # 转换（图片 1 帧 / 视频 15fps ≤600 帧）并经 su 部署 camhook；依赖设备端探针在线
+            from routes.probe import run_probe, _adb, CMD_CAM_REPLACE, DEVICE_CAM_DIR, CAM_RESPONSE_TIMEOUT
+
+            file_name = str(step.get("file", "")).strip()
+            path = MEDIA_DIR / file_name
+            if not path.exists():
+                raise RuntimeError(f"摄像头素材 {file_name} 不存在，请先上传到素材库")
+            rc, out, err = _adb(device_id, "shell", "mkdir", "-p", DEVICE_CAM_DIR)
+            if rc != 0:
+                raise RuntimeError(f"创建设备目录失败: {err or out}")
+            rc, out, err = _adb(device_id, "push", str(path), f"{DEVICE_CAM_DIR}/{file_name}", timeout=600)
+            if rc != 0:
+                raise RuntimeError(f"adb push 失败: {err or out}")
+            data = {"file": file_name, "mirror": bool(step.get("mirror", False))}
+            dev = str(step.get("dev", "")).strip()
+            if dev:
+                data["dev"] = dev
+            d = run_probe(device_id, False, CMD_CAM_REPLACE, data, CAM_RESPONSE_TIMEOUT)
+            if not d.get("connected"):
+                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
+            response = d.get("response") or {}
+            if not isinstance(response, dict) or response.get("code") != 200:
+                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                raise RuntimeError(f"替换摄像头画面失败: {message}")
+            # 成功后清理设备端源文件，避免残留
+            try:
+                _adb(device_id, "shell", "rm", "-f", f"{DEVICE_CAM_DIR}/{file_name}")
+            except Exception as e:
+                logger.warning(f"删除设备端素材失败 device={device_id}: {e}")
+
+        elif stype == "camRestore":
+            # 恢复真实画面走探针 0x12（设备端写 enabled=0 配置并重启 camera provider）
+            from routes.probe import run_probe, CMD_CAM_RESTORE
+
+            d = run_probe(device_id, False, CMD_CAM_RESTORE, {})
+            if not d.get("connected"):
+                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
+            response = d.get("response") or {}
+            if not isinstance(response, dict) or response.get("code") != 200:
+                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                raise RuntimeError(f"恢复摄像头画面失败: {message}")
 
         elif stype == "deleteFolder":
             target = str(step.get("path", "")).strip()
