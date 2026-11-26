@@ -46,10 +46,12 @@
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe/接口文档.md` |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe/接口文档.md` |
 | `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe/接口文档.md` |
-| `0x80` ~ `0x85`、`0x87` ~ `0x8D` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
+| `0x11` | CMD_CAM_REPLACE | PC → 设备 | `{"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}` 或 `{"file":"...","dev":"/dev/video2"}` | 摄像头画面替换：转换媒体为 640x480 帧流并经 root 部署 camhook、重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
+| `0x12` | CMD_CAM_RESTORE | PC → 设备 | `{}` | 恢复真实摄像头画面：写 `enabled=0` 配置并重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
+| `0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x91` ~ `0x92` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
 | `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
 
-`0x00`、`0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x07`、`0x08`、`0x09`、`0x0A`、`0x0B`、`0x0C`、`0x0D` 为业务帧，**要求 ACK**；`0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
+`0x00`、`0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x07`、`0x08`、`0x09`、`0x0A`、`0x0B`、`0x0C`、`0x0D`、`0x11`、`0x12` 为业务帧，**要求 ACK**；`0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x91` ~ `0x92`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
 
 > 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
 > 设备端不再有关闭连接的命令字，连接由 PC 侧主动关闭，服务常驻监听。
@@ -58,6 +60,8 @@
 > 设备端打开串口后持续读并缓冲，`0x03` 取增量，不做帧解析，Hex/Txt 原样显示。
 > `0x08` / `0x88`、`0x09` / `0x89`、`0x0A` / `0x8A`、`0x0B` / `0x8B`、`0x0C` / `0x8C`、`0x0D` / `0x8D` 为
 > shell 执行 / 屏幕截图 / 摄像头拍照 / 无障碍设置页跳转 / 无障碍组件树 / 无障碍点击命令字/响应字。
+> `0x11` / `0x91`、`0x12` / `0x92` 为摄像头画面替换 / 恢复真实画面命令字/响应字
+> （设备已 root；首次安装需重启设备，见 `DFM-probe/接口文档.md`「3.12」）。
 
 
 
