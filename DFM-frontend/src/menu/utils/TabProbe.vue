@@ -402,6 +402,129 @@ const runProbeScript = async () => {
     probeBusy.value = '';
   }
 };
+
+// ---------- 摄像头画面替换：0x11 替换 / 0x12 恢复真实画面，相机列表复用 0x02 ----------
+
+// 镜像补偿：晨检 App 预览自带水平镜像，替换画面先反向镜像一次以抵消
+const probeCamMirror = ref(false);
+
+// 相机列表（0x02 已有关键字）：结果写进输出区
+const listProbeCameras = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'cam-list';
+  probeResult.value = '正在获取摄像头列表...';
+  try {
+    const res = await axios.post(`${API_BASE.value}/api/probe/cameras`, {
+      deviceId: selectedDevice.value
+    }, { timeout: 60000 });
+    const cameras = res.data?.data?.cameras || [];
+    if (res.data?.code !== 200 || cameras.length === 0) {
+      throw new Error(res.data?.message || '未检测到摄像头');
+    }
+    probeResult.value = cameras.map((c: any) =>
+      `摄像头 ${c.id} · ${probeFacing(c.facing)}${c.resolution ? ` · ${c.resolution}` : ''}`
+    ).join('\n');
+    showMessage(`检测到 ${cameras.length} 个摄像头`, '相机列表');
+  } catch (e: any) {
+    const text = `获取失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '相机列表');
+  } finally {
+    probeBusy.value = '';
+  }
+};
+
+// 0x11：选媒体文件 → 选相机（复用 0x02 列表）→ 后端 adb push 后发帧（视频转码耗时较长，超时放宽）
+const onProbeCamReplace = () => {
+  if (!probeReady()) return;
+  // 同导入脚本：系统文件对话框选文件，取本地绝对路径给后端 adb push（不能传文件内容）
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.jpg,.jpeg,.png,.mp4,.mov,.avi,.webm,.3gp,.mkv,image/jpeg,image/png,video/*';
+  input.onchange = async () => {
+    const file = input.files?.[0] as (File & { path?: string }) | undefined;
+    if (!file) return;
+    const filePath = (file.path || '').trim();
+    if (!filePath) {
+      showMessage('无法获取文件本地路径，请确认在 uTools/桌面端中使用（浏览器环境不支持）', '替换摄像头画面');
+      return;
+    }
+    // 先取相机列表（0x02）供选择替换目标；列表失败直接终止，不推送文件
+    probeBusy.value = 'cam-replace';
+    probeResult.value = '正在获取摄像头列表...';
+    let cameras: any[] = [];
+    try {
+      const res = await axios.post(`${API_BASE.value}/api/probe/cameras`, {
+        deviceId: selectedDevice.value
+      }, { timeout: 60000 });
+      cameras = res.data?.data?.cameras || [];
+      if (res.data?.code !== 200 || cameras.length === 0) {
+        throw new Error(res.data?.message || '未检测到摄像头');
+      }
+    } catch (e: any) {
+      const text = `获取摄像头列表失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+      probeResult.value = text;
+      showMessage(text, '替换摄像头画面');
+      probeBusy.value = '';
+      return;
+    }
+    // 先清 busy，否则弹窗回调里的操作会被 probeReady 守卫吞掉（同 onProbePhoto / runProbeScript）
+    probeBusy.value = '';
+    const items = cameras.map((c: any) => ({
+      value: String(c.id),
+      label: `摄像头 ${c.id} · ${probeFacing(c.facing)}`,
+      desc: c.resolution || ''
+    }));
+    showList(items, (cameraId: string) => {
+      // handleModalConfirm 回调返回后才会关闭弹窗，同步发请求会被守卫吞掉，故 nextTick 错开（同 runProbeScript）
+      nextTick(() => {
+        probeBusy.value = 'cam-replace';
+        probeResult.value = `正在替换摄像头画面（摄像头 ${cameraId}）...`;
+        probePost('/api/probe/cam-replace', {
+          deviceId: selectedDevice.value,
+          filePath,
+          cameraId,
+          mirror: probeCamMirror.value
+        }, 400000)
+          .then((info: any) => {
+            probeResult.value = [
+              `替换完成：${info.dev || '?'} · ${info.frames ?? '?'} 帧 · ${info.streamSize ?? 0} B${info.mirror ? ' · 已镜像补偿' : ''}`,
+              info.rebootRequired
+                ? '⚠ 首次安装：rc 已写入 LD_PRELOAD，需重启设备后再次替换才能生效'
+                : 'camera provider 已重启，画面替换立即生效',
+              info.status || '',
+            ].filter(Boolean).join('\n');
+            showMessage(info.rebootRequired ? '已部署，需重启设备生效' : '摄像头画面替换完成', '替换摄像头画面');
+          })
+          .catch((e: any) => {
+            const text = `替换失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+            probeResult.value = text;
+            showMessage(text, '替换摄像头画面');
+          })
+          .finally(() => { probeBusy.value = ''; });
+      });
+    }, '选择要替换的摄像头（id 映射 /dev/video{id}）', '未检测到摄像头', '替换');
+  };
+  input.click();
+};
+
+// 0x12：恢复真实摄像头画面
+const onProbeCamRestore = async () => {
+  if (!probeReady()) return;
+  probeBusy.value = 'cam-restore';
+  probeResult.value = '正在恢复真实摄像头画面...';
+  try {
+    const info = await probePost('/api/probe/cam-restore', { deviceId: selectedDevice.value }, 120000);
+    probeResult.value = `已恢复真实画面（${info.conf || 'enabled=0'}）\n${info.output || ''}`.trim();
+    showMessage('已恢复真实摄像头画面', '恢复摄像头画面');
+  } catch (e: any) {
+    const text = `恢复失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
+    probeResult.value = text;
+    showMessage(text, '恢复摄像头画面');
+  } finally {
+    probeBusy.value = '';
+  }
+};
 </script>
 
 <template>
@@ -467,6 +590,21 @@ const runProbeScript = async () => {
                         @click="runProbeScript"
                         :disabled="probeDisabled"
                       >{{ probeBusy === 'script-run' ? '执行中...' : '执行设备脚本' }}</button>
+                      <button
+                        class="check-button"
+                        @click="listProbeCameras"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'cam-list' ? '读取中...' : '相机列表' }}</button>
+                      <button
+                        class="check-button"
+                        @click="onProbeCamReplace"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'cam-replace' ? '替换中...' : '替换摄像头画面' }}</button>
+                      <button
+                        class="check-button"
+                        @click="onProbeCamRestore"
+                        :disabled="probeDisabled"
+                      >{{ probeBusy === 'cam-restore' ? '恢复中...' : '恢复真实画面' }}</button>
                     </div>
                     <div class="serial-row">
                       <label class="serial-check">
@@ -474,9 +612,15 @@ const runProbeScript = async () => {
                         <span>Shell 以 root 执行（su 0，需设备已 root）</span>
                       </label>
                     </div>
+                    <div class="serial-row">
+                      <label class="serial-check">
+                        <input type="checkbox" v-model="probeCamMirror" />
+                        <span>替换摄像头时镜像补偿（晨检 App 预览自带水平镜像）</span>
+                      </label>
+                    </div>
                     <pre v-if="probeResult" class="probe-shell-out">{{ probeResult }}</pre>
                     <div class="serial-hint">
-                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
+                      点击按钮即执行：心跳 0x00 / TTS 0x01 / Shell 0x08 / 截屏 0x09 / 拍照 0x0A / 无障碍设置页 0x0B / 无障碍组件树 0x0C / 导入脚本 0x0E / 设备脚本列表 0x0F / 执行设备脚本 0x10 / 相机列表 0x02 / 替换摄像头画面 0x11 / 恢复真实画面 0x12。TTS 与 Shell 会弹出输入框；导入脚本打开文件选择框，选脚本页「导出」生成的 zip（默认在 D:\\log\\script_exports\\），推送到设备后解压到应用私有目录；执行设备脚本先列出已导入脚本供选择，再输入轮数（0=按脚本自身配置）。替换摄像头画面打开文件选择框选照片/视频，再从相机列表（0x02）选目标相机，设备端把画面缩放成 640x480 帧流（视频 15fps 最多 600 帧）经 root 部署后替换；首次安装需重启设备再替换一次才生效，恢复真实画面一键还原。组件树在未启用无障碍权限时会自动打开设备设置页，启用「DFM Probe」后重新获取即可。
                     </div>
                   </div>
                 </div>
