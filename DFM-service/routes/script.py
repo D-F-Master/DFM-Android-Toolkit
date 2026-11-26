@@ -154,6 +154,15 @@ def _script_file(name: str, rel: str = "") -> Path:
     return _safe_rel_dir(rel) / f"{_safe_name(name)}.json"
 
 
+def _run_script_ref_path(ref: str) -> Path:
+    """
+    把 runScript 的脚本引用（"子目录/名字"，相对 SCRIPTS_DIR 根，POSIX 分隔）
+    解析为安全文件路径；空段过滤，逐段经 _safe_name / _safe_rel_dir 净化防穿越。
+    """
+    parts = [p for p in (ref or "").strip().strip("/").split("/") if p.strip()]
+    return _script_file(parts[-1] if parts else "", "/".join(parts[:-1]))
+
+
 class ScriptSaveRequest(BaseModel):
     name: str
     repeat: int = 1
@@ -396,12 +405,12 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
         return ""
 
     if step_type == "runScript":
-        # 嵌套执行脚本：脚本名必填、禁路径分隔符、文件必须存在、禁止自己套自己
+        # 嵌套执行脚本：脚本名必填、禁反斜杠/..（子文件夹引用用 / 分隔）、文件必须存在
         sub_name = str(step.get("script", "")).strip()
         if not sub_name:
             return f"第 {idx} 步未选择要执行的脚本"
-        if "/" in sub_name or "\\" in sub_name or ".." in sub_name:
-            return f"第 {idx} 步的嵌套脚本名不能包含路径分隔符"
+        if "\\" in sub_name or ".." in sub_name:
+            return f"第 {idx} 步的嵌套脚本名不能包含反斜杠或 .."
         try:
             sub_repeat = int(step.get("repeat", 1))
         except (TypeError, ValueError):
@@ -409,7 +418,7 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
         if not (1 <= sub_repeat <= 99):
             return f"第 {idx} 步的嵌套脚本执行次数需在 1-99 之间"
         _ensure_scripts_dir()
-        if not (SCRIPTS_DIR / f"{_safe_name(sub_name)}.json").exists():
+        if not _run_script_ref_path(sub_name).exists():
             return f"第 {idx} 步的嵌套脚本 {sub_name} 不存在，请先保存"
         return ""
 
@@ -488,8 +497,11 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
             name = str(branch.get("script", "")).strip()
             if not name:
                 return f"第 {idx} 步的 {label} 选择执行脚本，但未指定目标脚本"
-            if "/" in name or "\\" in name or ".." in name:
-                return f"第 {idx} 步的 {label} 目标脚本名不能包含路径分隔符"
+            if "\\" in name or ".." in name:
+                return f"第 {idx} 步的 {label} 目标脚本名不能包含反斜杠或 .."
+            _ensure_scripts_dir()
+            if not _run_script_ref_path(name).exists():
+                return f"第 {idx} 步的 {label} 嵌套脚本 {name} 不存在，请先保存"
 
     if kind == "appInstalled":
         pkg = str(step.get("packageName", "")).strip()
@@ -561,8 +573,11 @@ def _validate_condition_step(step: dict, idx: int, total: int) -> str:
             sub_name = str(branch.get("script", "")).strip()
             if not sub_name:
                 return f"第 {idx} 步的 {label} 动作是执行脚本，但未选择脚本"
-            if "/" in sub_name or "\\" in sub_name or ".." in sub_name:
-                return f"第 {idx} 步的 {label} 嵌套脚本名不能包含路径分隔符"
+            if "\\" in sub_name or ".." in sub_name:
+                return f"第 {idx} 步的 {label} 嵌套脚本名不能包含反斜杠或 .."
+            _ensure_scripts_dir()
+            if not _run_script_ref_path(sub_name).exists():
+                return f"第 {idx} 步的 {label} 嵌套脚本 {sub_name} 不存在，请先保存"
 
     return ""
 
@@ -701,14 +716,18 @@ def list_scripts():
     try:
         _ensure_scripts_dir()
         scripts = []
-        for f in sorted(SCRIPTS_DIR.glob("*.json")):
+        # 递归含子文件夹；path 为相对 SCRIPTS_DIR 的目录（"" = 根目录，POSIX 分隔），
+        # 供 runScript 引用与载入对话按「子目录/名字」定位脚本
+        for f in sorted(SCRIPTS_DIR.rglob("*.json")):
             try:
                 with open(f, "r", encoding="utf-8") as fp:
                     data = json.load(fp)
+                rel_dir = f.parent.relative_to(SCRIPTS_DIR).as_posix()
                 scripts.append({
                     "name": data.get("name", f.stem),
                     "repeat": data.get("repeat", 1),
                     "stepCount": len(data.get("steps", [])),
+                    "path": "" if rel_dir == "." else rel_dir,
                 })
             except Exception:
                 continue
@@ -1349,7 +1368,7 @@ def _exec_run_script_step(device_id: str, step: dict):
         raise RuntimeError(f"嵌套执行脚本深度超过上限 {MAX_NESTED_SCRIPT_DEPTH}，请检查是否存在递归嵌套")
 
     _ensure_scripts_dir()
-    path = SCRIPTS_DIR / f"{_safe_name(name)}.json"
+    path = _run_script_ref_path(name)
     if not path.exists():
         raise RuntimeError(f"嵌套脚本 {name} 不存在，请先保存")
     try:
