@@ -1201,16 +1201,16 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
         return {"code": 500, "message": f"导入脚本包失败: {str(e)}", "data": None}
 
 
-def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w: int, h: int, round_no: int):
+def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w: int, h: int, round_no: int,
+                     session=None, scale_x: float = 1.0, scale_y: float = 1.0):
     """
     判断分支动作=执行某个步骤功能（需求③：分支可选左边功能区的全部功能）。
 
     把分支对象当作一个临时步骤执行，按类型分流：
     - ADB 类（手势外的设备动作，含 runScript 嵌套）→ _exec_adb_step
     - waitFor → _exec_wait_step；condition → _eval_condition（其分支动作在此忽略，防套娃）
-    - 手势类（tap/longpress/swipe/input）需要 scrcpy 会话，由调用方持有 session，
-      这里仅支持无会话的类别；分支选手势时直接按 ADB 思路走 input tap 坐标兜底不可行，
-      故抛错提示改用普通步骤（分支含会话注入不在本版支持范围）。
+    - 手势类（tap/longpress/swipe/input）需要 scrcpy 会话，由调用方传入当前持有的
+      session 注入一次手势（输入文本会展开变量占位符，round_no 沿用父脚本当前轮次）
     """
     # 构造临时步骤：分支里除 action/target 外的字段都透传（script/id/text/desc/packageName 等）
     step = {k: v for k, v in branch.items() if k not in ("action", "target")}
@@ -1218,6 +1218,10 @@ def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w:
     # ADB 类分支步骤默认执行一次
     step.setdefault("interval", 0)
     step.setdefault("count", 1)
+    if action == "volume":
+        # 分支对象的 action 键被分支动作占用，音量子动作另存 volumeAction
+        step["action"] = str(branch.get("volumeAction", "up"))
+        step.pop("volumeAction", None)
 
     if action in ADB_STEP_TYPES:
         _exec_adb_step(
@@ -1245,9 +1249,14 @@ def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w:
             logger.warning(f"[{device_id}] 分支嵌套判断未成立（忽略其分支动作）: {reason}")
         return
 
-    # 手势类需要 scrcpy 控制会话；分支动作运行时由 _run_script_on_device 持有会话
-    # 时不便传递，本版不支持（前端下拉也不提供），到这里说明数据被手工改过
-    raise RuntimeError(f"判断分支不支持直接执行手势类功能: {action}（请改用普通步骤）")
+    if action in INJECT_STEP_TYPES:
+        # 手势类：调用方传入当前 scrcpy 控制会话，注入一次手势
+        if session is None:
+            raise RuntimeError("判断分支执行手势类功能缺少控制会话")
+        _inject_gesture_step(session, step, 0, w, h, scale_x, scale_y, round_no, 0, script.get("_stop_event"), 1)
+        return
+
+    raise RuntimeError(f"判断分支不支持执行该功能: {action}")
 
 
 def _check_device_online(device_id: str) -> bool:
@@ -2112,9 +2121,12 @@ def _run_script_on_device(device_id: str, script: dict, repeat: int):
                         # 分支动作=执行脚本：同步嵌套跑完目标脚本再继续
                         _exec_run_script_step(device_id, {"script": branch.get("script", "")})
                     elif action in VALID_STEP_TYPES:
-                        # 分支动作=执行某个步骤功能（手势/设备动作/等待与判断）：
+                        # 分支动作=执行某个步骤功能（手势/设备动作/等待）：
                         # 把分支参数当作一个临时步骤执行（参数可省，用默认值）
-                        _run_branch_step(device_id, action, branch, script, w, h, round_no)
+                        _run_branch_step(
+                            device_id, action, branch, script, w, h, round_no,
+                            session=session, scale_x=scale_x, scale_y=scale_y,
+                        )
                 else:
                     _run_step_with_retry(
                         step,
