@@ -5,8 +5,8 @@ APK 作为 TCP 服务端监听设备本机 `0.0.0.0:21104`，PC 作为客户端�
 按二进制帧协议收发数据。用于验证「纯 ADB 不够用、改用设备端常驻程序」这条路线是否走得通。
 
 **`DFM-probe/` 是独立工程，不依赖 `DFM-service` 运行；页面探针由后端路由调用本目录的 APK。**
-程序支持的功能清单见 [FEATURES.md](FEATURES.md)；
-帧格式、命令字、CRC 与 ACK 规则见仓库根目录 `probe与service通讯协议.md`。
+程序支持的功能清单见 [DFM-probe_FEATURES.md](DFM-probe_FEATURES.md)；
+帧格式、命令字、CRC 与 ACK 规则见同目录 `probe与service通讯协议.md`。
 
 ## 目录
 
@@ -101,7 +101,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。完整定义
 （`AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`），执行完再发**同帧序响应帧**，
 命令字 = `请求命令字 | 0x80`，数据区为统一 `{code,message,data}` 信封
 （成功 `code:200` / `data` 为业务对象，失败 `code:400`/`500` / `data` 固定 `null`），
-响应帧不要求 ACK。完整参数规范见 `接口文档.md`「三」。
+响应帧不要求 ACK。完整参数规范见 `DFM-probe_接口文档.md`「三」。
 CRC 错或长度非法的帧直接丢弃且不回 ACK；同一帧序重复帧只回 ACK、不重复执行业务。
 PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~255 循环。
 设备校验通过就回 ACK（不等业务执行完），否则 200ms 停等无法容忍 TTS 朗读的数十秒耗时。
@@ -110,8 +110,8 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 | --- | --- | --- | --- | --- |
 | `0x00` | CMD_HEARTBEAT | PC→设备 | `{}` | `{"code":200,"message":"success","data":{"version":"1.0"}}` |
 | `0x01` | CMD_TTS | PC→设备 | `{"text":"..."}` | `{"code":200,"message":"success","data":{"status":"done"}}` / `{"code":400/500,"message":"...","data":null}` |
-| `0x02` | CMD_DEVICE_INFO | PC→设备 | `{}` | 统一信封，`data` 为设备基础信息 + 串口 / 摄像头 / 外设列表（见 `接口文档.md`「三」） |
-| `0x03` | CMD_SERIAL_READ | PC→设备 | `{}` | 统一信封，`data` 为 `{"hex":"01 02 03","text":"..","bytes":N}`（从会话缓冲取增量，见 `接口文档.md`「3.4」） |
+| `0x02` | CMD_DEVICE_INFO | PC→设备 | `{}` | 统一信封，`data` 为设备基础信息 + 串口 / 摄像头 / 外设列表（见 `DFM-probe_接口文档.md`「三」） |
+| `0x03` | CMD_SERIAL_READ | PC→设备 | `{}` | 统一信封，`data` 为 `{"hex":"01 02 03","text":"..","bytes":N}`（从会话缓冲取增量，见 `DFM-probe_接口文档.md`「3.4」） |
 | `0x04` | CMD_SERIAL_OPEN | PC→设备 | `{"serial":"/dev/ttyS3","baud":9600,"parity":"none","dataBits":8,"stopBits":1}` | 统一信封，`data` 为 `{serial,baud,parity,dataBits,stopBits,stty}` |
 | `0x05` | CMD_SERIAL_SEND | PC→设备 | `{"mode":"text","payload":"AT","times":1,"interval":500}` 或 `{"stop":true}` | 统一信封，`data` 为 `{mode,bytes,times,interval,loop}` 或 `{stopped}` |
 | `0x06` | CMD_ACK | 设备→PC | 无 | 无（通知类） |
@@ -139,7 +139,7 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 `CMD_DEVICE_INFO` 由设备端 APK 采集并返回：安卓版本 / SDK / 机型 / 厂商 / 设备代号 /
 显示版本 / SN / 构建日期 / 内核版本，以及 `/dev` 下的串口节点列表、`CameraManager` 的
 摄像头列表、`InputManager` + `UsbManager` 的外设/输入设备列表。单项采集不可读时降级为
-空数组或 `Unknown`，不会让整帧失败；参数规范见 `接口文档.md`「3.3」。
+空数组或 `Unknown`，不会让整帧失败；参数规范见 `DFM-probe_接口文档.md`「3.3」。
 
 串口会话四命令字由设备端 APK 直接打开串口节点（默认 `/dev/ttyS3`），**不经 adb shell**，
 按 `串口助手-反编译说明.md` 的透传逻辑：接收侧 `read()` 返回多少原样显示多少、不做帧解析，
@@ -158,7 +158,7 @@ PC 停等 ACK：`T=200ms`、`N=3`（最多共发 4 次）、窗口 1、帧序 0~
 
 需设备已 root 且串口节点可读写；`stty` 配置失败或 `open` 被拒回 `500 serial cmd failed`，
 参数越界回 `400`。Android 设备 `stty` 是否支持 `csN` / `parenb` / `parodd` / `cstopb` 选项、
-`RandomAccessFile.read` 阻塞时 `0x07` 的关闭行为均未真机验证；参数规范见 `接口文档.md`「3.4」。
+`RandomAccessFile.read` 阻塞时 `0x07` 的关闭行为均未真机验证；参数规范见 `DFM-probe_接口文档.md`「3.4」。
 
 shell / 截屏 / 拍照（`0x08` / `0x09` / `0x0A`）与无障碍（`0x0B` / `0x0C` / `0x0D`）由设备端 APK 直接实现：
 `0x0B` 检测无障碍服务、未启用时跳转系统设置页（返回 `{enabled, started}`）；`0x0C` 经 `DfmAccessibilityService` 返回
@@ -167,7 +167,7 @@ shell / 截屏 / 拍照（`0x08` / `0x09` / `0x0A`）与无障碍（`0x0B` / `0x
 命中节点不可点击时向上回溯最近可点击祖先；自身与祖先链均不可点击时经 `dispatchGesture`
 在节点中心坐标派发点击兜底，API 24+，无需 root）；未启用无障碍服务时同样会
 自动拉起设置页并回 `500 accessibility service not enabled`，启用「DFM Probe」后重试即可。
-参数规范见 `接口文档.md`「3.5」~「3.10」。
+参数规范见 `DFM-probe_接口文档.md`「3.5」~「3.10」。
 
 ## 联调测试
 
@@ -195,7 +195,7 @@ python pc/probe_test.py --device 202600298120 --skip-install
 > `CMD_SERIAL_READ (0x03)` / `CMD_SERIAL_SEND (0x05)` / `CMD_SERIAL_CLOSE (0x07)`
 > 目前只有编译、静态与帧仿真验证，尚未实机复测；
 > 表内 `ok` 类应答与 `CMD_QUIT` 仅属历史记录。旧版 `0x03` 一次性读取（`duration` / `maxBytes`）
-> 的真机刷卡数据在 `接口文档.md`「3.4」末尾保留为历史记录。
+> 的真机刷卡数据在 `DFM-probe_接口文档.md`「3.4」末尾保留为历史记录。
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |

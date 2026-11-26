@@ -2,8 +2,8 @@
 
 本文只回答一个问题：**这套程序支持哪些功能**。
 
-构建步骤与实机验证记录见 [README.md](README.md)，帧格式、命令字、CRC 与 ACK 的字节级定义见仓库根目录
-[`probe与service通讯协议.md`](../probe与service通讯协议.md)。
+构建步骤与实机验证记录见 [DFM-probe_README.md](DFM-probe_README.md)，帧格式、命令字、CRC 与 ACK 的字节级定义见同目录
+[`probe与service通讯协议.md`](probe与service通讯协议.md)。
 
 **定位**：设备端 agent 的最小验证工程。`adb` 只负责安装 APK、发广播启动服务、（USB 时）做端口映射，
 **不承载任何业务数据**；PC 作为 TCP 客户端主动连入设备 `21104` 端口，用二进制帧协议收发业务数据。
@@ -82,7 +82,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   最后发**同帧序响应帧**（命令字 = `请求命令字 | 0x80`）；这样 200ms 的 ACK 停等不会被 TTS 的数十秒耗时拖垮。
   ACK 与响应帧都是通知类，**不要求再回 ACK**，业务结果 JSON 统一采用对齐 service 的
   `{code,message,data}` 信封：成功 `code:200` / `data` 为业务对象，失败 `code:400`/`500` / `data` 固定 `null`。
-  请求与返回参数规范见 `接口文档.md`「三」。
+  请求与返回参数规范见 `DFM-probe_接口文档.md`「三」。
 
 ### 4.1 业务命令字清单
 
@@ -122,7 +122,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   `CameraManager`、`InputManager` / `UsbManager`。
 - 返回 `data` 含 12 项：`androidVersion` / `sdk` / `model` / `manufacturer` / `device` /
   `displayVersion` / `sn` / `buildDate` / `kernelVersion` / `serialPorts` / `cameras` /
-  `peripherals`。字段类型与元素结构见 `接口文档.md`「3.3」。
+  `peripherals`。字段类型与元素结构见 `DFM-probe_接口文档.md`「3.3」。
 - `serialPorts` 过滤 `ttyS*` / `ttyUSB*` / `ttyACM*` 并排序；`cameras` 给出 `id` / `facing` /
   `resolution`；`peripherals` 含 `input` 与 `usb` 两类（`type` / `id` / `name`，USB 另有
   `vendorId` / `productId`）。
@@ -154,7 +154,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   `{"code":500,"message":"serial cmd failed: ...","data":null}`。
 - **权限依赖**：需设备已 root 且串口节点可读写；Android 设备的 `stty` 是否支持
   `csN` / `parenb` / `parodd` / `cstopb` 选项、以及 `RandomAccessFile.read` 阻塞时 CLOSE 的行为
-  均未真机验证。参数规范见 `接口文档.md`「3.4」。
+  均未真机验证。参数规范见 `DFM-probe_接口文档.md`「3.4」。
 
 ### 4.5 Shell 执行 / 屏幕截图 / 摄像头拍照（`0x08` / `0x09` / `0x0A`，v2.5）
 
@@ -333,6 +333,6 @@ START 广播是异步的，脚本用 10 次 × 0.3 秒的连接重试等待服�
 
 ## 9. 相关文档
 
-- [README.md](README.md)：目录、构建步骤、通讯流程、协议摘要、实机验证结果与日志清单。
-- [接口文档.md](接口文档.md)：命令字请求/返回参数规范、HTTP 端点与错误码。
-- [`../probe与service通讯协议.md`](../probe与service通讯协议.md)：帧结构、CRC、ACK、重试、响应超时的完整协议定义。
+- [DFM-probe_README.md](DFM-probe_README.md)：目录、构建步骤、通讯流程、协议摘要、实机验证结果与日志清单。
+- [DFM-probe_接口文档.md](DFM-probe_接口文档.md)：命令字请求/返回参数规范、HTTP 端点与错误码。
+- [`probe与service通讯协议.md`](probe与service通讯协议.md)：帧结构、CRC、ACK、重试、响应超时的完整协议定义。

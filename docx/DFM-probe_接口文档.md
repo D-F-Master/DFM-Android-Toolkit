@@ -4,7 +4,7 @@
 
 - **设备端监听**: TCP `0.0.0.0:21104`（`DFM-probe/DFMProbe.apk`，`ProbeService`）
 - **启动方式**: 显式广播 `com.dfm.probe.START` 拉起 `StartReceiver` → `startForegroundService`；服务常驻监听 21104，不 force-stop
-- **帧协议**: 见根目录 `probe与service通讯协议.md`
+- **帧协议**: 见同目录 `probe与service通讯协议.md`
 - **设备端源码**: `DFM-probe/java/com/dfm/probe/ProbeService.java`（下文简称 `ProbeService.java`）、`DFM-probe/java/com/dfm/probe/StartReceiver.java`
 - **PC 侧源码**: `DFM-probe/pc/probe_test.py`
 - **适用构建**: 保留 `CMD_HEARTBEAT (0x00)`、`CMD_TTS (0x01)`、`CMD_DEVICE_INFO (0x02)`、串口会话
@@ -1221,9 +1221,9 @@ App 均看到替换画面），部署逻辑对齐 `替换摄像头画面` 仓库
 
 | 文档 | 说明 |
 | --- | --- |
-| `DFM-probe/README.md` | 工程说明、命令字表、实机验证结果 |
-| `DFM-probe/FEATURES.md` | 功能清单 |
-| `probe与service通讯协议.md`（根目录） | 帧结构、CRC、ACK/重试/去重/超时机制 |
+| `DFM-probe_README.md` | 工程说明、命令字表、实机验证结果 |
+| `DFM-probe_FEATURES.md` | 功能清单 |
+| `probe与service通讯协议.md` | 帧结构、CRC、ACK/重试/去重/超时机制 |
 
 > `0x00` / `0x80`、`0x01` / `0x81`、`0x02` / `0x82`、`0x03` / `0x83` 已同步登记到根目录帧协议、本文、
-> `DFM-probe/README.md`、`DFM-probe/FEATURES.md`；本文为当前完整接口清单。
+> `DFM-probe_README.md`、`DFM-probe_FEATURES.md`；本文为当前完整接口清单。

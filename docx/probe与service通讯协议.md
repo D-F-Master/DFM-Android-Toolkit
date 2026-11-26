@@ -34,20 +34,20 @@
 | ------ | ---- | ---- | ------ | ---- |
 | `0x00` | CMD_HEARTBEAT | PC → 设备 | `{}` | 心跳，返回当前程序版本 `{"version":"1.0"}` |
 | `0x01` | CMD_TTS | PC → 设备 | `{"text":"..."}` | 调用系统 TTS 朗读，成功返回 `{"status":"done"}` |
-| `0x02` | CMD_DEVICE_INFO | PC → 设备 | `{}` | 设备详细信息（基础信息 + 串口 / 摄像头 / 外设列表），见 `DFM-probe/接口文档.md` |
-| `0x03` | CMD_SERIAL_READ | PC → 设备 | `{}` | 从串口会话缓冲取增量字节（hex/text/bytes），见 `DFM-probe/接口文档.md` |
-| `0x04` | CMD_SERIAL_OPEN | PC → 设备 | `{"serial":"/dev/ttyS3","baud":9600,"parity":"none","dataBits":8,"stopBits":1}` | 打开串口并起后台读线程，见 `DFM-probe/接口文档.md` |
-| `0x05` | CMD_SERIAL_SEND | PC → 设备 | `{"mode":"text","payload":"AT","times":1,"interval":500}` | 单次/循环发送或 `{stop:true}` 停止，见 `DFM-probe/接口文档.md` |
+| `0x02` | CMD_DEVICE_INFO | PC → 设备 | `{}` | 设备详细信息（基础信息 + 串口 / 摄像头 / 外设列表），见 `DFM-probe_接口文档.md` |
+| `0x03` | CMD_SERIAL_READ | PC → 设备 | `{}` | 从串口会话缓冲取增量字节（hex/text/bytes），见 `DFM-probe_接口文档.md` |
+| `0x04` | CMD_SERIAL_OPEN | PC → 设备 | `{"serial":"/dev/ttyS3","baud":9600,"parity":"none","dataBits":8,"stopBits":1}` | 打开串口并起后台读线程，见 `DFM-probe_接口文档.md` |
+| `0x05` | CMD_SERIAL_SEND | PC → 设备 | `{"mode":"text","payload":"AT","times":1,"interval":500}` | 单次/循环发送或 `{stop:true}` 停止，见 `DFM-probe_接口文档.md` |
 | `0x06` | CMD_ACK | 设备 → PC | 无 | ACK 确认帧，见「ACK 确认」 |
-| `0x07` | CMD_SERIAL_CLOSE | PC → 设备 | `{}` | 停读线程与循环线程、关串口，见 `DFM-probe/接口文档.md` |
-| `0x08` | CMD_SHELL | PC → 设备 | `{"command":"ls /sdcard","root":false,"timeout":30}` | 设备端执行 shell 并回传输出，见 `DFM-probe/接口文档.md` |
-| `0x09` | CMD_SCREENSHOT | PC → 设备 | `{}` | `screencap` 截屏存设备端，见 `DFM-probe/接口文档.md` |
-| `0x0A` | CMD_CAMERA | PC → 设备 | `{}` 或 `{"cameraId":"0"}` | camera2 无预览拍照存设备端，见 `DFM-probe/接口文档.md` |
-| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe/接口文档.md` |
-| `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe/接口文档.md` |
-| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe/接口文档.md` |
-| `0x11` | CMD_CAM_REPLACE | PC → 设备 | `{"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}` 或 `{"file":"...","dev":"/dev/video2"}`（另有内部参数 `srcPath`：设备端媒体绝对路径，离线脚本 `camReplace` 步骤用，PC 直发不需要） | 摄像头画面替换：转换媒体为 640x480 帧流并经 root 部署 camhook、重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
-| `0x12` | CMD_CAM_RESTORE | PC → 设备 | `{}` | 恢复真实摄像头画面：写 `enabled=0` 配置并重启 camera provider，见 `DFM-probe/接口文档.md`「3.12」 |
+| `0x07` | CMD_SERIAL_CLOSE | PC → 设备 | `{}` | 停读线程与循环线程、关串口，见 `DFM-probe_接口文档.md` |
+| `0x08` | CMD_SHELL | PC → 设备 | `{"command":"ls /sdcard","root":false,"timeout":30}` | 设备端执行 shell 并回传输出，见 `DFM-probe_接口文档.md` |
+| `0x09` | CMD_SCREENSHOT | PC → 设备 | `{}` | `screencap` 截屏存设备端，见 `DFM-probe_接口文档.md` |
+| `0x0A` | CMD_CAMERA | PC → 设备 | `{}` 或 `{"cameraId":"0"}` | camera2 无预览拍照存设备端，见 `DFM-probe_接口文档.md` |
+| `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe_接口文档.md` |
+| `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe_接口文档.md` |
+| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe_接口文档.md` |
+| `0x11` | CMD_CAM_REPLACE | PC → 设备 | `{"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}` 或 `{"file":"...","dev":"/dev/video2"}`（另有内部参数 `srcPath`：设备端媒体绝对路径，离线脚本 `camReplace` 步骤用，PC 直发不需要） | 摄像头画面替换：转换媒体为 640x480 帧流并经 root 部署 camhook、重启 camera provider，见 `DFM-probe_接口文档.md`「3.12」 |
+| `0x12` | CMD_CAM_RESTORE | PC → 设备 | `{}` | 恢复真实摄像头画面：写 `enabled=0` 配置并重启 camera provider，见 `DFM-probe_接口文档.md`「3.12」 |
 | `0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x91` ~ `0x92` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
 | `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
 
@@ -61,7 +61,7 @@
 > `0x08` / `0x88`、`0x09` / `0x89`、`0x0A` / `0x8A`、`0x0B` / `0x8B`、`0x0C` / `0x8C`、`0x0D` / `0x8D` 为
 > shell 执行 / 屏幕截图 / 摄像头拍照 / 无障碍设置页跳转 / 无障碍组件树 / 无障碍点击命令字/响应字。
 > `0x11` / `0x91`、`0x12` / `0x92` 为摄像头画面替换 / 恢复真实画面命令字/响应字
-> （设备已 root；首次安装需重启设备，见 `DFM-probe/接口文档.md`「3.12」）。
+> （设备已 root；首次安装需重启设备，见 `DFM-probe_接口文档.md`「3.12」）。
 
 
 

@@ -115,7 +115,7 @@ DFM-Android-Toolkit/
   { "code": 200, "message": "success", "data": {} }
   ```
 - WebSocket：`/ws/remote` 批量投屏（JSON 控制帧 + 二进制 H.264 流）
-- 详细接口见 `DFM-service/API文档_v2.md`、`DFM-probe/接口文档.md`、`probe与service通讯协议.md`，或启动后的 Swagger UI
+- 详细接口见 `DFM-service_API文档_v2.md`、`DFM-probe_接口文档.md`、`probe与service通讯协议.md`，或启动后的 Swagger UI
 
 ## 使用流程
 

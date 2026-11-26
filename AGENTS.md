@@ -8,3 +8,19 @@
 
 ## probe APK 分发
 - `DFM-probe/build.ps1` 打包完成后会自动把 `DFM-probe/DFMProbe.apk` 复制到 `DFM-service/data/apk/DFMProbe.apk`（服务端 `get_probe_apk_path` 从该路径安装到设备，已存在则覆盖）。执行打包后需检查脚本输出确认复制成功，若手动构建/复制则需自行保证该副本为最新。
+
+## 并发编辑约定
+- 工作区可能存在其他 AI 正在进行的未提交改动；这是正常状态，不要尝试"清理干净"。
+- 不要执行 `git clean`、`git checkout`、`git reset`、`git stash` 等会覆盖或清理他人改动的命令。
+- 修改任何文件前先重新读取该文件的最新内容，不要基于记忆或旧缓存直接编辑。
+- 优先小范围精确修改，避免整文件重写；如需修改已有未提交改动的文件，先确认目标片段当前内容，改完后用 `git diff` 核对，避免误伤并发修改。
+- 不主动执行 `git commit`，除非用户明确要求。
+
+## 文档同步约定
+- `docx/` 是项目**唯一**文档目录；原组件目录下的重复文档已移除。新增、修改或删除接口/能力时，直接更新 `docx/` 下对应文档，避免代码与文档漂移。
+- HTTP API（`/api/...`、`/test/...`）与 WebSocket（如 `/ws/remote`）：更新 `docx/DFM-service_API文档_v2.md`。
+- Probe 命令字/能力/帧协议：更新 `docx/DFM-probe_接口文档.md` 与 `docx/probe与service通讯协议.md`。
+- MCP 服务接口：更新 `docx/DFM-MCP_*_README.md`。
+- 架构、模块、配置或整体功能变化：更新 `docx/README.md`、`docx/项目架构总览.md`。
+- 新增文档直接放入 `docx/` 并在 `docx/文档索引.md` 登记；若暂无对应文档，先新增再改代码；删除接口时同步删除或显式标注文档中的相关条目。
+- 其他文件（含代码注释、架构图）中引用文档时，统一指向 `docx/` 下对应文件；暂未改到的历史路径不代表文档仍存在。

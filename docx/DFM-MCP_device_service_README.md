@@ -22,7 +22,7 @@ Compress-Archive -Path manifest.json, server.py, requirements.txt, README.md -De
 ## 工具清单（25 个）
 
 所有工具返回 DFM-service 统一信封 `{code, message, data}`：`code=200` 成功；
-`code=-1` 表示无法连接 DFM-service；其余见 `DFM-service/API文档_v2.md`。
+`code=-1` 表示无法连接 DFM-service；其余见 `DFM-service_API文档_v2.md`。
 
 | 组 | 工具 | 说明 |
 | --- | --- | --- |
