@@ -1016,30 +1016,41 @@ def read_file_base64(request: FileReadRequest):
 
     经 `adb exec-out base64 <path>` 读取：exec-out 不经 pty，字节流原样透传，
     比 `shell cat` 可靠（shell 模式会把 0x0a/0x0d 做转换，损坏二进制）。
+    非 root 读不到（如 /Android/data/<pkg>/ 下应用私有目录）时自动退回 `su 0` 重读。
     返回 data: {base64: str}，不带 data: 前缀，由前端自行拼接 MIME。
     """
     if not request.remotePath:
         return {"code": 400, "message": "remotePath is required", "data": None}
 
     adb_path = get_adb_path()
-    # adb 会把参数用空格拼接后交给设备 sh 解析，路径必须自带引号
-    cmd = [adb_path, "-s", request.deviceId, "shell", f"wc -c < {_shell_quote(request.remotePath)}"]
-    logger.info(f"Executing ADB command: {request.deviceId} shell wc -c < {request.remotePath}")
-    try:
-        stat = subprocess.run(cmd, capture_output=True, timeout=10)
-    except subprocess.TimeoutExpired:
-        logger.error(f"ADB command timeout: wc -c {request.remotePath}")
-        return {"code": 500, "message": "Read file timeout", "data": None}
-    except Exception as e:
-        logger.error(f"ADB command error: {str(e)}")
-        return {"code": 500, "message": str(e), "data": None}
-    if stat.returncode != 0:
-        error_msg = (stat.stderr or b"Read file failed").decode("utf-8", "replace").strip()
+    quoted = _shell_quote(request.remotePath)
+    # adb 会把参数用空格拼接后交给设备 sh 解析，路径必须自带引号。
+    # 先用非 root 读；读不到（如 /Android/data/<pkg>/ 下应用私有目录需 root）再退回 su 0。
+    # 注意用 `su 0 cat $p | wc -c` 而非 `su 0 wc -c < $p`：重定向由 shell 自身打开文件，
+    # su 只改子进程 uid，重定向仍会以 shell(uid=2000) 身份被拒。
+    size = None
+    error_msg = "Read file failed"
+    for shell_cmd in (f"wc -c < {quoted}", f"su 0 cat {quoted} | wc -c"):
+        logger.info(f"Executing ADB command: {request.deviceId} shell {shell_cmd}")
+        try:
+            stat = subprocess.run([adb_path, "-s", request.deviceId, "shell", shell_cmd],
+                                  capture_output=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.error(f"ADB command timeout: {shell_cmd}")
+            return {"code": 500, "message": "Read file timeout", "data": None}
+        except Exception as e:
+            logger.error(f"ADB command error: {str(e)}")
+            return {"code": 500, "message": str(e), "data": None}
+        if stat.returncode == 0:
+            try:
+                size = int((stat.stdout or b"0").decode("ascii", "replace").strip().split()[-1])
+                break
+            except (ValueError, IndexError):
+                error_msg = "无法识别文件大小"
+        else:
+            error_msg = (stat.stderr or b"Read file failed").decode("utf-8", "replace").strip()
+    if size is None:
         return {"code": 500, "message": error_msg, "data": None}
-    try:
-        size = int((stat.stdout or b"0").decode("ascii", "replace").strip().split()[-1])
-    except ValueError:
-        return {"code": 500, "message": "无法识别文件大小", "data": None}
     if size > IMAGE_PREVIEW_MAX_BYTES:
         return {
             "code": 500,
@@ -1047,27 +1058,36 @@ def read_file_base64(request: FileReadRequest):
             "data": None,
         }
 
-    # adb 会把所有 argv 用空格拼接后交给设备 sh 解析，必须拼成单条带引号的命令
-    cmd = [adb_path, "-s", request.deviceId, "exec-out", f"base64 {_shell_quote(request.remotePath)}"]
-    logger.info(f"Executing ADB command: {request.deviceId} exec-out base64 {request.remotePath}")
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, timeout=30
-        )
-    except subprocess.TimeoutExpired:
-        logger.error(f"ADB command timeout: base64 {request.remotePath}")
-        return {"code": 500, "message": "Read file timeout", "data": None}
-    except Exception as e:
-        logger.error(f"ADB command error: {str(e)}")
-        return {"code": 500, "message": str(e), "data": None}
+    # adb 会把所有 argv 用空格拼接后交给设备 sh 解析，必须拼成单条带引号的命令。
+    # 同样先非 root，失败再 su 0 兜底（应用私有目录）。
+    # 注意：exec-out 会把设备端的错误文本（如 `base64: <path>: Permission denied`）
+    # 也混进 stdout 且 returncode 仍为 0，因此必须校验输出确为 base64，不能只看返回码。
+    _B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+    b64 = ""
+    error_msg = "Read file failed"
+    for exec_cmd in (f"base64 {quoted}", f"su 0 base64 {quoted}"):
+        logger.info(f"Executing ADB command: {request.deviceId} exec-out {exec_cmd}")
+        try:
+            result = subprocess.run(
+                [adb_path, "-s", request.deviceId, "exec-out", exec_cmd],
+                capture_output=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(f"ADB command timeout: {exec_cmd}")
+            return {"code": 500, "message": "Read file timeout", "data": None}
+        except Exception as e:
+            logger.error(f"ADB command error: {str(e)}")
+            return {"code": 500, "message": str(e), "data": None}
+        out = result.stdout.decode("ascii", "replace").replace("\r", "").replace("\n", "").strip()
+        if result.returncode == 0 and out and _B64_RE.match(out):
+            b64 = out
+            break
+        # 非 base64 输出即设备端报错（可能被混进 stdout），留作错误信息
+        err = (result.stderr or b"").decode("utf-8", "replace").strip()
+        error_msg = err or out or "Read file failed"
 
-    if result.returncode != 0:
-        error_msg = (result.stderr or b"Read file failed").decode("utf-8", "replace").strip()
-        return {"code": 500, "message": error_msg, "data": None}
-
-    b64 = result.stdout.decode("ascii", "replace").replace("\r", "").replace("\n", "")
     if not b64:
-        return {"code": 500, "message": "文件内容为空", "data": None}
+        return {"code": 500, "message": error_msg, "data": None}
 
     return {
         "code": 200,
