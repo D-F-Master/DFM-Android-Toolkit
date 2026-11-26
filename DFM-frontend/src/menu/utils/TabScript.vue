@@ -2347,7 +2347,7 @@ onUnmounted(() => {
                         @click="scriptWs || scriptStreaming ? stopScriptStream() : beginScriptStream()"
                         :disabled="!selectedDevice"
                         :title="scriptWs || scriptStreaming ? '断开屏幕预览连接' : '连接屏幕预览'"
-                      >{{ scriptWs || scriptStreaming ? '断开连接' : '端口连接' }}</button>
+                      >{{ scriptWs || scriptStreaming ? '断开' : '连接' }}</button>
                       <span v-if="scriptRecording" class="script-rec-tag">● 录制中</span>
                       <label class="script-switch" :class="{ on: scriptShowTree }">
                         <input type="checkbox" v-model="scriptShowTree" />
