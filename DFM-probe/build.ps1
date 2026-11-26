@@ -23,7 +23,8 @@ $zipalign = Join-Path $buildTools 'zipalign.exe'
 $apksigner = Join-Path $buildTools 'apksigner.bat'
 $keytool = Join-Path $jdk17 'bin\keytool.exe'
 
-foreach ($p in @($Sdk, $androidJar, $aapt2, $d8, $zipalign, $apksigner, $javac, $keytool)) {
+$camhookSo = Join-Path $root 'assets\camhook.so'
+foreach ($p in @($Sdk, $androidJar, $aapt2, $d8, $zipalign, $apksigner, $javac, $keytool, $camhookSo)) {
     if (-not (Test-Path $p)) { throw "Missing build dependency: $p" }
 }
 
@@ -74,6 +75,9 @@ $zip = [System.IO.Compression.ZipFile]::Open($baseApk, [System.IO.Compression.Zi
 try {
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
         $zip, (Join-Path $dex 'classes.dex'), 'classes.dex') | Out-Null
+    # camera-replace so (0x11 extracts it from assets to /vendor/lib)
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+        $zip, $camhookSo, 'assets/camhook.so') | Out-Null
 } finally {
     $zip.Dispose()
 }
