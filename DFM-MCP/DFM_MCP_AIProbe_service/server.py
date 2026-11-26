@@ -1,14 +1,17 @@
 """
 MCP 服务端实现，封装 DFM-service（FastAPI，默认 http://127.0.0.1:3000）的设备探针接口。
 
-工具分五组（5 个）：
+工具分七组（7 个）：
 - 无障碍树：get_accessibility_tree
 - 组件点击：click_component
 - 屏幕截图：get_screenshot
 - 设备信息：device_info（0x02，支持关键字过滤）
 - 文本输入：input_text（0x0D 定位 + 0x08 shell 输入，仅 ASCII）
+- 应用列表：list_apps（转发 /api/device/apps）
+- 启动应用：start_app（转发 /api/device/app/start）
 
-五者都经 DFM-service 的探针帧接口 /api/probe/message 转发到设备上的 DFMProbe：
+前五者经 DFM-service 的探针帧接口 /api/probe/message 转发到设备上的 DFMProbe，
+list_apps / start_app 经 DFM-service 的 ADB 路由（/api/device/apps、/api/device/app/start）：
 - 0x02：返回设备基础信息、串口 / 摄像头 / 外设列表
 - 0x08：root shell，用于 input keyevent / input text
 - 0x0C：返回当前页面无障碍组件树
@@ -227,7 +230,8 @@ def _build_server() -> MCPServer:
     server = MCPServer(
         name="DFM-MCP-AIProbe-Service",
         version=SERVER_VERSION,
-        instructions="AI 探针 MCP 服务，读取设备无障碍树、点击组件、获取截图、读取设备信息、输入文本。"
+        instructions="AI 探针 MCP 服务，读取设备无障碍树、点击组件、获取截图、读取设备信息、输入文本、"
+                     "获取已安装应用列表、启动应用。"
                      "前提：DFM-service 已运行（默认 http://127.0.0.1:3000，可用环境变量 DFM_SERVICE_URL 覆盖），"
                      "且目标设备已安装并运行 DFMProbe 探针。"
                      "所有工具返回统一信封 {code,message,data}：200 成功，400 参数错误，450 探针不在线，"
@@ -288,6 +292,30 @@ def _build_server() -> MCPServer:
                 **filtered,
             },
         }
+
+    # --- 已安装应用列表 ---
+    @server.tool(name="list_apps", title="获取应用列表",
+                 description="获取设备上已安装的第三方应用包名列表。返回 data 为包名数组。"
+                             "列表中的包名可作为 start_app 的 packageName")
+    def _list_apps(deviceId: str) -> dict[str, Any]:
+        err = _guard(deviceId=deviceId)
+        if err:
+            return err
+        return _post("/api/device/apps", {"deviceId": deviceId.strip()})
+
+    # --- 启动已安装应用 ---
+    @server.tool(name="start_app", title="启动应用",
+                 description="启动设备上已安装的应用。packageName 为包名（可用 list_apps 获取）；"
+                             "activity 可选：填了用 am start -n <pkg>/<activity>，不填用 monkey LAUNCHER 方式拉起。"
+                             "返回 data 为 null 表示已下发启动命令")
+    def _start_app(deviceId: str, packageName: str, activity: str = "") -> dict[str, Any]:
+        err = _guard(deviceId=deviceId, packageName=packageName)
+        if err:
+            return err
+        payload: dict[str, Any] = {"deviceId": deviceId.strip(), "packageName": packageName.strip()}
+        if isinstance(activity, str) and activity.strip():
+            payload["activity"] = activity.strip()
+        return _post("/api/device/app/start", payload)
 
     # --- 文本输入 ---
     @server.tool(name="input_text", title="输入文本",
