@@ -421,10 +421,11 @@ const listProbeCameras = async () => {
     if (res.data?.code !== 200 || cameras.length === 0) {
       throw new Error(res.data?.message || '未检测到摄像头');
     }
-    probeResult.value = cameras.map((c: any) =>
+    const lines = cameras.map((c: any) =>
       `摄像头 ${c.id} · ${probeFacing(c.facing)}${c.resolution ? ` · ${c.resolution}` : ''}`
-    ).join('\n');
-    showMessage(`检测到 ${cameras.length} 个摄像头`, '相机列表');
+    );
+    probeResult.value = lines.join('\n');
+    showMessage(`检测到 ${cameras.length} 个摄像头：\n${lines.join('\n')}`, '相机列表');
   } catch (e: any) {
     const text = `获取失败：${e?.response?.data?.message || e?.message || '请求异常'}`;
     probeResult.value = text;
