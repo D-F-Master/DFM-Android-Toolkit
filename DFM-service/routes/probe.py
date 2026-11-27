@@ -39,32 +39,8 @@ CMD_SCRIPT_UNZIP = 0x0E
 CMD_SCRIPT_LIST = 0x0F
 CMD_SCRIPT_RUN = 0x10
 
-# 摄像头画面替换命令字（0x11 替换 / 0x12 恢复真实画面，部署逻辑对齐 camreplace APK）
-CMD_CAM_REPLACE = 0x11
-CMD_CAM_RESTORE = 0x12
-
 # 脚本 zip 在设备端的固定推送地址（应用外部私有目录下）
 DEVICE_SCRIPT_DIR = "/sdcard/Android/data/com.dfm.probe/files/script_in"
-
-# 替换源媒体文件在设备端的固定推送地址（应用外部私有目录下）
-DEVICE_CAM_DIR = "/sdcard/Android/data/com.dfm.probe/files/cam_in"
-# FUSE 视图的 f2fs 低层路径（chown/属主修改在低层必定生效，FUSE 层可能拒绝或静默无效）
-CAM_LOWER_DIR = "/data/media/0/Android/data/com.dfm.probe/files/cam_in"
-
-# camhook 预部署常量（PC 端 adb root 完成；新 ROM 上设备端 su 只有 euid 0 无 CAP_SYS_ADMIN，
-# 无法 remount /vendor 写 so/rc，必须由 PC 端代劳）
-CAM_SO_LOCAL = get_data_path() / "camhook.so"
-CAM_SO_DST = "/vendor/lib/camhook.so"
-CAM_RC_PATH = "/vendor/etc/init/android.hardware.camera.provider@2.4-external-service.rc"
-# 202600210090（RK3568 Android 11）：/vendor、/system ext4 无 journal，断电后位图损坏，
-# 任何写入都 ENOSPC；vendor rc 已丢失 → init 不再拉起 external provider，hook so 只能
-# 放 /data，provider 由本服务经 adb 手动带 LD_PRELOAD 拉起（见 _camhook_provider_deploy）。
-CAM_SO_DATA_DST = "/data/local/tmp/camhook.so"
-CAM_PROVIDER_BIN = "/vendor/bin/hw/android.hardware.camera.provider@2.4-external-service"
-CAM_PROVIDER_NAME = "android.hardware.camera.provider@2.4-external-service"
-
-# 视频转码（最多 600 帧）+ su 部署可能超过默认 120s，摄像头替换响应超时放宽
-CAM_RESPONSE_TIMEOUT = 300.0
 
 ACK_TIMEOUT = 0.2
 MAX_RETRY = 3
@@ -660,261 +636,13 @@ def probe_message(req: ProbeMessageRequest):
     0x0A 摄像头拍照 / 0x0B 跳转无障碍设置页 / 0x0C 无障碍组件树返回业务应答 /
     0x0D 无障碍点击（设备端按 id/text/desc 匹配节点并执行 ACTION_CLICK），
     0x0E 脚本 zip 解压 / 0x0F 脚本列表 / 0x10 脚本执行，
-    0x11 摄像头画面替换 / 0x12 恢复摄像头真实画面，
     其余命令字由设备端回 0xFF CMD_ERROR。
     """
     return _result(req.deviceId, False, req.cmd, req.data)
 
 
-class ProbeCamReplaceRequest(BaseModel):
-    deviceId: str
-    filePath: str
-    cameraId: str = ""
-    dev: str = ""
-    mirror: bool = False
-    every: int = 1  # 每 N 帧替换 1 帧（防刷帧负载过高导致 RGA 卡死，1=每帧）
 
 
-def _ensure_adb_root(device_id: str) -> str:
-    """确保 adbd 以 root 运行（设备重启后 adb root 状态会复位）。
-
-    adbd 非 root（shell uid）时 push 到 /sdcard/... 会报
-    "remote fchown failed: Operation not permitted"（FUSE 视图不允许 shell chown），
-    文件实际已拷贝但 adb 退出码非 0。userdebug 设备用 `adb root` 拉起 root adbd。"""
-    rc, out, err = _adb(device_id, "shell", "id", "-u", timeout=10)
-    if rc == 0 and out.strip() == "0":
-        return "adbd 已是 root"
-    _adb(device_id, "root", timeout=30)
-    # adbd 重启会短暂掉线，轮询等待恢复
-    for _ in range(10):
-        time.sleep(0.5)
-        rc, out, err = _adb(device_id, "shell", "id", "-u", timeout=5)
-        if rc == 0:
-            return "已执行 adb root" if out.strip() == "0" else f"adb root 后 adbd uid={out.strip()}"
-    return f"adb root 失败: {err or out}"
-
-
-def push_cam_media(device_id: str, local_path: str, name: str) -> str:
-    """把媒体素材推送到设备 cam_in/（探针页与脚本页共用），返回错误文本或空串。
-
-    直接 push 到 /sdcard/... 可能报 "remote fchown failed: Operation not permitted"
-    （FUSE 视图不允许 chown），且部分机型 FUSE 层对 Android/data 有属主检查。
-    因此：先 push 到 /data/local/tmp 暂存，再把修复脚本 push 到设备后用
-    `su 0 sh <脚本>` 提权拷到低层路径 /data/media/0/Android/data/...（与 FUSE
-    视图同一 inode，属主修改必定生效），属主取应用数据目录 uid，不依赖 adbd
-    是否 root。su 不可用（旧设备）时回退 FUSE 路径直接 push + chown。
-
-    注意：不能用 `su 0 sh -c '<cmd>'` 内联命令——cmd 里的单引号会和外层
-    包裹引号冲突导致设备端解析失败（曾因此长期静默回退），必须走脚本文件。"""
-    _adb(device_id, "shell", "mkdir", "-p", "/data/local/tmp/cam_in")
-    stage = f"/data/local/tmp/cam_in/{name}"
-    rc, out, err = _adb(device_id, "push", local_path, stage, timeout=600)
-    if rc != 0:
-        return f"adb push 失败: {err or out}"
-    lower_files = "/data/media/0/Android/data/com.dfm.probe/files"
-    fix_script = (
-        "#!/system/bin/sh\n"
-        f"mkdir -p '{CAM_LOWER_DIR}'\n"
-        f"cp '{stage}' '{CAM_LOWER_DIR}/{name}' && rm -f '{stage}' || {{ echo COPY_FAIL; exit 1; }}\n"
-        "O=$(stat -c %u /data/data/com.dfm.probe 2>/dev/null)\n"
-        f"[ -z \"$O\" ] && O=$(stat -c %u '{lower_files}' 2>/dev/null)\n"
-        f"chown -R \"$O\" '{CAM_LOWER_DIR}'\n"
-        f"chmod 2770 '{CAM_LOWER_DIR}'\n"
-        f"chmod 664 '{CAM_LOWER_DIR}/{name}'\n"
-        "echo PUSH_OK\n"
-    )
-    script_local = get_data_path() / "media" / "_cam_push_fix.sh"
-    with open(script_local, "w", encoding="utf-8", newline="\n") as f:
-        f.write(fix_script)  # Python 3.9 的 write_text 不支持 newline 参数
-    _adb(device_id, "push", str(script_local), "/data/local/tmp/cam_push_fix.sh",
-         timeout=30)
-    rc, out, err = _adb(device_id, "shell",
-                        "su 0 sh /data/local/tmp/cam_push_fix.sh", timeout=60)
-    _adb(device_id, "shell", "rm -f /data/local/tmp/cam_push_fix.sh", timeout=15)
-    if rc == 0 and "PUSH_OK" in out:
-        return ""
-    if "COPY_FAIL" in (out or ""):
-        return f"设备端拷贝失败: {out or err}"
-    # 回退：直接 push FUSE 路径 + chown 修复（旧设备 adbd root 下可用）
-    _adb(device_id, "shell", "mkdir", "-p", DEVICE_CAM_DIR, timeout=15)
-    rc, out, err = _adb(device_id, "push", local_path,
-                        f"{DEVICE_CAM_DIR}/{name}", timeout=600)
-    if rc != 0:
-        return f"adb push 失败: {err or out}"
-    files_dir = "/sdcard/Android/data/com.dfm.probe/files"
-    _adb(device_id, "shell",
-         f"O=$(stat -c %U {files_dir} 2>/dev/null); G=$(stat -c %G {files_dir} 2>/dev/null); "
-         f"[ -n \"$O\" ] && chown -R $O:$G {DEVICE_CAM_DIR} && "
-         f"chmod 2770 {DEVICE_CAM_DIR} && chmod 664 '{DEVICE_CAM_DIR}/{name}'",
-         timeout=30)
-    return ""
-
-
-def do_cam_replace(device_id: str, local_path: str, name: str, mirror: bool = False,
-                   dev: str = "", cameraId: str = "", every: int = 1) -> dict:
-    """替换摄像头画面完整链路（探针页与脚本页共用）：
-    push 素材 → camhook 预部署 → 发 0x11 设备端转换部署 → 清理素材。"""
-    push_err = push_cam_media(device_id, local_path, name)
-    if push_err:
-        return {"code": 500, "message": push_err, "data": None}
-    # camhook 预部署（幂等；已部署则直接跳过）
-    try:
-        deploy_note = _camhook_vendor_deploy(device_id)
-    except Exception as e:
-        deploy_note = f"预部署异常: {e}，尝试设备端部署"
-        logger.warning(f"probe camhook 预部署异常 device={device_id}: {e}")
-    else:
-        logger.info(f"probe camhook 预部署 device={device_id}: {deploy_note}")
-    data = {"file": name, "mirror": bool(mirror),
-            "every": max(1, min(30, int(every or 1)))}
-    if dev:
-        data["dev"] = dev
-    if cameraId:
-        data["cameraId"] = cameraId
-    result = _result(device_id, False, CMD_CAM_REPLACE, data,
-                     response_timeout=CAM_RESPONSE_TIMEOUT)
-    resp = (result.get("data") or {}).get("response") or {}
-    if resp.get("code") == 200:
-        # provider 由服务端确认带 hook（camhookDeploy 非异常路径）时，App 因 rc 校验
-        # 失败误报的 rebootRequired 无意义，压掉避免前端提示重启设备
-        rdata = resp.get("data")
-        if isinstance(rdata, dict) and "hook" in str(deploy_note):
-            rdata["rebootRequired"] = False
-        try:
-            _adb(device_id, "shell", "rm", "-f", f"{DEVICE_CAM_DIR}/{name}")
-        except Exception as e:
-            logger.warning(f"probe 删除设备端媒体文件失败 device={device_id}: {e}")
-    if isinstance(result.get("data"), dict):
-        result["data"]["camhookDeploy"] = deploy_note
-    return result
-
-
-def _camhook_provider_hooked(device_id: str) -> bool:
-    """external provider 是否已带 camhook（任一实例 maps 里有 camhook）"""
-    rc, out, _ = _adb(device_id, "shell",
-                      "su 0 sh -c 'H=0; for p in $(pidof "
-                      f"{CAM_PROVIDER_NAME} 2>/dev/null); do grep -q camhook "
-                      "/proc/$p/maps 2>/dev/null && H=1; done; echo HOOKED:$H'",
-                      timeout=20)
-    return rc == 0 and "HOOKED:1" in out
-
-
-def _camhook_provider_spawn(device_id: str) -> str:
-    """杀掉无 hook 的 provider 实例并手动带 LD_PRELOAD 拉起（/data 上的 so）。"""
-    _adb(device_id, "shell",
-         f"su 0 sh -c 'for p in $(pidof {CAM_PROVIDER_NAME} 2>/dev/null); "
-         "do kill $p 2>/dev/null; done; sleep 1; echo killed'",
-         timeout=20)
-    # 注意：nohup/timeout 等中间二进制是 64 位，LD_PRELOAD(32 位 so) 会把它们搞挂，
-    # 必须由 sh 直接后台 exec provider 本体
-    _adb(device_id, "shell",
-         f"su 0 sh -c 'LD_PRELOAD={CAM_SO_DATA_DST} "
-         f"{CAM_PROVIDER_BIN} >/dev/null 2>&1 &'",
-         timeout=20)
-    time.sleep(3)
-    return "hooked" if _camhook_provider_hooked(device_id) else "spawn_failed"
-
-
-def _camhook_vendor_deploy(device_id: str) -> str:
-    """幂等预部署 camhook（PC 端 adb 完成，0x11 之前调用）。
-
-    RK3568 Android 11 设备（202600210090）：/vendor、/system ext4 无 journal，断电
-    后位图损坏 → 任何写入 ENOSPC；vendor rc 丢失，init 不再拉起 external provider。
-    因此：so 推到 /data/local/tmp，provider 由本函数经 adb 手动带 LD_PRELOAD 拉起；
-    已有带 hook 的 provider 时不做任何重启（替换/恢复完全靠 conf 热加载，无需重启）。
-    RK3568 Android 13 设备（192.168.0.22）仍走 /vendor 路径。返回说明文本。"""
-    # 新路径优先：/data 上的 so + 带 hook 的 provider
-    if CAM_SO_LOCAL.is_file():
-        try:
-            rc, _, err = _adb(device_id, "push", str(CAM_SO_LOCAL),
-                              CAM_SO_DATA_DST, timeout=120)
-            if rc != 0:
-                return f"adb push camhook.so 到 {CAM_SO_DATA_DST} 失败: {err}"
-        except Exception as e:
-            return f"adb push camhook.so 异常: {e}"
-        try:
-            if _camhook_provider_hooked(device_id):
-                return "camhook 已预部署（provider 已带 hook）"
-            state = _camhook_provider_spawn(device_id)
-            if state == "hooked":
-                return "camhook 已预部署（手动拉起带 hook 的 provider）"
-            return f"provider 手动拉起失败（{state}），尝试设备端部署"
-        except Exception as e:
-            return f"provider 拉起异常: {e}，尝试设备端部署"
-    # 旧路径（/vendor 可写的设备，如 192.168.0.22）
-    rc, out, err = _adb(device_id, "shell",
-                        f"test -f {CAM_SO_DST} && grep -q camhook.so {CAM_RC_PATH}"
-                        " && echo OK || echo MISS", timeout=20)
-    if rc == 0 and out.strip().endswith("OK"):
-        return "camhook 已预部署"
-    if not CAM_SO_LOCAL.is_file():
-        return f"缺少 {CAM_SO_LOCAL}，无法预部署，尝试设备端部署"
-    # 部署脚本走文件而不是 shell -c，避免多层引号转义
-    script = (
-        "mount -o remount,rw /vendor || exit 1\n"
-        f"cp /data/local/tmp/camhook_deploy.so {CAM_SO_DST} || exit 1\n"
-        f"chmod 644 {CAM_SO_DST}\n"
-        f"grep -q camhook.so {CAM_RC_PATH} || sed -i"
-        " 's#user cameraserver#user cameraserver\\n    setenv LD_PRELOAD "
-        f"{CAM_SO_DST} 1#'"
-        f" {CAM_RC_PATH}\n"
-        "echo DEPLOY_DONE\n"
-    )
-    tmp_script = CAM_SO_LOCAL.parent / "camhook_deploy.sh"
-    try:
-        tmp_script.write_text(script, encoding="utf-8")
-        rc, out, err = _adb(device_id, "push", str(CAM_SO_LOCAL),
-                            "/data/local/tmp/camhook_deploy.so", timeout=120)
-        if rc != 0:
-            return f"adb push camhook.so 失败: {err or out}，尝试设备端部署"
-        rc, out, err = _adb(device_id, "push", str(tmp_script),
-                            "/data/local/tmp/camhook_deploy.sh", timeout=30)
-        if rc != 0:
-            return f"adb push 部署脚本失败: {err or out}，尝试设备端部署"
-        rc, out, err = _adb(device_id, "shell", "su", "0", "sh",
-                            "/data/local/tmp/camhook_deploy.sh", timeout=60)
-        if rc != 0 or "DEPLOY_DONE" not in out:
-            return f"PC 端预部署失败: {err or out}，尝试设备端部署"
-        # 首次部署后重启 provider 加载 LD_PRELOAD（命令整体作单参数，避免引号被 adb 剥掉）
-        _adb(device_id, "shell", "su 0 sh -c 'kill $(pgrep -f external-service) 2>/dev/null; echo killed'",
-             timeout=30)
-        return "camhook 预部署完成并已重启 provider"
-    finally:
-        _adb(device_id, "shell", "rm", "-f",
-             "/data/local/tmp/camhook_deploy.so", "/data/local/tmp/camhook_deploy.sh",
-             timeout=15)
-        try:
-            tmp_script.unlink()
-        except OSError:
-            pass
-
-
-@router.post("/probe/cam-replace")
-def probe_cam_replace(req: ProbeCamReplaceRequest):
-    """上传照片/视频并替换摄像头画面。
-
-    本地媒体文件先 adb push 到 DEVICE_CAM_DIR，再发 0x11 由设备端转换
-    （图片 1 帧 / 视频 15fps 最多 600 帧，可选镜像补偿）并经 su 部署 camhook、
-    重启 camera provider；cameraId 为 0x02 相机列表返回的 id，设备端映射
-    /dev/video{cameraId}，也可用 dev 显式指定节点（如 /dev/video2）。
-    成功后删除设备端源文件避免残留；视频转码耗时较长，响应超时放宽到 300s。
-    """
-    device_id = (req.deviceId or "").strip()
-    if not device_id:
-        return {"code": 400, "message": "deviceId 不能为空", "data": None}
-    import os
-    file_path = (req.filePath or "").strip()
-    if not file_path or not os.path.isfile(file_path):
-        return {"code": 400, "message": f"媒体文件不存在: {file_path}", "data": None}
-    name = os.path.basename(file_path)
-    if not name.lower().endswith(
-            (".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi", ".webm", ".3gp", ".mkv")):
-        return {"code": 400, "message": "仅支持图片（jpg/jpeg/png）或视频（mp4/mov/avi/webm/3gp/mkv）",
-                "data": None}
-    # 完整链路（push/预部署/0x11/清理）与脚本页共用同一函数
-    return do_cam_replace(device_id, file_path, name,
-                          mirror=req.mirror, dev=req.dev, cameraId=req.cameraId,
-                          every=req.every)
 
 
 @router.post("/probe/send")
@@ -937,11 +665,6 @@ def probe_send(req: ProbeSendRequest):
         result["data"]["cmdSent"] = {"cmd": cmd, "data": req.data or {}}
     return result
 
-
-@router.post("/probe/cam-restore")
-def probe_cam_restore(req: ProbeRequest):
-    """恢复真实摄像头画面（0x12）：设备端写 enabled=0 配置并重启 camera provider。"""
-    return _result(req.deviceId, False, CMD_CAM_RESTORE, {})
 
 
 class ProbeScriptImportRequest(BaseModel):
@@ -980,7 +703,7 @@ def probe_script_import(req: ProbeScriptImportRequest):
     rc, out, err = _adb(device_id, "push", zip_path, f"{DEVICE_SCRIPT_DIR}/{zip_name}", timeout=600)
     if rc != 0:
         return {"code": 500, "message": f"adb push 失败: {err or out}", "data": None}
-    # 同 cam-replace：adb 为 root 时 push 出的文件属 root，应用读不到，这里同样修正属主
+    # adb 为 root 时 push 出的文件属 root，应用读不到，这里修正属主
     #（命令整体作单参数传给 adb shell，避免多参数被 adb 拼接剥引号）
     files_dir = "/sdcard/Android/data/com.dfm.probe/files"
     _adb(device_id, "shell",

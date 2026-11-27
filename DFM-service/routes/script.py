@@ -36,9 +36,7 @@
 设备动作类步骤（installApk/deleteFolder/应用管理/按键/音量/重启）走 adb 命令，
 TTS 步骤走探针帧协议（0x01）；accClick 步骤走探针 0x0D，设备端在无障碍组件树
 中按 id/text/desc 匹配节点并直接执行 ACTION_CLICK（不走坐标注入）；accExists
-判断走探针 0x0C 拉组件树后在服务端匹配（只查不点）；camReplace/camRestore
-步骤走探针 0x11/0x12（素材先 adb push 到设备 cam_in/，依赖设备端探针在线）；
-其余注入类
+判断走探针 0x0C 拉组件树后在服务端匹配（只查不点）其余注入类
 步骤走 scrcpy 会话。判断步骤（condition）
 求一次条件后按真/假分支动作（继续 / 跳到第 N 步 / 终止 / 判失败）决定下一步，
 走 adb 或截屏，不占会话。
@@ -127,7 +125,7 @@ router = APIRouter(
 SCRIPTS_DIR = get_data_path() / "scripts"
 APKS_DIR = get_data_path() / "apk"
 TEMPLATES_DIR = get_data_path() / "templates"   # 视觉匹配模板图（等待组件出现）
-MEDIA_DIR = get_data_path() / "media"           # 摄像头替换素材（camReplace 步骤引用）
+MEDIA_DIR = get_data_path() / "media"           # 脚本引用的媒体素材
 # 摄像头替换素材允许的扩展名（图片 1 帧 / 视频抽帧，与设备端白名单一致）
 CAM_MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".mp4", ".mov", ".avi", ".webm", ".3gp", ".mkv")
 
@@ -240,8 +238,6 @@ ADB_STEP_TYPES = (
     "installApk", "deleteFolder", "startApp", "stopApp", "uninstallApp",
     "keyevent", "volume", "reboot", "tts", "accClick", "runScript",
     "sleep", "shell", "screenshot",
-    # 摄像头替换：仅设备端离线脚本（0x0E 导入 + 0x10 执行）支持，PC 端回放明确报错
-    "camReplace", "camRestore",
 )
 # 视觉等待：反复截屏搜索模板图，命中才继续
 VISION_STEP_TYPES = ("waitFor",)
@@ -352,23 +348,6 @@ def _validate_adb_step(step_type: str, step: dict, idx: int) -> str:
     if step_type == "installApk":
         if not str(step.get("apkName", "")).strip():
             return f"第 {idx} 步未选择 APK 文件"
-        return ""
-
-    if step_type == "camReplace":
-        name = str(step.get("file", "")).strip()
-        if not name:
-            return f"第 {idx} 步未选择摄像头替换素材"
-        if "/" in name or "\\" in name or ".." in name:
-            return f"第 {idx} 步的素材名不能包含路径分隔符"
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        if ext not in ("jpg", "jpeg", "png", "mp4", "mov", "avi", "webm", "3gp", "mkv"):
-            return f"第 {idx} 步的素材仅支持图片(jpg/png)或视频(mp4/mov/avi/webm/3gp/mkv)"
-        dev = str(step.get("dev", "")).strip()
-        if dev and not re.match(r"^/dev/video\d+$", dev):
-            return f"第 {idx} 步的 video 节点必须为 /dev/video<数字>: {dev}"
-        return ""
-
-    if step_type == "camRestore":
         return ""
 
     if step_type == "deleteFolder":
@@ -1020,10 +999,6 @@ def _script_referenced_files(script: dict) -> tuple[List[str], List[str], List[s
             tpl = str(step.get("template", "")).strip()
             if tpl and tpl not in template_names:
                 template_names.append(tpl)
-        elif step.get("type") == "camReplace":
-            media = str(step.get("file", "")).strip()
-            if media and media not in media_names:
-                media_names.append(media)
     return apk_names, template_names, media_names
 
 
@@ -1036,7 +1011,7 @@ def export_script_zip(request: ScriptExportRequest):
       script.json          脚本原文（与 data/scripts/{name}.json 完全一致）
       apk/{apkName}        脚本引用的 APK（installApk 步骤）
       templates/{tpl}.png  脚本引用的模板图（waitFor 步骤）
-      media/{file}         脚本引用的摄像头替换素材（camReplace 步骤）
+      media/{file}         脚本引用的媒体素材
       signature.txt        HMAC 签名（对以上全部成员的清单），导入时强制校验
 
     zip 写到 D:\\log\\script_exports\\{name}.zip，前端提示保存位置。
@@ -1255,45 +1230,6 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
         logger.error(f"导入脚本包失败: {e}")
         return {"code": 500, "message": f"导入脚本包失败: {str(e)}", "data": None}
 
-
-# ========== 摄像头替换素材库（camReplace 步骤引用） ==========
-
-@router.post("/device/script/upload-media")
-async def upload_script_media(media: UploadFile = File(..., description="摄像头替换素材(图片/视频)")):
-    """上传摄像头替换素材到 data/media/，供「替换摄像头画面」步骤引用"""
-    try:
-        _ensure_media_dir()
-        ext = os.path.splitext(media.filename or "")[1].lower()
-        if ext not in CAM_MEDIA_EXTS:
-            return {"code": 400, "message": "素材仅支持图片(jpg/png)或视频(mp4/mov/avi/webm/3gp/mkv)", "data": None}
-        filename = _safe_name(os.path.splitext(media.filename or "")[0]) + ext
-        path = MEDIA_DIR / filename
-        with open(path, "wb") as f:
-            while True:
-                chunk = await media.read(1024 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-        size = path.stat().st_size
-        logger.info(f"Script media uploaded: {path} ({size} bytes)")
-        return {"code": 200, "message": "success", "data": {"name": filename, "size": size}}
-    except Exception as e:
-        logger.error(f"上传摄像头素材失败: {e}")
-        return {"code": 500, "message": f"上传摄像头素材失败: {str(e)}", "data": None}
-
-
-@router.post("/device/script/list-media")
-def list_script_media():
-    """列出已上传的摄像头替换素材"""
-    try:
-        _ensure_media_dir()
-        items = []
-        for f in sorted(MEDIA_DIR.iterdir()):
-            if f.is_file() and f.suffix.lower() in CAM_MEDIA_EXTS:
-                items.append({"name": f.name, "size": f.stat().st_size})
-        return {"code": 200, "message": "success", "data": items}
-    except Exception as e:
-        return {"code": 500, "message": f"获取摄像头素材列表失败: {str(e)}", "data": None}
 
 
 def _run_branch_step(device_id: str, action: str, branch: dict, script: dict, w: int, h: int, round_no: int,
@@ -1537,49 +1473,6 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
             if not result["success"]:
                 raise RuntimeError((result.get("error") or "install failed").strip())
 
-        elif stype == "camReplace":
-            # 与探针工具页同链路：素材先 adb push 到设备 cam_in/，再发 0x11 由设备端
-            # 转换（图片 1 帧 / 视频 15fps ≤600 帧）并经 su 部署 camhook；依赖设备端探针在线
-            from routes.probe import run_probe, _adb, CMD_CAM_REPLACE, DEVICE_CAM_DIR, CAM_RESPONSE_TIMEOUT
-
-            file_name = str(step.get("file", "")).strip()
-            path = MEDIA_DIR / file_name
-            if not path.exists():
-                raise RuntimeError(f"摄像头素材 {file_name} 不存在，请先上传到素材库")
-            rc, out, err = _adb(device_id, "shell", "mkdir", "-p", DEVICE_CAM_DIR)
-            if rc != 0:
-                raise RuntimeError(f"创建设备目录失败: {err or out}")
-            rc, out, err = _adb(device_id, "push", str(path), f"{DEVICE_CAM_DIR}/{file_name}", timeout=600)
-            if rc != 0:
-                raise RuntimeError(f"adb push 失败: {err or out}")
-            data = {"file": file_name, "mirror": bool(step.get("mirror", False))}
-            dev = str(step.get("dev", "")).strip()
-            if dev:
-                data["dev"] = dev
-            d = run_probe(device_id, False, CMD_CAM_REPLACE, data, CAM_RESPONSE_TIMEOUT)
-            if not d.get("connected"):
-                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
-            response = d.get("response") or {}
-            if not isinstance(response, dict) or response.get("code") != 200:
-                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
-                raise RuntimeError(f"替换摄像头画面失败: {message}")
-            # 成功后清理设备端源文件，避免残留
-            try:
-                _adb(device_id, "shell", "rm", "-f", f"{DEVICE_CAM_DIR}/{file_name}")
-            except Exception as e:
-                logger.warning(f"删除设备端素材失败 device={device_id}: {e}")
-
-        elif stype == "camRestore":
-            # 恢复真实画面走探针 0x12（设备端写 enabled=0 配置并重启 camera provider）
-            from routes.probe import run_probe, CMD_CAM_RESTORE
-
-            d = run_probe(device_id, False, CMD_CAM_RESTORE, {})
-            if not d.get("connected"):
-                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
-            response = d.get("response") or {}
-            if not isinstance(response, dict) or response.get("code") != 200:
-                message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
-                raise RuntimeError(f"恢复摄像头画面失败: {message}")
 
         elif stype == "deleteFolder":
             target = str(step.get("path", "")).strip()

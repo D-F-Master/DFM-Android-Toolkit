@@ -43,12 +43,6 @@
 > `waitFor`（模板匹配）设备端不支持，遇到时明确报错，见 `3.11`。
 > 帧层（2 字节长度、ACK、CRC、去重、超时）保持不变，
 > 但**命令字不兼容旧版 APK / service / PC 脚本 / 前端**，必须一起升级。
-> v2.9 新增摄像头画面替换两命令字 `0x11` / `0x12`：PC 侧把照片/视频经 `adb push` 送到
-> 设备固定地址 `files/cam_in/`，设备端转成 640x480 JPEG 帧流（图片 1 帧 / 视频 15fps 最多 600 帧，
-> 可选镜像补偿），从 APK assets 解出 `camhook.so` 经 root 部署到 `/vendor/lib` 并重启 camera
-> provider（首次安装写 rc 后需重启设备）；`0x12` 写 `enabled=0` 配置恢复真实画面，见 `3.12`。
-> v2.10 离线脚本新增 `camReplace` / `camRestore` 步骤类型（`ScriptEngine.java`，素材取自脚本包
-> `media/` 目录，`0x11` 新增内部参数 `srcPath`）；`0x11`/`0x12` 命令字协议本身不变。
 
 ---
 
@@ -200,8 +194,6 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x0E` | CMD_SCRIPT_UNZIP | PC→设备 | `{"zip":"xxx.zip"}` | 解压 `files/script_in/xxx.zip` 到 `files/script_store/xxx/`；应答帧 `0x8E`，`data` 为 `{script,steps,files,path,apks,templates}`（见「3.11」） |
 | `0x0F` | CMD_SCRIPT_LIST | PC→设备 | `{}` | 列出 `files/script_store/` 下已导入脚本；应答帧 `0x8F`，`data` 为 `{scripts:[{name,steps,size,importedAt,error?}]}`（见「3.11」） |
 | `0x10` | CMD_SCRIPT_RUN | PC→设备 | `{"script":"名字","repeat":N}` | 离线执行已导入脚本，返回逐步骤成败日志；应答帧 `0x90`，`data` 为 `{script,ok,error,summary,logs,truncated}`（见「3.11」） |
-| `0x11` | CMD_CAM_REPLACE | PC→设备 | `{"file":"xxx.jpg|mp4","cameraId":"2","mirror":false}` 或 `{"file":"...","dev":"/dev/video2"}` | 摄像头画面替换：转换媒体为帧流并经 root 部署 camhook、重启 camera provider；应答帧 `0x91`，`data` 为 `{dev,frames,streamSize,mirror,rebootRequired,deployOutput,restartOutput?,status}`（见「3.12」） |
-| `0x12` | CMD_CAM_RESTORE | PC→设备 | `{}` | 恢复真实摄像头画面：写 `enabled=0` 配置并重启 camera provider；应答帧 `0x92`，`data` 为 `{conf,output}`（见「3.12」） |
 | `0x80` | CMD_HEARTBEAT_RESPONSE | 设备→PC | 统一信封 | 由 `0x00 \| 0x80` 得到；通知类，不要求 ACK |
 | `0x81` | CMD_TTS_RESPONSE | 设备→PC | 统一信封 | 由 `0x01 \| 0x80` 得到；通知类，不要求 ACK |
 | `0x82` | CMD_DEVICE_INFO_RESPONSE | 设备→PC | 统一信封 | 由 `0x02 \| 0x80` 得到；通知类，不要求 ACK |
@@ -218,8 +210,6 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x8E` | CMD_SCRIPT_UNZIP_RESPONSE | 设备→PC | 统一信封 | 由 `0x0E \| 0x80` 得到；通知类，不要求 ACK |
 | `0x8F` | CMD_SCRIPT_LIST_RESPONSE | 设备→PC | 统一信封 | 由 `0x0F \| 0x80` 得到；通知类，不要求 ACK |
 | `0x90` | CMD_SCRIPT_RUN_RESPONSE | 设备→PC | 统一信封 | 由 `0x10 \| 0x80` 得到；通知类，不要求 ACK |
-| `0x91` | CMD_CAM_REPLACE_RESPONSE | 设备→PC | 统一信封 | 由 `0x11 \| 0x80` 得到；通知类，不要求 ACK |
-| `0x92` | CMD_CAM_RESTORE_RESPONSE | 设备→PC | 统一信封 | 由 `0x12 \| 0x80` 得到；通知类，不要求 ACK |
 | `0xFF` | CMD_ERROR | 设备→PC | 统一信封 `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 仅未知命令字；业务异常仍走 `cmd \| 0x80` 响应帧（信封内 `code:500`）；通知类，不要求 ACK |
 
 > 表中「统一信封」指 `{"code":200,"message":"success","data":{...}}`，失败为
@@ -985,7 +975,7 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
 | `data.files` | int | 实际解压出的文件数 |
 | `data.path` | string | 解压目标绝对路径 |
 | `data.apks` | array\<string\> | `apk/` 子目录文件名列表（无则空） |
-| `data.templates` | array\<string\> | `templates/` 子目录文件名列表（无则空；`media/` 摄像头素材目录不在此列出，`camReplace` 步骤执行时直接按文件名读取） |
+| `data.templates` | array\<string\> | `templates/` 子目录文件名列表（无则空） |
 
 #### 3.11.2 `0x0F CMD_SCRIPT_LIST` 列出脚本
 
@@ -1010,17 +1000,15 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
 
 - 支持 `tap` / `longpress` / `swipe` / `input` / `installApk` / `deleteFolder` / `startApp` /
   `stopApp` / `uninstallApp` / `keyevent` / `volume` / `reboot` / `tts` / `accClick` /
-  `runScript` / `camReplace` / `camRestore` / `condition`（分支）。
+  `runScript` / `condition`（分支）。
 - `waitFor`（模板匹配）**不支持**：设备端无 OpenCV，遇到时该步骤失败，`logs` 中记录
   `设备端不支持模板匹配`。
 - `input` 文本限 ASCII：非 ASCII 回该步骤失败（`input text 仅支持 ASCII 字符`）。
 - `condition` 支持 `appInstalled` / `shell` / `time` / `accClick` 四种；`template` 条件
   不支持（同 `waitFor` 原因）。分支动作 `goto` / `stop` / `fail` / `runScript`，跳转上限
   100 次、嵌套深度上限 3。
-- `camReplace`：参数 `file`（脚本包 `media/` 目录内素材文件名，仅文件名，jpg/jpeg/png/mp4/mov/avi/webm/3gp/mkv）、
   `dev`（可选，`/dev/videoN`，留空自动 `ls /dev/video*` 取第一个节点）、`mirror`（可选布尔，
   画面左右镜像补偿）。语义同 `0x11`（内部经 `srcPath` 指向脚本包内素材，首次部署返回中提示需重启设备）。
-- `camRestore`：无参数，语义同 `0x12`（写 `enabled=0` 配置并重启 camera provider）。
 - `tap` / `longpress` / `swipe` 经 root shell `input tap` / `input swipe` 执行（坐标按
   `videoWidth/videoHeight` 与 `wm size` 实测分辨率换算）；`tts` / `accClick` 复用 `0x01` /
   `0x0D` 的设备端实现。
@@ -1083,55 +1071,10 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
   请控制单次执行时长。
 - **响应大小**: 日志上限 500 条 + 单条 200 字符，通常远小于 65535 字节单帧上限；
   极端超长仍由帧层兜底改写 `500 response too large: N`。
-- **root 依赖**: `tap` / `swipe` / `installApk` / `camReplace` / `camRestore` 等步骤经 root shell 执行，设备未 root 时
+- **root 依赖**: `tap` / `swipe` / `installApk` 等步骤经 root shell 执行，设备未 root 时
   对应步骤失败并在 `logs` 记录原因。
 
-### 3.12 摄像头画面替换 `0x11` / `0x12`
 
-把 PC 上的照片或视频作为假画面替换设备摄像头输出（hook 在系统相机 HAL 层，所有
-App 均看到替换画面），部署逻辑对齐 `替换摄像头画面` 仓库已验证的 `camreplace` 流程。
-
-#### 3.12.1 `0x11 CMD_CAM_REPLACE` 替换画面
-
-- 前置：PC 侧先把媒体文件 `adb push` 到设备固定地址 `files/cam_in/{文件名}`
-  （service 端点自动完成）；设备已 root（部署走 `su 0 sh -c`）。
-- 请求：`{"file":"xxx.jpg","cameraId":"2","mirror":false}`。
-  - `file`：仅文件名（不含路径），支持图片 `jpg/jpeg/png` 与视频 `mp4/mov/avi/webm/3gp/mkv`；
-  - `cameraId`：`0x02` 相机列表返回的 id，设备端映射 `/dev/video{cameraId}`
-    （外部相机 id 即 video 节点号）；节点不存在回 `400` 并附 `ls /dev/video*` 结果；
-  - `dev`：显式指定目标节点（如 `/dev/video2`），优先于 `cameraId`；
-  - `mirror`：镜像补偿（晨检 App 预览自带水平镜像时置 `true`）；
-  - `srcPath`：可选，媒体文件设备端绝对路径（绕过 `files/cam_in/` 查找，离线脚本
-    `camReplace` 步骤经此传入脚本包内 `media/` 素材；PC 直发不需要）。
-- 设备端流程：媒体转 640x480 JPEG 帧流（图片 1 帧 / 视频 15fps 最多 600 帧）→
-  从 APK assets 解出 `camhook.so` → root 部署（remount /vendor、复制 so、首次安装往
-  `/vendor/etc/init/android.hardware.camera.provider@2.4-external-service.rc` 插
-  `setenv LD_PRELOAD`、写 `/dev/camhook.conf` 与 `/dev/camhook.stream`）→
-  rc 已含 LD_PRELOAD 时 `kill $(pgrep -f external-service)` 重启 provider 生效。
-- 应答帧 `0x91`，`data` 为 `{dev,frames,streamSize,mirror,rebootRequired,deployOutput,restartOutput?,status}`；
-  `rebootRequired=true` 表示首次安装（rc 写入了 LD_PRELOAD），**必须重启设备后再执行一次
-  替换**才能生效。
-
-#### 3.12.2 `0x12 CMD_CAM_RESTORE` 恢复真实画面
-
-- 请求 `{}`；设备端写 `enabled=0` 的 `/dev/camhook.conf` 并重启 camera provider。
-- 应答帧 `0x92`，`data` 为 `{conf,output}`。
-
-#### service 端串联端点（`routes/probe.py`）
-
-- `POST /api/probe/cam-replace` `{"deviceId":"...","filePath":"D:\\pic\\a.jpg","cameraId":"2","mirror":false}`
-  —— 校验本地文件与扩展名后 `adb push` 到 `files/cam_in/` 再发 `0x11`；
-  成功后删除设备端源文件；响应超时放宽为 `CAM_RESPONSE_TIMEOUT = 300s`（视频转码可能超过
-  默认 `RESPONSE_TIMEOUT = 120s`）。
-- `POST /api/probe/cam-restore` `{"deviceId":"..."}` —— 发 `0x12`。
-
-#### 注意
-
-- **root 依赖**：部署与恢复均经 `su 0 sh -c` 执行，设备未 root 时失败。
-- **首次安装**：rc 未含 `LD_PRELOAD` 时必须重启设备（provider 只在启动时读取 `LD_PRELOAD`）。
-- **执行超时**：service 端对 `0x11` 使用 300s 响应超时，视频转码（600 帧）+ 部署可能耗时较长。
-
-### 3.13 错误码总表
 
 | `code` | 含义 | `data` | 典型 `message` |
 | --- | --- | --- | --- |

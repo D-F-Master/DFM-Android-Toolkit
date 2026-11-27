@@ -159,8 +159,6 @@ const SCRIPT_ADB_STEPS: Array<{ type: string; label: string; icon: string }> = [
   { type: 'sleep', label: '固定延时', icon: '⏳' },
   { type: 'shell', label: '执行Shell', icon: '💻' },
   { type: 'screenshot', label: '截图存档', icon: '📸' },
-  { type: 'camReplace', label: '替换摄像头画面', icon: '🎥' },
-  { type: 'camRestore', label: '恢复真实画面', icon: '📷' },
 ]
 
 // 手势类步骤（手动添加：坐标默认屏幕中心，开启「显示步骤」后在画面上拖动标记调整）
@@ -261,9 +259,6 @@ const onScriptBranchActionChange = (branch: any, idx: number) => {
     if (branch[key] === undefined) branch[key] = defaults[key]
   }
   if (branch.action === 'installApk' && scriptApkOptions.value.length === 0) fetchScriptApks()
-  if (branch.action === 'camReplace' && scriptCamMediaOptions.value.length === 0) fetchScriptCamMedia()
-  // video 节点依赖当前设备，每次进入 camReplace 配置都刷新一次
-  if (branch.action === 'camReplace') fetchScriptCamDevNodes()
   if (['startApp', 'stopApp', 'uninstallApp'].includes(branch.action) && scriptAppPackages.value.length === 0) fetchScriptApps()
   if (branch.action === 'waitFor' && scriptTemplateOptions.value.length === 0) fetchScriptTemplates()
 }
@@ -281,83 +276,6 @@ const fetchScriptApks = async () => {
     /* APK 列表拉取失败不阻断脚本编辑 */
   } finally {
     scriptApkLoading.value = false
-  }
-}
-
-// 摄像头替换素材列表（替换摄像头画面步骤的下拉数据源；图片/视频，存于服务端 media 素材库）
-const scriptCamMediaOptions = ref<Array<{ name: string; size: number }>>([])
-const scriptCamMediaLoading = ref(false)
-
-const fetchScriptCamMedia = async () => {
-  scriptCamMediaLoading.value = true
-  try {
-    const res = await axios.post(`${API_BASE.value}/api/device/script/list-media`)
-    if (res.data.code === 200) scriptCamMediaOptions.value = res.data.data || []
-  } catch {
-    /* 素材列表拉取失败不阻断脚本编辑 */
-  } finally {
-    scriptCamMediaLoading.value = false
-  }
-}
-
-// 上传摄像头替换素材（图片/视频）到服务端素材库，供 camReplace 步骤选择
-const uploadScriptCamMedia = () => {
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = 'image/jpeg,image/png,video/*,.mkv'
-  input.onchange = async () => {
-    const file = input.files?.[0]
-    if (!file) return
-    scriptCamMediaLoading.value = true
-    try {
-      const form = new FormData()
-      form.append('media', file)
-      const res = await axios.post(`${API_BASE.value}/api/device/script/upload-media`, form)
-      if (res.data.code !== 200) {
-        showNotification('上传素材失败: ' + (res.data.message || '未知错误'), 'error')
-        return
-      }
-      await fetchScriptCamMedia()
-      showNotification(`已上传摄像头素材「${res.data.data.name}」`, 'success')
-    } catch (error: any) {
-      showNotification('上传素材失败: ' + (error?.response?.data?.message || error.message), 'error')
-    } finally {
-      scriptCamMediaLoading.value = false
-    }
-  }
-  input.click()
-}
-
-// video 节点列表（替换摄像头画面步骤的下拉数据源；探针 0x08 关键字 ls /dev/video* 从设备实时获取，
-// 不用 0x02 相机列表：USB 相机可能不在 camera2 枚举里，cameraId 与 video 节点号也不一定对应）
-const scriptCamDevOptions = ref<string[]>([])
-const scriptCamDevLoading = ref(false)
-
-const fetchScriptCamDevNodes = async () => {
-  if (!selectedDevice.value) {
-    showNotification('请先选择设备后再获取摄像头节点', 'error')
-    return
-  }
-  scriptCamDevLoading.value = true
-  try {
-    const res = await axios.post(`${API_BASE.value}/api/probe/message`, {
-      deviceId: selectedDevice.value,
-      cmd: 0x08,
-      data: { command: 'ls /dev/video*', root: true, timeout: 30 }
-    }, { timeout: 60000 })
-    const d = res.data
-    if (d?.code !== 200 || d?.data?.connected !== true) throw new Error(d?.message || '通讯失败')
-    const r = d.data.response || {}
-    if (r.code !== 200) throw new Error(r.message || '设备返回错误')
-    const nodes = String(r.data?.stdout || '').match(/\/dev\/video\d+/g) || []
-    if (nodes.length === 0) {
-      showNotification('设备上未找到 /dev/video* 节点' + (r.data?.stderr ? '：' + r.data.stderr : ''), 'error')
-    }
-    scriptCamDevOptions.value = nodes
-  } catch (error: any) {
-    showNotification('获取摄像头节点失败: ' + (error?.response?.data?.message || error.message), 'error')
-  } finally {
-    scriptCamDevLoading.value = false
   }
 }
 
@@ -469,8 +387,6 @@ const scriptAdbStepDefaults = (type: string): Record<string, any> => {
     case 'sleep': return { seconds: 3 }
     case 'shell': return { command: '', timeout: 60 }
     case 'screenshot': return { label: '' }
-    case 'camReplace': return { file: scriptCamMediaOptions.value[0]?.name || '', dev: '', mirror: false }
-    case 'camRestore': return {}
     default: return {}
   }
 }
@@ -1416,14 +1332,6 @@ const addScriptAdbStep = (type: string) => {
   if (type === 'installApk' && scriptApkOptions.value.length === 0) {
     fetchScriptApks()
   }
-  // 替换摄像头画面步骤用素材列表做下拉
-  if (type === 'camReplace' && scriptCamMediaOptions.value.length === 0) {
-    fetchScriptCamMedia()
-  }
-  // video 节点依赖当前设备，每次添加 camReplace 步骤都刷新一次
-  if (type === 'camReplace') {
-    fetchScriptCamDevNodes()
-  }
   // 应用管理类步骤用应用列表做下拉：进脚本页时可能列表还是旧的（刚卸载过应用），刷新一次
   if (type === 'startApp' || type === 'stopApp' || type === 'uninstallApp') {
     fetchScriptApps()
@@ -1669,7 +1577,6 @@ const importScriptFromZip = () => {
       const extras: string[] = []
       if (d.apkNames?.length) extras.push(`APK ${d.apkNames.length} 个`)
       if (d.templateNames?.length) extras.push(`模板图 ${d.templateNames.length} 张`)
-      if (d.mediaNames?.length) extras.push(`摄像头素材 ${d.mediaNames.length} 个`)
       showNotification(
         `已导入脚本「${d.name}」（${d.stepCount} 个步骤${extras.length ? '，含' + extras.join('和') : ''}）${d.overwritten ? '，已覆盖同名脚本' : ''}`,
         'success'
@@ -1964,7 +1871,6 @@ const repoExportScript = (s: any, parent: RepoDirNode) => {
       const parts = [`脚本「${s.name}」导出成功: ${info.path}`, `大小 ${formatBytes(info.size)}`]
       if (info.apkNames?.length) parts.push(`含 APK：${info.apkNames.join('、')}`)
       if (info.templateNames?.length) parts.push(`含模板图：${info.templateNames.join('、')}`)
-      if (info.mediaNames?.length) parts.push(`含摄像头素材：${info.mediaNames.join('、')}`)
       showNotification(parts.join('\n'), 'success')
     }).catch((error: any) => {
       showNotification('导出失败: ' + (error?.response?.data?.message || error.message), 'error')
@@ -2489,7 +2395,7 @@ onUnmounted(() => {
                             class="script-mini-btn"
                             @click="importScriptFromZip"
                             :disabled="scriptSaving || scriptRunning"
-                            title="从导出的 zip 包导入（脚本 + 引用的 APK/模板图/摄像头素材）"
+                            title="从导出的 zip 包导入（脚本 + 引用的 APK/模板图）"
                           >导入</button>
                           <button
                             class="script-mini-btn"
@@ -2692,25 +2598,6 @@ onUnmounted(() => {
                                   <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
                                 </el-select>
                               </div>
-                              <div v-if="step.onTrue.action === 'camReplace'" class="script-config-row">
-                                <span>素材文件</span>
-                                <el-select v-model="step.onTrue.file" class="ep-config-select" placeholder="选择图片/视频素材" :loading="scriptCamMediaLoading">
-                                  <el-option v-for="m in scriptCamMediaOptions" :key="m.name" :value="m.name" :label="m.name" />
-                                </el-select>
-                                <button class="script-mini-btn" @click="uploadScriptCamMedia" :disabled="scriptCamMediaLoading" title="上传图片/视频到素材库">上传</button>
-                              </div>
-                              <div v-if="step.onTrue.action === 'camReplace'" class="script-config-row">
-                                <span>video 节点</span>
-                                <el-select v-model="step.onTrue.dev" class="ep-config-select" placeholder="自动探测" :loading="scriptCamDevLoading" clearable>
-                                  <el-option value="" label="自动探测 /dev/videoN" />
-                                  <el-option v-for="n in scriptCamDevOptions" :key="n" :value="n" :label="n" />
-                                </el-select>
-                                <button class="script-mini-btn" @click="fetchScriptCamDevNodes" :disabled="!selectedDevice || scriptCamDevLoading" title="从设备实时获取 /dev/video* 节点">刷新</button>
-                              </div>
-                              <div v-if="step.onTrue.action === 'camReplace'" class="script-config-row">
-                                <span>镜像补偿</span>
-                                <el-checkbox v-model="step.onTrue.mirror">画面左右镜像（预览自带镜像时勾选）</el-checkbox>
-                              </div>
                               <div v-if="step.onTrue.action === 'deleteFolder'" class="script-config-row">
                                 <span>文件夹路径</span>
                                 <el-input v-model="step.onTrue.path" class="ep-config-input" placeholder="/sdcard/xxx" />
@@ -2861,25 +2748,6 @@ onUnmounted(() => {
                                   <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
                                 </el-select>
                               </div>
-                              <div v-if="step.onFalse.action === 'camReplace'" class="script-config-row">
-                                <span>素材文件</span>
-                                <el-select v-model="step.onFalse.file" class="ep-config-select" placeholder="选择图片/视频素材" :loading="scriptCamMediaLoading">
-                                  <el-option v-for="m in scriptCamMediaOptions" :key="m.name" :value="m.name" :label="m.name" />
-                                </el-select>
-                                <button class="script-mini-btn" @click="uploadScriptCamMedia" :disabled="scriptCamMediaLoading" title="上传图片/视频到素材库">上传</button>
-                              </div>
-                              <div v-if="step.onFalse.action === 'camReplace'" class="script-config-row">
-                                <span>video 节点</span>
-                                <el-select v-model="step.onFalse.dev" class="ep-config-select" placeholder="自动探测" :loading="scriptCamDevLoading" clearable>
-                                  <el-option value="" label="自动探测 /dev/videoN" />
-                                  <el-option v-for="n in scriptCamDevOptions" :key="n" :value="n" :label="n" />
-                                </el-select>
-                                <button class="script-mini-btn" @click="fetchScriptCamDevNodes" :disabled="!selectedDevice || scriptCamDevLoading" title="从设备实时获取 /dev/video* 节点">刷新</button>
-                              </div>
-                              <div v-if="step.onFalse.action === 'camReplace'" class="script-config-row">
-                                <span>镜像补偿</span>
-                                <el-checkbox v-model="step.onFalse.mirror">画面左右镜像（预览自带镜像时勾选）</el-checkbox>
-                              </div>
                               <div v-if="step.onFalse.action === 'deleteFolder'" class="script-config-row">
                                 <span>文件夹路径</span>
                                 <el-input v-model="step.onFalse.path" class="ep-config-input" placeholder="/sdcard/xxx" />
@@ -2969,25 +2837,6 @@ onUnmounted(() => {
                               <el-select v-model="step.apkName" class="ep-config-select" placeholder="选择 APK" :loading="scriptApkLoading">
                                 <el-option v-for="a in scriptApkOptions" :key="a.name" :value="a.name" :label="a.name" />
                               </el-select>
-                            </div>
-                            <div v-if="step.type === 'camReplace'" class="script-config-row">
-                              <span>素材文件</span>
-                              <el-select v-model="step.file" class="ep-config-select" placeholder="选择图片/视频素材" :loading="scriptCamMediaLoading">
-                                <el-option v-for="m in scriptCamMediaOptions" :key="m.name" :value="m.name" :label="m.name" />
-                              </el-select>
-                              <button class="script-mini-btn" @click="uploadScriptCamMedia" :disabled="scriptCamMediaLoading" title="上传图片/视频到素材库">上传</button>
-                            </div>
-                            <div v-if="step.type === 'camReplace'" class="script-config-row">
-                              <span>video 节点</span>
-                              <el-select v-model="step.dev" class="ep-config-select" placeholder="自动探测" :loading="scriptCamDevLoading" clearable>
-                                <el-option value="" label="自动探测 /dev/videoN" />
-                                <el-option v-for="n in scriptCamDevOptions" :key="n" :value="n" :label="n" />
-                              </el-select>
-                              <button class="script-mini-btn" @click="fetchScriptCamDevNodes" :disabled="!selectedDevice || scriptCamDevLoading" title="从设备实时获取 /dev/video* 节点">刷新</button>
-                            </div>
-                            <div v-if="step.type === 'camReplace'" class="script-config-row">
-                              <span>镜像补偿</span>
-                              <el-checkbox v-model="step.mirror">画面左右镜像（预览自带镜像时勾选）</el-checkbox>
                             </div>
                             <div v-if="step.type === 'deleteFolder'" class="script-config-row">
                               <span>文件夹路径</span>

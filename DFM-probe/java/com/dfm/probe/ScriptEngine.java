@@ -25,7 +25,6 @@ import java.util.zip.ZipInputStream;
  * 脚本包由 PC 端 adb push 到固定地址 script_in/（应用外部私有目录下），
  * 解压到同层 script_store/<脚本名>/，布局与服务端导出一致：
  *   script.json + apk/（脚本引用的安装包）+ templates/（模板图，设备端暂不使用）
- *   + media/（摄像头替换素材，camReplace 步骤用）。
  * 执行引擎在设备本地复刻服务端回放逻辑：goto/stop/fail 分支、runScript 嵌套、
  * count/interval 每步骤循环；注入类步骤用 shell input 命令实现（设备已 root）。
  * 模板匹配类步骤（waitFor / condition-template）设备端没有 OpenCV，明确报"不支持"，
@@ -305,8 +304,7 @@ public class ScriptEngine {
                 || "stopApp".equals(type) || "uninstallApp".equals(type)
                 || "keyevent".equals(type) || "volume".equals(type)
                 || "reboot".equals(type) || "tts".equals(type)
-                || "accClick".equals(type)
-                || "camReplace".equals(type) || "camRestore".equals(type);
+                || "accClick".equals(type);
     }
 
     /** 执行单个步骤并记日志；ok=false 抛 StepFail 中止脚本。 */
@@ -338,7 +336,7 @@ public class ScriptEngine {
         if ("tap".equals(type)) {
             int x = Math.round(optFloat(step, "x1") * sx);
             int y = Math.round(optFloat(step, "y1") * sy);
-            ShellResult r = shell("input tap " + x + " " + y, false, 15);
+            ShellResult r = shell("input tap " + x + " " + y, true, 15);
             checkExit(r, "input tap");
             return "点击 (" + x + "," + y + ")";
         }
@@ -347,7 +345,7 @@ public class ScriptEngine {
             int y = Math.round(optFloat(step, "y1") * sy);
             int duration = Math.max(100, step.optInt("duration", 800));
             ShellResult r = shell("input swipe " + x + " " + y + " " + x + " " + y + " " + duration,
-                    false, 15);
+                    true, 15);
             checkExit(r, "input longpress");
             return "长按 (" + x + "," + y + ") " + duration + "ms";
         }
@@ -358,7 +356,7 @@ public class ScriptEngine {
             int y2 = Math.round(optFloat(step, "y2", optFloat(step, "y1")) * sy);
             int duration = Math.max(100, step.optInt("duration", 300));
             ShellResult r = shell("input swipe " + x1 + " " + y1 + " " + x2 + " " + y2 + " " + duration,
-                    false, 15);
+                    true, 15);
             checkExit(r, "input swipe");
             return "滑动 (" + x1 + "," + y1 + ")->(" + x2 + "," + y2 + ")";
         }
@@ -372,7 +370,7 @@ public class ScriptEngine {
                     throw new Exception("input text 仅支持 ASCII，文本含非 ASCII 字符（设备端不支持中文输入）");
                 }
             }
-            ShellResult r = shell("input text " + shellQuote(text), false, 15);
+            ShellResult r = shell("input text " + shellQuote(text), true, 15);
             checkExit(r, "input text");
             return "输入文本 " + text;
         }
@@ -426,7 +424,7 @@ public class ScriptEngine {
         }
         if ("keyevent".equals(type)) {
             int keycode = step.optInt("keycode", 0);
-            ShellResult r = shell("input keyevent " + keycode, false, 15);
+            ShellResult r = shell("input keyevent " + keycode, true, 15);
             checkExit(r, "input keyevent");
             return "按键 " + keycode;
         }
@@ -434,12 +432,12 @@ public class ScriptEngine {
             String action = step.optString("action", "up").trim();
             int stream = streamType(step.optString("stream", "media"));
             if ("up".equals(action)) {
-                ShellResult r = shell("input keyevent KEYCODE_VOLUME_UP", false, 15);
+                ShellResult r = shell("input keyevent KEYCODE_VOLUME_UP", true, 15);
                 checkExit(r, "volume up");
                 return "音量加（stream " + stream + "）";
             }
             if ("down".equals(action)) {
-                ShellResult r = shell("input keyevent KEYCODE_VOLUME_DOWN", false, 15);
+                ShellResult r = shell("input keyevent KEYCODE_VOLUME_DOWN", true, 15);
                 checkExit(r, "volume down");
                 return "音量减（stream " + stream + "）";
             }
@@ -472,43 +470,6 @@ public class ScriptEngine {
             return "无障碍点击成功（id=" + step.optString("id", "-")
                     + " text=" + step.optString("text", "-")
                     + " desc=" + step.optString("desc", "-") + "）";
-        }
-        if ("camReplace".equals(type)) {
-            String file = step.optString("file", "").trim();
-            if (file.isEmpty() || file.contains("/") || file.contains("\\") || file.contains("..")) {
-                throw new Exception("file 仅支持 media/ 下的文件名: " + file);
-            }
-            File media = new File(new File(scriptDir, "media"), file);
-            if (!media.isFile()) {
-                throw new Exception("脚本包内找不到媒体文件: media/" + file);
-            }
-            String dev = step.optString("dev", "").trim();
-            if (dev.isEmpty()) {
-                // 留空自动探测：取 ls /dev/video* 的第一个节点（外部相机节点通常唯一）
-                ShellResult r = shell("ls /dev/video* 2>/dev/null", true, 15);
-                Matcher m = Pattern.compile("/dev/video\\d+").matcher(r.stdout);
-                if (!m.find()) {
-                    throw new Exception("设备上没有可用的 video 节点（ls /dev/video* 为空）");
-                }
-                dev = m.group();
-            }
-            if (!dev.matches("/dev/video\\d+")) {
-                throw new Exception("dev 必须为 /dev/video<数字>: " + dev);
-            }
-            JSONObject req = new JSONObject();
-            req.put("file", file);
-            req.put("srcPath", media.getAbsolutePath());
-            req.put("dev", dev);
-            req.put("mirror", step.optBoolean("mirror", false));
-            // camReplace 抛异常即步骤失败（素材缺失/节点不存在/转码0帧等）；成功返回部署详情
-            JSONObject data = probe.camReplace(req);
-            return "替换摄像头画面 dev=" + data.optString("dev", dev)
-                    + " 帧=" + data.optInt("frames", 0)
-                    + (data.optBoolean("rebootRequired", false) ? "（首次部署已写入 RC，需重启设备生效）" : "");
-        }
-        if ("camRestore".equals(type)) {
-            probe.camRestore();
-            return "已恢复摄像头真实画面";
         }
         throw new Exception("未知步骤类型: " + type);
     }
