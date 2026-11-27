@@ -1533,16 +1533,36 @@ const scriptOnKeyDown = (ev: KeyboardEvent) => {
     const tag = el.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return
   }
-  // 只处理可见字符与退格/回车，其余（方向键、F1 等）交给默认行为
+  // 可见字符、退格/回车，以及屏幕预览里的左右方向键（映射 Android DPAD_LEFT/RIGHT）；其余交给默认行为
   const key = ev.key
   const isBackspace = key === 'Backspace'
   const isEnter = key === 'Enter'
+  const isLeft = key === 'ArrowLeft'
+  const isRight = key === 'ArrowRight'
   const isPrintable = key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey
 
-  if (!isPrintable && !isBackspace && !isEnter) return
+  if (!isPrintable && !isBackspace && !isEnter && !isLeft && !isRight) return
 
-  // 吞掉默认行为，避免触发页面快捷键（Ctrl 组合已在上面排除）
+  // 吞掉默认行为，避免页面滚动；方向键按住产生的重复事件不重复发送/记录
   ev.preventDefault()
+  if ((isLeft || isRight) && ev.repeat) return
+
+  if (isLeft || isRight) {
+    scriptFlushTyping()
+    const keycode = isLeft ? 21 : 22
+    scriptSendKey(isLeft ? 'left' : 'right')
+    if (scriptRecording.value) {
+      const step = {
+        type: 'keyevent' as const,
+        keycode,
+        interval: scriptOpConfig.value.tap.interval,
+        count: 1,
+      }
+      scriptSteps.value.push(step)
+      showNotification(`已记录第 ${scriptSteps.value.length} 步：${scriptStepLabel(step)}`, 'info')
+    }
+    return
+  }
 
   if (isBackspace) {
     // 退格发给设备；录制时同步删掉步骤里最后一个字符
@@ -1612,10 +1632,10 @@ const scriptOnKeyDown = (ev: KeyboardEvent) => {
 }
 
 // 特殊键：走 key 通道（后端 inject_keycode）
-const scriptSendKey = (name: 'backspace' | 'enter') => {
+const scriptSendKey = (name: 'backspace' | 'enter' | 'left' | 'right') => {
   if (!scriptWs || scriptWs.readyState !== WebSocket.OPEN) return
-  // Android KeyEvent：BACKSPACE=67，ENTER=66
-  const code = name === 'backspace' ? 67 : 66
+  // Android KeyEvent：BACKSPACE=67，ENTER=66，DPAD_LEFT=21，DPAD_RIGHT=22
+  const code = name === 'backspace' ? 67 : name === 'left' ? 21 : name === 'right' ? 22 : 66
   scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 0 } }))
   scriptWs.send(JSON.stringify({ type: 'mirror', event: { kind: 'key', keycode: code, action: 1 } }))
 }
@@ -1635,6 +1655,9 @@ const scriptOnPointerDown = (ev: PointerEvent) => {
 
   // 点画面即接管键盘：之后敲电脑键盘的文字会实时发到设备并在录制时记为输入步骤
   scriptKeyboardActive.value = true
+  // 点画面 preventDefault 不转移焦点；若焦点还停在 INPUT/SELECT 上，keydown 会被输入过滤规则吞掉，主动 blur
+  const focused = document.activeElement as HTMLElement | null
+  focused?.blur?.()
   // 点别处意味着上一段输入结束
   scriptFlushTyping()
 

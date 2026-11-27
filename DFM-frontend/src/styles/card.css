@@ -1,0 +1,31 @@
+/* 功能页通用卡片：所有以 .card 堆叠内容的功能页共用 */
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+.card-icon {
+  display: flex;
+  align-items: center;
+  color: #4caf50;
+}
+
+.card-body {
+  padding: 16px;
+}

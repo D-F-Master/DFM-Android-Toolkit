@@ -1,0 +1,78 @@
+{
+  "name": "门禁清除特征",
+  "repeat": 1,
+  "steps": [
+    {
+      "type": "condition",
+      "kind": "accClick",
+      "negate": false,
+      "onTrue": {
+        "action": "continue"
+      },
+      "onFalse": {
+        "action": "goto",
+        "target": 6
+      },
+      "interval": 3000,
+      "count": 1,
+      "id": "com.yqsh.entrance:id/top_logo_iv",
+      "text": "",
+      "desc": ""
+    },
+    {
+      "type": "accClick",
+      "text": "",
+      "interval": 500,
+      "count": 1,
+      "id": "com.yqsh.entrance:id/dia_content",
+      "desc": ""
+    },
+    {
+      "type": "input",
+      "x1": 0,
+      "y1": 0,
+      "text": "76171827981",
+      "interval": 500,
+      "count": 1
+    },
+    {
+      "type": "accClick",
+      "text": "确定",
+      "interval": 500,
+      "count": 1,
+      "id": "com.yqsh.entrance:id/d_fix",
+      "desc": ""
+    },
+    {
+      "type": "condition",
+      "kind": "accClick",
+      "negate": false,
+      "onTrue": {
+        "action": "stop"
+      },
+      "onFalse": {
+        "action": "fail"
+      },
+      "interval": 1000,
+      "count": 1,
+      "id": "",
+      "text": "清除并重新下载特征",
+      "desc": ""
+    },
+    {
+      "type": "stopApp",
+      "packageName": "com.yqsh.entrance",
+      "interval": 500,
+      "count": 1
+    },
+    {
+      "type": "startApp",
+      "packageName": "com.yqsh.entrance",
+      "activity": "",
+      "interval": 500,
+      "count": 1
+    }
+  ],
+  "videoWidth": 800,
+  "videoHeight": 1280
+}

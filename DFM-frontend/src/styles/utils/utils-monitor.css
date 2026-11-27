@@ -1,0 +1,252 @@
+:deep(.monitor-error) {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #ffebee;
+  border: 1px solid #ffcdd2;
+  border-radius: 6px;
+  color: #c62828;
+  font-size: 13px;
+}
+
+:deep(.monitor-usage) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+:deep(.gauge-chart-wide) {
+  width: 100%;
+  height: 190px;
+}
+
+/* 性能监控第二行：CPU 频率 | 内存/磁盘 两列布局 */
+:deep(.monitor-row) {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+:deep(.gauge-chart) {
+  width: 100%;
+  height: 160px;
+}
+
+:deep(.gauge-detail-row) {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+:deep(.gauge-detail) {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  background: #f8f9fb;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #666;
+}
+
+:deep(.detail-title) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 2px;
+}
+
+:deep(.monitor-empty) {
+  color: #999;
+  font-size: 12px;
+}
+
+:deep(.monitor-live-tag) {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ===== 视图切换开关（折线图 / TOP进程） ===== */
+:deep(.rate-view-switch) {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+:deep(.rate-view-switch button) {
+  padding: 3px 10px;
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+:deep(.rate-view-switch button + button) {
+  border-left: 1px solid #e0e0e0;
+}
+
+:deep(.rate-view-switch button.active) {
+  background: #4caf50;
+  color: #fff;
+}
+
+/* ===== TOP 进程表格 ===== */
+:deep(.top-table-wrap) {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+}
+
+:deep(.top-table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.top-table th,
+:deep(.top-table td) {
+  padding: 6px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+:deep(.top-table thead th) {
+  position: sticky;
+  top: 0;
+  background: #f8f9fb;
+  color: #666;
+  font-weight: 600;
+  border-bottom: 1px solid #eef1f4;
+}
+
+:deep(.top-table tbody tr) {
+  border-bottom: 1px solid #f5f6f8;
+}
+
+:deep(.top-table tbody tr:last-child) {
+  border-bottom: none;
+}
+
+:deep(.top-cpu-high) {
+  color: #f44336;
+  font-weight: 600;
+}
+
+:deep(.top-cmd) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+:deep(.monitor-freq-info) {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: #888;
+}
+
+:deep(.rate-summary) {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+:deep(.rate-item) {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #f8f9fb;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+}
+
+:deep(.rate-label) {
+  font-size: 11px;
+  color: #999;
+}
+
+:deep(.rate-value) {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+}
+
+:deep(.rate-value.cpu) {
+  color: #4caf50;
+}
+
+:deep(.rate-value.down) {
+  color: #2196f3;
+}
+
+:deep(.rate-value.up) {
+  color: #ff9800;
+}
+
+:deep(.rate-chart) {
+  width: 100%;
+  height: 220px;
+}
+
+:deep(.core-chart) {
+  width: 100%;
+  height: 180px;
+}
+
+@media (max-width: 720px) {
+  :deep(.monitor-row) {
+    grid-template-columns: 1fr;
+  }
+
+  :deep(.gauge-detail-row) {
+    grid-template-columns: 1fr;
+  }
+
+  :deep(.rate-summary) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .gauge-detail,
+  :deep(.rate-item) {
+    background: #33363e;
+    border-color: #40434a;
+    color: #b0b0b0;
+  }
+
+  .detail-title,
+  :deep(.rate-value) {
+    color: #e0e0e0;
+  }
+
+  :deep(.monitor-error) {
+    background: #3a2426;
+    border-color: #5c3234;
+    color: #ef9a9a;
+  }
+
+  :deep(.monitor-live-tag) {
+    background: #2e3d31;
+    color: #81c784;
+  }
+
+  :deep(.monitor-freq-info) {
+    color: #999;
+  }
+}
+
+/* ==================== 模拟脚本页 ==================== */

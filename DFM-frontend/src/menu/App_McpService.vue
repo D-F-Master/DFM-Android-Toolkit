@@ -524,69 +524,10 @@ const openEndpoint = (endpoint: string) => {
   </div>
 </template>
 
+<style scoped src="../styles/page-shell.css"></style>
+<style scoped src="../styles/card-simple.css"></style>
+
 <style scoped>
-/* ===== 返回按钮 ===== */
-.back-button {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  background: rgba(128, 128, 128, 0.3);
-  color: white;
-  border: none;
-  border-radius: 50%;
-  cursor: pointer;
-  z-index: 100;
-  font-size: 18px;
-  line-height: 36px;
-  text-align: center;
-  transition: background 0.3s ease;
-}
-
-.back-button:hover {
-  background: rgba(128, 128, 128, 0.8);
-}
-
-.app {
-  position: relative;
-  width: 100%;
-  height: 100vh;
-  min-height: 544px;
-}
-
-.container {
-  display: flex;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #f0f2f5;
-}
-
-.content {
-  flex: 1;
-  padding: 16px;
-  overflow-y: auto;
-  height: 100%;
-  background: #f0f2f5;
-}
-
-/* ===== 卡片通用样式（匹配端口工具） ===== */
-.card {
-  background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  overflow: hidden;
-  margin-bottom: 12px;
-}
-
-.card-icon {
-  display: flex;
-  align-items: center;
-  color: #4caf50;
-}
-
 /* ===== 主操作按钮（绿色） ===== */
 .refresh-button,
 .upload-button {

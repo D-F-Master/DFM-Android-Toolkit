@@ -17,43 +17,68 @@ from config import create_app, check_tool_availability, logger, get_conf
 # ========== FastAPI 应用 ==========
 app = create_app()
 
-from config.html_config import router as html_config
+# ===== 路由按领域分组导入，顺序与注册顺序保持一致 =====
+# 静态页面（必须最后注册）
+from config.html_config import router as html_config_router
+
+# 1. 设备与网络工具
 from routes.adb_utils import router as adb_router
 from routes.port_utils import router as port_router
-from routes.common import router as common_router
 from routes.ip_utils import router as ip_router
-from routes.test_routes import router as test_router
+
+# 2. 文件解析与数据库
+from routes.jar_diff import router as jar_diff_router
+from routes.jar_edit import router as jar_edit_router
+from routes.sqlite_utils import router as sqlite_router
+
+# 3. 自动化与脚本
 from routes.remote_ws import router as remote_ws_router
 from routes.script import router as script_router
 from routes.serial import router as serial_router
 from routes.pipeline import router as pipeline_router
+
+# 4. 探针
 from routes.probe import router as probe_router
-from routes.jar_diff import router as jar_diff_router
-from routes.jar_edit import router as jar_edit_router
-from routes.sqlite_utils import router as sqlite_router
+
+# 5. MCP 与通知
 from routes.mcp_utils import router as mcp_router
 from routes.notify import router as notify_router
 
+# 6. 通用与测试
+from routes.common import router as common_router
+from routes.test_routes import router as test_router
+
+# ===== 路由注册：同类接口集中，静态页面兜底保持最后 =====
+# 1. 设备与网络工具
 app.include_router(adb_router)
 app.include_router(port_router)
-app.include_router(common_router)
 app.include_router(ip_router)
-app.include_router(test_router)
+
+# 2. 文件解析与数据库
 app.include_router(jar_diff_router)
 # jar_edit 需注册在 html_config 之前，否则会被其 /{full_path:path} 兜底路由拦截
 app.include_router(jar_edit_router)
 app.include_router(sqlite_router)
-app.include_router(mcp_router)
-app.include_router(notify_router)
 
-
+# 3. 自动化与脚本
 app.include_router(remote_ws_router)
 app.include_router(script_router)
 app.include_router(serial_router)
 app.include_router(pipeline_router)
+
+# 4. 探针
 app.include_router(probe_router)
 
-app.include_router(html_config)
+# 5. MCP 与通知
+app.include_router(mcp_router)
+app.include_router(notify_router)
+
+# 6. 通用与测试
+app.include_router(common_router)
+app.include_router(test_router)
+
+# 7. 静态页面兜底（必须最后注册）
+app.include_router(html_config_router)
 
 # ========== 获取配置 ==========
 CONF = get_conf()

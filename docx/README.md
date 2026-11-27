@@ -47,6 +47,7 @@ DFM-Android-Toolkit/
   npm run dev      # Vite，端口 5175
   npm run build    # 构建产物用于打包 upx（自动把 ESM 改为 defer 脚本，uTools 禁止 ESM）
   ```
+- **结构与分层**：目录结构、通用样式、composable 拆分与新增功能约定见 [DFM-frontend-README.md](DFM-frontend-README.md)。
 
 ### DFM-service — 本地服务端（后端）
 
@@ -54,6 +55,7 @@ DFM-Android-Toolkit/
 - **监听地址**：`conf/conf.json` 配置，默认 `0.0.0.0:3000`（接口文档：`http://localhost:3000/docs`）
 - **内置工具**：`lib/` 下自带 adb、scrcpy、aapt，无需配置系统环境变量；缺失时自动回退到系统 PATH
 - **静态托管**：前端构建产物放 `data/dist`，由服务端 SPA 兜底路由托管（桌面端窗口即加载该页面）
+- **结构与路由分组**：见 `DFM-service-README.md`（目录职责、按领域分组的路由注册顺序）
 - **启动**：
   ```bash
   cd DFM-service
@@ -109,13 +111,13 @@ DFM-Android-Toolkit/
 ## API 约定
 
 - 服务地址：`http://localhost:3000`，路由前缀 `/api`
-- 统一使用 **POST** 方法
+- 主要接口为 **POST**；另有 GET（`jardiff` / `jaredit` / `test`）与 WebSocket（`/ws/remote`）
 - 统一返回格式（信封靠约定，个别接口为 `{success, message, data}`）：
   ```json
   { "code": 200, "message": "success", "data": {} }
   ```
 - WebSocket：`/ws/remote` 批量投屏（JSON 控制帧 + 二进制 H.264 流）
-- 详细接口见 `DFM-service_API文档_v2.md`、`DFM-probe_接口文档.md`、`probe与service通讯协议.md`，或启动后的 Swagger UI
+- 详细接口见 `DFM-service-API文档_v2.md`、`DFM-probe_接口文档.md`、`probe与service通讯协议.md`，或启动后的 Swagger UI
 
 ## 使用流程
 

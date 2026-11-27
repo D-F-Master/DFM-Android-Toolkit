@@ -82,5 +82,17 @@
   "com.yqsh.myweb": "MyWeb",
   "com.yqsh.appstore": "一起生活应用商店",
   "com.example.usbmulticam": "USB 多路摄像头",
-  "com.embarcadero.SC": "SC"
+  "com.embarcadero.SC": "SC",
+  "com.artemis.helper": "Artemis Accessibility Helper",
+  "com.yqsh.dzc_ext_device.sample": "dzclibs sample",
+  "org.fdroid.fdroid": "F-Droid",
+  "com.example.ipcamera": "IP Camera",
+  "org.autojs.autoxjs.v7": "Autox.js v7",
+  "com.yqsh.upgrade": "upgrade",
+  "com.rkface.demo": "RK3568 人脸识别",
+  "com.yqsh.test.dish": "demo",
+  "com.yqsh.emquipmenttest": "设备测试",
+  "com.yqsh.camreplace": "摄像头画面替换",
+  "com.jvyuan.samplescale": "SampleScale",
+  "com.dfm.hands": "MediaPipe Hands"
 }

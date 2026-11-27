@@ -18,7 +18,9 @@
 
 ## 文档同步约定
 - `docx/` 是项目**唯一**文档目录；原组件目录下的重复文档已移除。新增、修改或删除接口/能力时，直接更新 `docx/` 下对应文档，避免代码与文档漂移。
-- HTTP API（`/api/...`、`/test/...`）与 WebSocket（如 `/ws/remote`）：更新 `docx/DFM-service_API文档_v2.md`。
+- DFM-service 专属文档统一使用 `DFM-service-` 前缀，例如 `DFM-service-README.md`、`DFM-service-API文档_v2.md`。
+- HTTP API（`/api/...`、`/test/...`）与 WebSocket（如 `/ws/remote`）：更新 `docx/DFM-service-API文档_v2.md`。
+- DFM-service 目录结构 / 路由分组 / 启动方式变化：更新 `docx/DFM-service-README.md`。
 - Probe 命令字/能力/帧协议：更新 `docx/DFM-probe_接口文档.md` 与 `docx/probe与service通讯协议.md`。
 - MCP 服务接口：更新 `docx/DFM-MCP_*_README.md`。
 - 架构、模块、配置或整体功能变化：更新 `docx/README.md`、`docx/项目架构总览.md`。

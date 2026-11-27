@@ -1,0 +1,258 @@
+:deep(.file-path-text) {
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-right: 8px;
+}
+
+:deep(.file-toolbar) {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+:deep(.toolbar-btn) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #555;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+:deep(.toolbar-btn:hover) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+:deep(.toolbar-btn:active) {
+  background: #c8e6c9;
+}
+
+:deep(.toolbar-btn:disabled) {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+:deep(.toolbar-btn:disabled:hover) {
+  background: #fff;
+  border-color: #e8eaed;
+  color: #555;
+  transform: none;
+}
+
+:deep(.file-item) {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid #f5f5f5;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+:deep(.file-item:first-child) {
+  border-top: none;
+}
+
+:deep(.file-item:hover) {
+  background: #f0f7f0;
+}
+
+:deep(.file-item-icon) {
+  flex-shrink: 0;
+  margin-right: 8px;
+  font-size: 16px;
+}
+
+/* 文件多选：勾选列与批量操作条 */
+:deep(.file-item-check) {
+  flex-shrink: 0;
+  width: 24px;
+  margin-right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+:deep(.file-item-check input[type="checkbox"]) {
+  cursor: pointer;
+  accent-color: #2e7d32;
+}
+
+:deep(.file-batch-info) {
+  align-self: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #2e7d32;
+}
+
+:deep(.toolbar-btn.danger:hover) {
+  background: #ffebee;
+  border-color: #ef9a9a;
+  color: #c62828;
+}
+
+:deep(.file-item-name) {
+  flex: 1;
+  font-size: 13px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+:deep(.file-item-name.is-dir) {
+  font-weight: 500;
+  color: #1565c0;
+}
+
+:deep(.file-item-size) {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #999;
+  margin: 0 8px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  min-width: 52px;
+  text-align: right;
+}
+
+/* 文件列表排序表头与修改时间列 */
+:deep(.file-list-header) {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 11px;
+  color: #999;
+  user-select: none;
+}
+
+:deep(.file-sortable) {
+  cursor: pointer;
+}
+
+:deep(.file-sortable:hover) {
+  color: #1565c0;
+}
+
+:deep(.file-sortable.sort-active) {
+  color: #1565c0;
+  font-weight: 500;
+}
+
+:deep(.file-item-time) {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #999;
+  font-family: 'Consolas', 'Monaco', monospace;
+  min-width: 110px;
+  text-align: right;
+}
+
+:deep(.device-item) {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+:deep(.device-item-info) {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+/* 断开全部：设备列表末尾的常驻按钮，宽度与设备项一致 */
+:deep(.disconnect-all-btn) {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #f44336;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  flex-shrink: 0; /* 列表滚动时按钮不被压缩，始终完整显示在末尾 */
+}
+
+:deep(.disconnect-all-btn:hover:not(:disabled)) {
+  background-color: #d32f2f;
+}
+
+:deep(.disconnect-all-btn:disabled) {
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
+
+:deep(.disconnect-btn) {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #e53935;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+:deep(.disconnect-btn:hover) {
+  background: #ffebee;
+  border-color: #ef9a9a;
+}
+
+:deep(.file-item-actions) {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+:deep(button.file-act-btn) {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333 !important;
+  transition: all 0.2s ease;
+}
+
+:deep(button.file-act-btn.export:hover) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+}
+
+:deep(button.file-act-btn.delete:hover) {
+  background: #ffebee;
+  border-color: #ef9a9a;
+}
+
+/* ===== 批量操作页面 ===== */

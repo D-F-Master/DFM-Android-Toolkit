@@ -1,0 +1,14 @@
+{
+  "name": "tts播报成功",
+  "repeat": 1,
+  "steps": [
+    {
+      "type": "tts",
+      "text": "判断成功",
+      "interval": 500,
+      "count": 1
+    }
+  ],
+  "videoWidth": 800,
+  "videoHeight": 1280
+}

@@ -1,0 +1,67 @@
+{
+  "name": "自动跑晨检",
+  "repeat": 1,
+  "steps": [
+    {
+      "type": "condition",
+      "kind": "accExists",
+      "negate": false,
+      "onTrue": {
+        "action": "camReplace",
+        "file": "d9ed7e09-119f-41be-a4ad-f4ef2243035b.jpg",
+        "dev": "/dev/video2",
+        "mirror": false
+      },
+      "onFalse": {
+        "action": "continue"
+      },
+      "interval": 1000,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000,
+      "id": "com.yqsh.morningcheck:id/tvFace",
+      "text": "-人脸识别-",
+      "desc": ""
+    },
+    {
+      "type": "camReplace",
+      "file": "d9ed7e09-119f-41be-a4ad-f4ef2243035b.jpg",
+      "dev": "/dev/video2",
+      "mirror": true,
+      "interval": 500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    },
+    {
+      "type": "condition",
+      "kind": "accExists",
+      "negate": false,
+      "onTrue": {
+        "action": "continue"
+      },
+      "onFalse": {
+        "action": "continue"
+      },
+      "interval": 1000,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000,
+      "id": "com.yqsh.morningcheck:id/tvChecking",
+      "text": "检测中...",
+      "desc": ""
+    },
+    {
+      "type": "camReplace",
+      "file": "de96c859-3019-4806-a735-b36c07873bc1_pictureBackImg.jpg",
+      "dev": "/dev/video4",
+      "mirror": false,
+      "interval": 500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    }
+  ],
+  "videoWidth": 1280,
+  "videoHeight": 720
+}

@@ -1,0 +1,222 @@
+:deep(.keys-page) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+:deep(.scrcpy-card) {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+:deep(.card-header) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+:deep(.card-icon) {
+  display: flex;
+  align-items: center;
+  color: #4caf50;
+}
+
+/* 卡片头部右侧操作按钮（如设备信息「复制」） */
+:deep(.card-header-action) {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  color: #555;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+:deep(.card-header-action:hover:not(:disabled)) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}
+
+:deep(.card-header-action:active:not(:disabled)) {
+  background: #c8e6c9;
+}
+
+:deep(.card-header-action:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:deep(.card-body) {
+  padding: 16px;
+}
+
+/* ===== 投屏启动按钮 ===== */
+:deep(.scrcpy-btn) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background: linear-gradient(135deg, #4caf50, #43a047);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 16px rgba(76, 175, 80, 0.3);
+}
+
+:deep(.scrcpy-btn:hover) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+  background: linear-gradient(135deg, #43a047, #388e3c);
+}
+
+:deep(.scrcpy-btn:active) {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}
+
+/* ===== 按键网格 ===== */
+:deep(.key-grid) {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+:deep(.key-btn) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #f5f7fa;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: #444;
+  font-family: inherit;
+  transition: all 0.25s ease;
+}
+
+:deep(.key-btn:hover) {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(76, 175, 80, 0.12);
+}
+
+:deep(.key-btn:active) {
+  transform: translateY(0);
+  background: #c8e6c9;
+}
+
+:deep(.key-btn svg) {
+  color: #666;
+}
+
+:deep(.key-btn:hover svg) {
+  color: #4caf50;
+}
+
+/* ===== 重启按钮 ===== */
+:deep(.restart-btn) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px;
+  background: #fff3f3;
+  border: 1px solid #ffcdd2;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #c62828;
+  font-family: inherit;
+  transition: all 0.25s ease;
+}
+
+:deep(.restart-btn:hover) {
+  background: #ffebee;
+  border-color: #ef9a9a;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(198, 40, 40, 0.12);
+}
+
+:deep(.restart-btn:active) {
+  transform: translateY(0);
+}
+
+/* ===== 音量控制行 ===== */
+:deep(.volume-row) {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+
+:deep(.vol-btn) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 6px;
+  background: #f5f7fa;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: #444;
+  font-family: inherit;
+  transition: all 0.25s ease;
+}
+
+:deep(.vol-btn:hover) {
+  background: #e3f2fd;
+  border-color: #90caf9;
+  color: #1565c0;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(33, 150, 243, 0.12);
+}
+
+:deep(.vol-btn:active) {
+  transform: translateY(0);
+  background: #bbdefb;
+}
+
+:deep(.vol-btn.mute-btn:hover) {
+  background: #fff3e0;
+  border-color: #ffcc80;
+  color: #e65100;
+  box-shadow: 0 3px 10px rgba(255, 152, 0, 0.12);
+}
+
+/* ===== 设备信息页 ===== */

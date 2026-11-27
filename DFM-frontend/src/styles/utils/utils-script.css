@@ -1,0 +1,926 @@
+/* 与 utils-info.css 中的 capturePulse 同名：原 SFC 单一样式块中动画与 keyframes 同块，
+   拆分后需在本块重复声明，否则 scoped 动画名不会被加上 hash（动画不生效）。 */
+@keyframes capturePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 83, 80, 0.25); }
+  50% { box-shadow: 0 0 0 5px rgba(239, 83, 80, 0.08); }
+}
+
+/* 脚本页专属：撑满 tab-content 高度（普通 keys-page 是自然流式布局） */
+:deep(.script-page) {
+  height: 100%;
+  position: relative;
+}
+
+:deep(.script-layout) {
+  display: flex;
+  gap: 12px;
+  /* 撑满 Tab 内容区剩余高度（不用 vh 魔法数字，避免底部空隙），
+     min-height 只防极小窗口下被压扁 */
+  flex: 1;
+  min-height: 380px;
+  padding-bottom: 10px;
+  box-sizing: border-box;
+}
+
+:deep(.script-screen-panel) {
+  /* 宽度由 JS 按画面比例给出，不再占满剩余空间（避免竖屏时左右大片黑框）；
+     可用空间不足时允许收缩，保证右侧控制区不被挤掉 */
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  overflow: hidden;
+  /* 面板高度稳定，内部 canvas 不随内容波动 */
+  min-width: 0;
+  /* 定位右缘拖拽热区（.script-width-handle） */
+  position: relative;
+}
+
+:deep(.script-screen-header) {
+  display: flex;
+  align-items: center;
+  /* 面板随画面收窄后，头部控件换行而不被裁切 */
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e8eaed;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+:deep(.script-ws-status) {
+  margin-left: auto;
+  font-size: 12px;
+  color: #999;
+}
+
+:deep(.script-ws-status.live) {
+  color: #2e7d32;
+}
+
+:deep(.script-rec-tag) {
+  color: #e53935;
+  font-size: 12px;
+  font-weight: 700;
+  animation: capturePulse 1.2s ease-in-out infinite;
+}
+
+/* ===== 画面步骤标记开关 ===== */
+:deep(.script-switch) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: #888;
+  transition: color 0.25s ease;
+}
+
+:deep(.script-switch input) {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+:deep(.script-switch-track) {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: #d9d9d9;
+  transition: background 0.25s ease;
+}
+
+:deep(.script-switch-track::after) {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.25s ease;
+}
+
+:deep(.script-switch.on) {
+  color: #2e7d32;
+}
+
+:deep(.script-switch.on .script-switch-track) {
+  background: #4caf50;
+}
+
+:deep(.script-switch.on .script-switch-track::after) {
+  transform: translateX(14px);
+}
+
+:deep(.script-switch input:focus-visible + .script-switch-track) {
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
+}
+
+/* ===== 预览宽度拖拽热区 ===== */
+:deep(.script-width-handle) {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  z-index: 2;
+}
+
+:deep(.script-width-handle:hover),
+:deep(.script-width-handle.dragging) {
+  background: rgba(76, 175, 80, 0.35);
+}
+
+:deep(.script-screen-body) {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1f2e;
+  position: relative;
+  overflow: hidden;
+  /* 锁最小高度，canvas 在剩余空间内等比缩放，不触发布局抖动 */
+  min-height: 0;
+}
+
+:deep(.script-canvas) {
+  /* 视口内完整可见：宽高都限制在容器内，保持比例 */
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  cursor: pointer;
+}
+
+/* 键盘接管中：画面预览边框变绿（录制中的红色边框优先级更高，放它前面） */
+:deep(.script-canvas.keyboard-active) {
+  outline: 2px solid #4caf50;
+  outline-offset: -2px;
+}
+
+/* 实时控制开启：画面预览边框变蓝（点击才会操作设备），录制红色优先级更高（放它后面） */
+:deep(.script-canvas.live-control) {
+  outline: 2px solid #1e88e5;
+  outline-offset: -2px;
+}
+
+:deep(.script-canvas.recording) {
+  cursor: crosshair;
+  outline: 2px solid #e53935;
+  outline-offset: -2px;
+}
+
+/* 显示步骤时可拖拽标记 */
+:deep(.script-canvas.editing-markers) {
+  cursor: grab;
+}
+
+:deep(.script-canvas.editing-markers.dragging) {
+  cursor: grabbing;
+}
+
+:deep(.script-screen-placeholder) {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 14px;
+}
+
+/* 组件树获取失败：预览头部小标签（框画在画面 canvas 上，失败不打扰画面） */
+:deep(.script-tree-error) {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #ffebee;
+  color: #c62828;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: default;
+}
+
+:deep(.script-side-panel) {
+  width: 300px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* 竖屏等场景下预览面板收窄，右侧留白足够时：录制功能区与脚本步骤区左右两列并占满留白。
+   触发由 JS 按「布局宽 - 预览宽 - gap」判断，横屏 / 窄窗口自动退回一列 */
+:deep(.script-side-panel.two-col) {
+  width: auto;
+  flex: 1;
+  flex-direction: row;
+  align-items: stretch;
+}
+
+:deep(.script-side-panel.two-col .script-section) {
+  flex: 1;
+  min-width: 0;
+}
+
+:deep(.script-section) {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+/* 步骤功能区标题栏：复用屏幕预览的标题样式，负边距抵消卡片内边距使其通栏 */
+:deep(.script-section .script-screen-header) {
+  margin: -12px -12px 12px;
+}
+
+:deep(.script-record-btn) {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  color: #fff;
+  background: #e53935;
+  transition: all 0.2s ease;
+}
+
+:deep(.script-record-btn:hover) {
+  background: #d32f2f;
+}
+
+:deep(.script-record-btn.active) {
+  background: #c62828;
+  animation: capturePulse 1.2s ease-in-out infinite;
+}
+
+/* 录制中：按钮收窄一半，右侧留出画面校验开关 */
+:deep(.script-record-row) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:deep(.script-record-row .script-record-btn) {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+:deep(.script-verify-switch) {
+  flex: 0 0 calc(50% - 4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: #555;
+  white-space: nowrap;
+}
+
+:deep(.script-config-row) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #555;
+}
+
+:deep(.script-config-row:last-of-type) {
+  margin-bottom: 0;
+}
+
+/* 等待组件步骤：已选模板图预览 */
+:deep(.script-template-preview-row) {
+  align-items: flex-start;
+}
+
+:deep(.script-template-preview) {
+  max-width: 68%;
+  max-height: 120px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  background: #fff;
+  object-fit: contain;
+}
+
+:deep(.script-config-input) {
+  width: 90px;
+  padding: 4px 8px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: right;
+}
+
+/* 设备动作步骤的文本/下拉配置（宽度更大，左对齐） */
+.script-config-text,
+:deep(.script-config-select) {
+  flex: 1;
+  min-width: 0;
+  max-width: 62%;
+  padding: 4px 8px;
+  border: 1px solid #dfe3e8;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+}
+
+/* Element Plus 配置控件：占满行内剩余宽度 */
+.ep-config-select,
+:deep(.ep-config-input) {
+  flex: 1;
+  min-width: 0;
+  max-width: 68%;
+}
+
+:deep(.ep-config-select) {
+  width: 68%;
+}
+
+:deep(.ep-config-num) {
+  width: 110px;
+}
+
+/* 添加设备动作步骤按钮组 */
+:deep(.script-add-steps) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* 步骤功能区单行：类别标签 + 该类按钮 */
+:deep(.script-add-row) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+:deep(.script-add-label) {
+  flex-shrink: 0;
+  width: 60px;
+  font-size: 12px;
+  color: #888;
+}
+
+:deep(.script-add-btn) {
+  padding: 4px 9px;
+  border: 1px dashed #bdbdbd;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  color: #555;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+:deep(.script-add-btn:hover:not(:disabled)) {
+  border-color: #4caf50;
+  color: #2e7d32;
+  background: #f6fbf6;
+}
+
+:deep(.script-add-btn:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 框选模式进行中 */
+:deep(.script-add-btn.cropping) {
+  border-style: solid;
+  border-color: #ff9800;
+  color: #e65100;
+  background: #fff3e0;
+}
+
+:deep(.script-config-hint) {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #999;
+}
+
+:deep(.script-list-section) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 列表区不收缩到底部按钮被挤出可视区 */
+  overflow: hidden;
+}
+
+/* 步骤列表弹性占满剩余空间，底栏（保存/执行/重复）始终贴底 */
+:deep(.script-list-section .script-actions) {
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+:deep(.script-list-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+:deep(.script-help-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  border: 1px solid #bbb;
+  border-radius: 50%;
+  font-size: 11px;
+  font-style: normal;
+  color: #888;
+  cursor: help;
+  vertical-align: middle;
+}
+
+:deep(.script-help-content) {
+  white-space: pre-line;
+  line-height: 1.6;
+  font-size: 12px;
+  max-width: 340px;
+}
+
+:deep(.script-header-actions) {
+  display: flex;
+  gap: 6px;
+}
+
+:deep(.script-mini-btn) {
+  padding: 3px 10px;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  color: #666;
+  cursor: pointer;
+}
+
+:deep(.script-mini-btn:hover:not(:disabled)) {
+  border-color: #ef9a9a;
+  color: #c62828;
+}
+
+:deep(.script-mini-btn:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 脚本仓库文件夹管理弹层 */
+:deep(.script-repo-overlay) {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+:deep(.script-repo-dialog) {
+  width: min(760px, 92%);
+  max-height: 82%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+:deep(.script-repo-head) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #eef0f2;
+}
+
+:deep(.script-repo-title) {
+  font-weight: 600;
+  font-size: 15px;
+  color: #333;
+  flex-shrink: 0;
+}
+
+:deep(.script-repo-path) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  color: #888;
+}
+
+:deep(.script-repo-sep) {
+  color: #bbb;
+}
+
+:deep(.script-repo-crumb) {
+  cursor: pointer;
+  color: #409eff;
+}
+
+:deep(.script-repo-crumb.cur) {
+  color: #333;
+  font-weight: 600;
+  cursor: default;
+}
+
+:deep(.script-repo-toolbar) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #eef0f2;
+}
+
+:deep(.script-repo-spacer) {
+  flex: 1;
+}
+
+:deep(.script-repo-tip) {
+  font-size: 12px;
+  color: #aaa;
+}
+
+:deep(.script-repo-input) {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+:deep(.script-repo-tree) {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 8px 14px;
+  user-select: none;
+}
+
+:deep(.script-repo-node) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding-right: 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+:deep(.script-repo-node:hover) {
+  background: #f2f6fc;
+}
+
+:deep(.script-repo-node-selected) {
+  background: #e8f0fe !important;
+}
+
+/* 仓库拖拽：文件夹作为放置目标高亮，被拖的脚本半透明 */
+:deep(.script-repo-node.script-repo-drop-target) {
+  background: #d9f0d5 !important;
+  outline: 1px dashed #4caf50;
+}
+
+:deep(.script-repo-node.script-repo-dragging) {
+  opacity: 0.5;
+}
+
+:deep(.script-repo-arrow) {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  color: #888;
+  cursor: pointer;
+}
+
+:deep(.script-repo-file) {
+  cursor: default;
+}
+
+:deep(.script-repo-name) {
+  flex: 1;
+  min-width: 0;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.script-repo-folder) {
+  cursor: pointer;
+}
+
+:deep(.script-repo-meta) {
+  color: #aaa;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+:deep(.script-repo-confirm) {
+  color: #c62828;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+:deep(.script-mini-btn.script-repo-danger) {
+  color: #c62828;
+  border-color: #ef9a9a;
+}
+
+:deep(.script-repo-empty) {
+  padding: 14px 4px;
+  color: #aaa;
+  text-align: center;
+}
+
+:deep(.script-repo-menu) {
+  position: fixed;
+  z-index: 80;
+  min-width: 160px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+
+:deep(.script-repo-menu-item) {
+  padding: 7px 14px;
+  cursor: pointer;
+  color: #333;
+  white-space: nowrap;
+}
+
+:deep(.script-repo-menu-item:hover) {
+  background: #f2f6fc;
+}
+
+:deep(.script-repo-menu-item.danger) {
+  color: #c62828;
+}
+
+:deep(.script-steps-list) {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  /* 步骤多时内部滚动，列表不把面板和底栏撑走 */
+  scrollbar-width: thin;
+}
+
+:deep(.script-steps-list::-webkit-scrollbar) {
+  width: 6px;
+}
+
+:deep(.script-steps-list::-webkit-scrollbar-thumb) {
+  background: #d0d5db;
+  border-radius: 3px;
+}
+
+:deep(.script-empty) {
+  padding: 24px 8px;
+  text-align: center;
+  color: #999;
+  font-size: 12px;
+}
+
+:deep(.script-step-item) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+:deep(.script-step-item:hover) {
+  background: #f5f7fa;
+}
+
+:deep(.script-step-item.dragging) {
+  opacity: 0.45;
+}
+
+:deep(.script-step-item.drag-over) {
+  background: #e3f2fd;
+  box-shadow: inset 0 2px 0 0 #1976d2;
+}
+
+:deep(.script-step-item.selected) {
+  background: #e8f5e9;
+  box-shadow: inset 0 0 0 1px #a5d6a7;
+}
+
+/* 展开的单步执行参数 */
+:deep(.script-step-config) {
+  flex-basis: 100%;
+  margin-top: 6px;
+  padding: 10px;
+  background: #f8faf8;
+  border: 1px solid #e0e8e0;
+  border-radius: 8px;
+}
+
+:deep(.script-step-idx) {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+:deep(.script-step-desc) {
+  flex: 1;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.script-step-meta) {
+  flex-shrink: 0;
+  color: #999;
+  font-size: 11px;
+}
+
+/* 单步执行按钮：只执行这一步，验证该步是否满足需求 */
+:deep(.script-step-run) {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #4caf50;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+:deep(.script-step-run:hover:not(:disabled)) {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+:deep(.script-step-run:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+:deep(.script-step-del) {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #bbb;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+:deep(.script-step-del:hover) {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* 通知分类：与脚本步骤列表分开的独立列表，item 复用 .script-step-item 样式 */
+:deep(.script-notify-section) {
+  flex-shrink: 0;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e8eaed;
+}
+
+:deep(.script-actions) {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+:deep(.script-action-btn) {
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  border-radius: 8px;
+  background: #4caf50;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+:deep(.script-action-btn:hover:not(:disabled)) {
+  background: #43a047;
+}
+
+:deep(.script-action-btn:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 执行中的停止按钮 */
+:deep(.script-stop-btn) {
+  background: #f44336;
+}
+
+:deep(.script-stop-btn:hover:not(:disabled)) {
+  background: #d32f2f;
+}
+
+/* 模拟脚本页 暗色模式 */
+@media (prefers-color-scheme: dark) {
+  :deep(.script-step-item:hover) {
+    background: #33363e;
+  }
+
+  :deep(.script-step-item.selected) {
+    background: #2e3d31;
+    box-shadow: inset 0 0 0 1px #66bb6a;
+  }
+
+  :deep(.script-step-desc) {
+    color: #e0e0e0;
+  }
+
+  :deep(.script-step-config) {
+    background: #33363e;
+    border-color: #40434a;
+  }
+
+  .script-config-text,
+  :deep(.script-config-select) {
+    background: #3a3d44;
+    border-color: #4a4d55;
+    color: #e0e0e0;
+  }
+
+  :deep(.script-add-btn) {
+    background: #33363e;
+    border-color: #4a4d55;
+    color: #bbb;
+  }
+
+  :deep(.script-add-btn:hover:not(:disabled)) {
+    border-color: #66bb6a;
+    color: #81c784;
+    background: #2e3d31;
+  }
+}
+
+/* ==================== APK 仓库弹窗（应用管理页） ==================== */

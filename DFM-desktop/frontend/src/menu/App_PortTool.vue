@@ -112,6 +112,7 @@ const batchConnectResults = ref<Array<{
   message: string;
 }>>([]);
 const isBatchConnecting = ref(false);
+const connectingIp = ref<string | null>(null);
 const batchConnectStats = ref({
   total: 0,
   successCount: 0
@@ -953,6 +954,41 @@ const batchConnectScannedIps = async () => {
   }
 };
 
+const connectScannedIp = async (ip: string) => {
+  connectingIp.value = ip;
+  errorMessage.value = '';
+
+  try {
+    const response = await fetch(`${API_BASE.value}/api/ip/batch-connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ips: [`${ip}:5555`] })
+    });
+
+    const data = await response.json();
+    if (data.code === 200) {
+      const result = data.data?.results?.[0];
+      const success = (data.data?.successCount || 0) > 0;
+      const failMsg = result?.message || `${ip}:5555`;
+      modalType.value = 'notification';
+      modalMessage.value = success
+        ? `ADB连接成功：${ip}:5555`
+        : `ADB连接失败：${failMsg}`;
+      modalVisible.value = true;
+    } else {
+      errorMessage.value = data.message || 'ADB连接失败';
+    }
+  } catch (error: any) {
+    errorMessage.value = error.message.includes('Failed to fetch')
+      ? `无法连接到服务器 ${API_BASE.value}，请确保后端服务已启动`
+      : `ADB连接失败: ${error.message}`;
+  } finally {
+    connectingIp.value = null;
+  }
+};
+
 onMounted(async () => {
   await loadConfig();
 });
@@ -1574,6 +1610,34 @@ onMounted(async () => {
   color: #c62828;
 }
 
+.connect-ip-button {
+  margin-left: auto;
+  height: 28px;
+  padding: 0 12px;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.connect-ip-button:hover:not(:disabled) {
+  background: #1976d2;
+}
+
+.connect-ip-button:disabled {
+  background: #bdbdbd;
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
 .result-service {
   font-size: 12px;
   color: #888;
@@ -2142,6 +2206,14 @@ select.input-field {
                   <span class="result-status status-open">
                     在线
                   </span>
+                  <button
+                    class="connect-ip-button"
+                    @click="connectScannedIp(ip)"
+                    :disabled="connectingIp === ip"
+                  >
+                    <span v-if="connectingIp === ip" class="loading"></span>
+                    <span v-else>ADB连接</span>
+                  </button>
                 </li>
               </ul>
             </div>

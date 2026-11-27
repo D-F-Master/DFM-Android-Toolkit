@@ -64,3 +64,9 @@ API文档.md
 # MCP 本地凭证配置（含真实密码，不入库；example 模板照常提交）
 DFM-service/data/mcp_servers/*/config/mailboxes.json
 DFM-service/data/mcp_servers/*/config/connections.json
+
+# ===== 大文件（APK/RAR 安装包不入库，github 拒收 >100MB）=====
+DFM-service/data/apk/Autox-v7-arm64-v8a-release-v7_2_5.apk
+DFM-service/data/apk/edge.apk
+DFM-service/data/apk/UVCCamera.apk
+DFM-service/dist.rar

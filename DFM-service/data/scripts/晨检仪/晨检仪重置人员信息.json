@@ -1,0 +1,76 @@
+{
+  "name": "晨检仪重置人员信息",
+  "repeat": 1,
+  "steps": [
+    {
+      "type": "accClick",
+      "id": "com.yqsh.morningcheck:id/ivSetting",
+      "text": "",
+      "desc": "",
+      "x": 1218,
+      "y": 100,
+      "interval": 500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    },
+    {
+      "type": "input",
+      "x1": 0,
+      "y1": 0,
+      "text": "87624455",
+      "interval": 500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    },
+    {
+      "type": "accClick",
+      "id": "",
+      "text": "确定",
+      "desc": "",
+      "interval": 1500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    },
+    {
+      "type": "accClick",
+      "id": "com.yqsh.morningcheck:id/nav_instrument",
+      "text": "",
+      "desc": "",
+      "x": 247,
+      "y": 465,
+      "interval": 1500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    },
+    {
+      "type": "accClick",
+      "id": "com.yqsh.morningcheck:id/tvReset",
+      "text": "重置人员信息",
+      "desc": "",
+      "x": 998,
+      "y": 640,
+      "interval": 500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    },
+    {
+      "type": "accClick",
+      "id": "com.yqsh.morningcheck:id/tvBack",
+      "text": "返回",
+      "desc": "",
+      "x": 759,
+      "y": 640,
+      "interval": 500,
+      "count": 1,
+      "retry": 0,
+      "retryInterval": 2000
+    }
+  ],
+  "videoWidth": 1280,
+  "videoHeight": 720
+}

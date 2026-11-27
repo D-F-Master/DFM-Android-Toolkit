@@ -1,0 +1,15 @@
+/* 仅含 .card 与 .card-icon：McpService 原样式只定义了这两条，避免引入未使用的 .card-header/.card-body 规则 */
+
+.card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.card-icon {
+  display: flex;
+  align-items: center;
+  color: #4caf50;
+}

@@ -1,0 +1,566 @@
+:deep(.tab-content) {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 模拟脚本 Tab 需要确定高度的父级链，让 script-page/layout 能撑满剩余空间 */
+:deep(.tab-content:has(> .script-page)) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 批量操作 Tab 同理：需要确定高度，投屏区才能在剩余空间内滚而不撑高整页 */
+:deep(.tab-content:has(> .batch-page)) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:deep(.batch-page) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* 底部留白与左右两侧的 10px 保持一致 */
+  padding-bottom: 10px;
+  gap: 12px;
+  /* 整页不滚动：设备区与投屏区在剩余空间内自行分配，投影区内部滚 */
+  min-height: 0;
+}
+
+:deep(.batch-card) {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* 不写死 height:100%：与下方投屏区共享剩余空间，避免撑高整页 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+:deep(.batch-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+:deep(.batch-header-left) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+:deep(.batch-selected-info) {
+  font-size: 13px;
+  font-weight: 400;
+  color: #4caf50;
+}
+
+:deep(.batch-content) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 上半部分：设备列表 - flex:1 占据剩余空间 */
+:deep(.batch-device-list) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-bottom: 1px solid #f0f0f0;
+  min-height: 0;
+}
+
+:deep(.batch-list-header) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+:deep(.batch-list-header input[type="checkbox"]) {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+:deep(.batch-list-body) {
+  flex: 1;
+  overflow-y: auto;
+}
+
+:deep(.batch-device-row) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
+  color: #333;
+  border-bottom: 1px solid #f5f5f5;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+:deep(.batch-device-row:hover) {
+  background: #f5f9ff;
+}
+
+:deep(.batch-device-row.is-selected) {
+  background: #e8f5e9;
+}
+
+:deep(.batch-device-row input[type="checkbox"]) {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+:deep(.col-device-id) {
+  flex: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+:deep(.col-model) {
+  flex: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+:deep(.col-sn) {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+:deep(.batch-checkbox-label) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.batch-loading,
+:deep(.batch-empty) {
+  padding: 24px;
+  text-align: center;
+  color: #999;
+  font-size: 13px;
+}
+
+:deep(.model-filter-input) {
+  width: 90px;
+  padding: 3px 8px;
+  margin-top: 4px;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+:deep(.model-filter-input:focus) {
+  border-color: #4caf50;
+}
+
+/* 下半部分：操作按钮区 + 结果区 - 高度由内容决定，不强制拉伸 */
+:deep(.batch-action-area) {
+  flex: 0 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  background: #fafafa;
+  overflow: hidden;
+}
+
+/* 按钮区 - 高度由按钮内容决定，不拉伸 */
+:deep(.batch-action-grid) {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  width: 100%;
+  max-width: 600px;
+}
+
+:deep(button.batch-action-btn) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  /* 5 列后按钮变窄，禁止文字换行以免撑高按钮区 */
+  white-space: nowrap;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+  background: #fff;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+:deep(button.batch-action-btn:hover:not(:disabled)) {
+  background: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
+}
+
+:deep(button.batch-action-btn:disabled) {
+  background: #f5f5f5;
+  color: #bbb;
+  border-color: #eee;
+  cursor: not-allowed;
+}
+
+:deep(.batch-action-placeholder) {
+  color: #bbb;
+  font-size: 14px;
+}
+
+/* 批量 Shell 执行结果 - 显示时给合适的高度，不参与外层比例 */
+:deep(.batch-shell-results) {
+  flex: none;
+  width: 100%;
+  max-width: 800px;
+  max-height: 260px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+:deep(.shell-results-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+:deep(.shell-close-btn) {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #999;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+:deep(.shell-close-btn:hover) {
+  color: #666;
+}
+
+:deep(.shell-results-list) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  margin-top: 8px;
+}
+
+:deep(.shell-result-item) {
+  padding: 8px;
+  background: #fafafa;
+  border-radius: 4px;
+  border-left: 3px solid #d9d9d9;
+}
+
+:deep(.shell-result-item:nth-child(odd)) {
+  background: #f5f5f5;
+}
+
+:deep(.shell-success) {
+  border-left-color: #4caf50;
+}
+
+:deep(.shell-failed) {
+  border-left-color: #f44336;
+}
+
+:deep(.shell-result-device) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+:deep(.shell-status-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: bold;
+  color: #fff;
+}
+
+:deep(.shell-success .shell-status-icon) {
+  background: #4caf50;
+}
+
+:deep(.shell-failed .shell-status-icon) {
+  background: #f44336;
+}
+
+:deep(.shell-device-id) {
+  font-weight: 500;
+  color: #333;
+  word-break: break-all;
+}
+
+/* ===== 批量投屏画面区 ===== */
+:deep(.batch-remote-area) {
+  padding: 12px 16px;
+  background: #fafafa;
+  border-radius: 8px;
+  /* 与设备区共享剩余空间；画面高度已按宽高比自适应，不会撑高整页 */
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+:deep(.batch-remote-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  flex: 0 0 auto;
+}
+
+:deep(.batch-remote-status) {
+  padding: 2px 10px;
+  border-radius: 10px;
+  background: #eceff1;
+  color: #78909c;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+:deep(.batch-remote-status.live) {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+:deep(.batch-remote-error) {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #fff8e1;
+  color: #b26a00;
+  font-size: 12px;
+}
+
+:deep(.batch-remote-grid) {
+  display: grid;
+  gap: 10px;
+  /* 画面超出可视区时在网格内部滚动，不影响整页布局 */
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  /* 行高按可用高度均分（1fr），卡片再被撑满整行，
+     这样 tile-body 的 flex:1 有确定高度可依，画面才能完整适配 */
+  grid-auto-rows: 1fr;
+}
+
+:deep(.batch-remote-tile) {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* 行高 1fr 下允许收缩，避免内容把行撑破 */
+  min-height: 0;
+}
+
+:deep(.batch-remote-tile.source) {
+  outline: 2px solid #4caf50;
+}
+
+:deep(.batch-remote-tile.dead) {
+  opacity: 0.4;
+}
+
+:deep(.batch-remote-tile-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+}
+
+:deep(.batch-remote-tile-name) {
+  font-weight: 600;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:deep(.batch-remote-tile-diag) {
+  margin-left: 6px;
+  font-weight: 400;
+  color: #999;
+  font-size: 10px;
+}
+
+:deep(button.batch-remote-tile-tag) {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  background: #fff;
+  color: #555;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+:deep(button.batch-remote-tile-tag:hover:not(:disabled)) {
+  background: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
+}
+
+button.batch-remote-tile-tag.active,
+:deep(button.batch-remote-tile-tag:disabled.active) {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: #fff;
+  cursor: default;
+}
+
+:deep(.batch-remote-tile-tag.active) {
+  background: #4caf50;
+  color: #fff;
+}
+
+/* 画面容器：撑满卡片剩余空间（卡片高度由网格行均分，见 .batch-remote-grid）。
+   高度完全由布局分配，不再依赖 JS 测高，因此不存在自反馈。 */
+:deep(.batch-remote-tile-body) {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* canvas 的 width/height 属性是视频原始像素，不能当显示尺寸用。
+   这里铺满容器再用 object-fit: contain 等比收进框内：
+   竖屏 9:16 与横屏 16:9 都完整显示，不裁切上下或左右。 */
+:deep(.batch-remote-canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #2a3040;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 主控画面可操作（十字光标）；从机画面单击可切主控（手型光标） */
+:deep(.batch-remote-tile.source .batch-remote-canvas) {
+  cursor: crosshair;
+}
+
+:deep(.batch-remote-tile:not(.source) .batch-remote-canvas) {
+  cursor: pointer;
+}
+
+:deep(.batch-remote-tile-loading) {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+:deep(.shell-output-section) {
+  margin-top: 4px;
+}
+
+:deep(.shell-output-label) {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 2px;
+  font-weight: 500;
+}
+
+:deep(.shell-output) {
+  margin: 0;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 100px;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+
+:deep(.shell-error .shell-output) {
+  background: #fff8f8;
+  border-color: #ffd6d6;
+}
+
+:deep(.shell-error-text) {
+  color: #c62828;
+}
+
+/* ===== 性能监控页面 ===== */

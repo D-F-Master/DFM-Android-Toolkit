@@ -1,0 +1,175 @@
+:deep(.card-action-btn) {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: #4caf50;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+:deep(.card-action-btn:hover) {
+  background: #43a047;
+  transform: translateY(-1px);
+}
+
+:deep(.card-action-btn:active) {
+  transform: translateY(0);
+}
+
+/* APK 全页拖拽安装覆盖层 */
+:deep(.apk-drop-overlay) {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(46, 125, 50, 0.15);
+  border: 3px dashed #4caf50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 覆盖层不接收鼠标事件：不干扰 dragleave/drop 的事件序列 */
+  pointer-events: none;
+}
+
+:deep(.apk-drop-overlay-box) {
+  padding: 24px 48px;
+  background: transparent;
+  border: none;
+  /* 文字颜色与覆盖层背景同色系，描边用原有深绿，营造浮雕效果 */
+  color: #d7e3d7;
+  -webkit-text-stroke: 1.5px #1b5e20;
+  font-size: 48px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  text-shadow:
+    -2px -2px 2px rgba(255, 255, 255, 0.75),
+    2px 2px 3px rgba(27, 94, 32, 0.45);
+}
+
+/* 文件管理拖入导入：覆盖文件列表卡的局部提示层 */
+:deep(.file-drop-zone) {
+  position: relative;
+}
+:deep(.file-drop-overlay) {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: rgba(46, 125, 50, 0.15);
+  border: 3px dashed #4caf50;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 覆盖层不接收鼠标事件：不干扰 dragleave/drop 的事件序列 */
+  pointer-events: none;
+}
+:deep(.file-drop-overlay-box) {
+  padding: 16px 32px;
+  color: #2e7d32;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-shadow:
+    -1px -1px 2px rgba(255, 255, 255, 0.8),
+    1px 1px 2px rgba(255, 255, 255, 0.8);
+}
+
+:deep(.app-list) {
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+}
+
+:deep(.app-item) {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid #f0f0f0;
+  transition: background 0.2s;
+}
+
+:deep(.app-item:first-child) {
+  border-top: none;
+}
+
+:deep(.app-item:hover) {
+  background: #f8f9fb;
+}
+
+:deep(.app-item-info) {
+  flex: 1;
+  min-width: 0;
+}
+
+:deep(.app-item-name) {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.app-item-desc) {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.app-item-actions) {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+:deep(.app-act-btn) {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  color: #888;
+  transition: all 0.2s ease;
+}
+
+:deep(.app-act-btn:hover) {
+  border-color: #a5d6a7;
+  background: #e8f5e9;
+}
+
+:deep(.app-act-btn.start:hover) {
+  border-color: #a5d6a7;
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+:deep(.app-act-btn.stop:hover) {
+  border-color: #90caf9;
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+:deep(.app-act-btn.extract:hover) {
+  border-color: #ffcc80;
+  background: #fff3e0;
+  color: #e65100;
+}
+
+:deep(.app-act-btn.uninstall:hover) {
+  border-color: #ef9a9a;
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* ===== 文件管理页 ===== */
