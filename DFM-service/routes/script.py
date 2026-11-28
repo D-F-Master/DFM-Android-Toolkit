@@ -1555,66 +1555,25 @@ def _exec_adb_step(device_id: str, step: dict, repeat_count: int = 1, round_no: 
 
         elif stype == "accClick":
             # 无障碍点击：经探针 0x0D 让设备端直接对匹配节点执行 ACTION_CLICK（不走坐标注入）
-            # 匹配策略（录制端 id/text/desc 有值全存）：依次尝试
-            #   ① id+text+desc 全组合（最精确）② 仅 desc ③ 仅 text ④ 仅 id ⑤ 录制坐标兜底
-            # 每轮 404（未找到节点）才试下一轮；其他错误（未启用无障碍等）直接失败
+            # v2.15 匹配语义：id 精确；text/desc 精确相等，支持通配符 * ? [abc] {a,b}
+            # （规则见前端提示与 docx/DFM-probe_接口文档.md）。找不到匹配节点直接失败，
+            # 不再多轮降级/坐标兜底（v2.14 及以前的 attempts 链会误点文字相近的无关节点）。
             from routes.probe import run_probe
 
             _acc_id = str(step.get("id", "") or "").strip()
             _acc_text = str(step.get("text", "") or "").strip()
             _acc_desc = str(step.get("desc", "") or "").strip()
-            _attempts = []
-            if _acc_id and _acc_text and _acc_desc:
-                _attempts.append({"id": _acc_id, "text": _acc_text, "desc": _acc_desc})
-            if _acc_desc:
-                _attempts.append({"desc": _acc_desc})
-            if _acc_text:
-                _attempts.append({"text": _acc_text})
-            if _acc_id:
-                _attempts.append({"id": _acc_id})
+            if not (_acc_id or _acc_text or _acc_desc):
+                raise RuntimeError("无障碍点击步骤需至少填写 id/text/desc 一项")
 
-            _clicked = False
-            _last_message = ""
-            for _data in _attempts:
-                d = run_probe(device_id, False, 0x0D, _data)
-                if not d.get("connected"):
-                    raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
-                response = d.get("response") or {}
-                if isinstance(response, dict) and response.get("code") == 200:
-                    _clicked = True
-                    break
-                _last_message = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
-                if "未找到节点" not in _last_message:
-                    # 未启用无障碍 / 无活动窗口 / 节点不支持点击等：重试也不会成功
-                    raise RuntimeError(f"无障碍点击失败: {_last_message}")
-            if not _clicked:
-                # 树中匹配失败且录制时带了点击坐标（x/y 为录制时的设备显示坐标）：
-                # 动态文本（如时间组件）回放时会变，按坐标兜底点击。纯 ADB 脚本没有
-                # scrcpy 会话（_screen_w/_h 为 0），实时取当前屏幕尺寸；与录制基准
-                # 不同才换算，相同（或基准缺失）直接按录制坐标点。
-                _acc_x = step.get("x")
-                _acc_y = step.get("y")
-                if isinstance(_acc_x, (int, float)) and isinstance(_acc_y, (int, float)):
-                    _bw = int(step.get("_base_w") or 0)
-                    _bh = int(step.get("_base_h") or 0)
-                    _sw = int(step.get("_screen_w") or 0)
-                    _sh = int(step.get("_screen_h") or 0)
-                    if _sw <= 0 or _sh <= 0:
-                        try:
-                            _sw, _sh = _current_screen_size(device_id, 0, 0)
-                        except Exception:
-                            _sw, _sh = 0, 0
-                    if _bw > 0 and _bh > 0 and _sw > 0 and _sh > 0 and (_bw != _sw or _bh != _sh):
-                        _cx = int(round(_acc_x * _sw / _bw))
-                        _cy = int(round(_acc_y * _sh / _bh))
-                    else:
-                        _cx, _cy = int(_acc_x), int(_acc_y)
-                    execute_adb_command(
-                        f'adb -s {device_id} shell input tap {_cx} {_cy}',
-                        timeout=30,
-                    )
-                else:
-                    raise RuntimeError(f"无障碍点击失败: {_last_message}；该步骤未录制点击坐标，无法兜底")
+            _data = {"id": _acc_id, "text": _acc_text, "desc": _acc_desc}
+            d = run_probe(device_id, False, 0x0D, _data)
+            if not d.get("connected"):
+                raise RuntimeError(f"探针通讯失败: {d.get('reason', '未知原因')}")
+            response = d.get("response") or {}
+            if not (isinstance(response, dict) and response.get("code") == 200):
+                _msg = (response.get("message") if isinstance(response, dict) else None) or "设备返回异常"
+                raise RuntimeError(f"无障碍点击失败: {_msg}")
 
         elif stype == "runScript":
             # 嵌套执行脚本：加载目标脚本文件，复用同一执行引擎跑完再继续
@@ -1707,16 +1666,93 @@ def _current_screen_size(device_id: str, base_w: int, base_h: int):
     return int(m.group(1)), int(m.group(2))
 
 
+def _glob_to_regex(pattern: str) -> str:
+    """把 accClick/accExists 的 text/desc 通配符翻译成正则（与设备端 globMatch 同规则）。
+
+    *        任意数量任意字符
+    ?        单个任意字符
+    [abc]    方括号内任一字符（[a-z] 区间、[!a] 取反）
+    {a,b}    花括号内任一选项
+    不含通配符时调用方直接用 == 精确比较；含通配符时整串匹配（非子串）。
+    """
+    out = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == '*':
+            out.append('.*')
+            i += 1
+        elif c == '?':
+            out.append('.')
+            i += 1
+        elif c == '[':
+            end = pattern.find(']', i + 1)
+            if end < 0:
+                out.append(re.escape(c))
+                i += 1
+            else:
+                body = pattern[i + 1:end]
+                neg = body.startswith('!') or body.startswith('^')
+                if neg:
+                    body = body[1:]
+                body = body.replace('\\', '\\\\')
+                # 区间保留原样（re 字符类同语法）；首尾 ] 转义由 find(']') 已处理
+                out.append(('[' if not neg else '[^') + body + ']')
+                i = end + 1
+        elif c == '{':
+            # 找配对 }，按 ',' 拆选项递归翻译（选项内支持嵌套通配符）
+            depth, end = 0, -1
+            for j in range(i, n):
+                if pattern[j] == '{':
+                    depth += 1
+                elif pattern[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = j
+                        break
+            if end < 0:
+                out.append(re.escape(c))
+                i += 1
+            else:
+                body = pattern[i + 1:end]
+                opts, depth, cur = [], 0, []
+                for ch in body:
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                    if ch == ',' and depth == 0:
+                        opts.append(''.join(cur))
+                        cur = []
+                    else:
+                        cur.append(ch)
+                opts.append(''.join(cur))
+                out.append('(?:' + '|'.join(_glob_to_regex(o) for o in opts) + ')')
+                i = end + 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return ''.join(out)
+
+
+def _acc_str_matches(pattern: str, value: str) -> bool:
+    """text/desc 单字段匹配：无通配符精确相等；含 * ? [] {} 时整串通配匹配。"""
+    if not any(ch in pattern for ch in '*?[]{}'):
+        return pattern == value
+    return re.fullmatch(_glob_to_regex(pattern), value or '', re.DOTALL) is not None
+
+
 def _acc_node_matches(node: dict, acc_id: str, acc_text: str, acc_desc: str) -> bool:
     """
-    服务端复刻探针设备端 nodeMatches（ProbeService.java:1279）：
-    id 精确相等、text/desc 包含，填了的条件需同时满足。
+    服务端复刻探针设备端 nodeMatches（ProbeService.java nodeMatches/globMatch，v2.15）：
+    id 精确相等；text/desc 无通配符时精确相等（不再 contains，避免「设置」误点
+    「其他设置」），含通配符时按 glob 规则整串匹配；填了的条件需同时满足。
     """
     if acc_id and str(node.get("id", "") or "") != acc_id:
         return False
-    if acc_text and acc_text not in str(node.get("text", "") or ""):
+    if acc_text and not _acc_str_matches(acc_text, str(node.get("text", "") or "")):
         return False
-    if acc_desc and acc_desc not in str(node.get("desc", "") or ""):
+    if acc_desc and not _acc_str_matches(acc_desc, str(node.get("desc", "") or "")):
         return False
     return True
 

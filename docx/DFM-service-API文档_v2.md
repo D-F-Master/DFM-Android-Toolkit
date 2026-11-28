@@ -1221,6 +1221,9 @@
 
 ## 更新日志
 
+### v2.8.2
+- 无障碍点击匹配语义修复（设备需 v2.15+ APK）：`accClick` 步骤与 `accExists` 条件的 `text`/`desc` 由包含匹配改为**精确相等 + 通配符**（`*` 任意多字符、`?` 单字符、`[abc]` 任一字符、`{a,b}` 任一选项，整串匹配）；找不到匹配节点时步骤**直接失败**，不再做 desc/text/id 多轮降级尝试与录制坐标 `input tap` 兜底（旧逻辑在页面无目标按钮时会误点文字相近的其他元素）。前端步骤配置框 placeholder 与悬浮提示已同步通配符规则。设备端实现见 `DFM-probe_接口文档.md` §3.10。
+
 ### v2.8.1
 - 模拟脚本执行链路切换到设备端 JS 引擎（方案3 P1/P3 完成，设备需 v2.14+ APK，详见 `DFM-probe_接口文档.md` §3.11/3.12 与 `脚本方案3-设备端JS执行设计.md`）：
   - 新增 `POST /api/device/script/run-js` `{"deviceId":"...","name":"脚本名","repeat":1}`：服务端 JSON→JS 编译器（`routes/script_compiler.py`）把 `data/scripts/{name}.json` 编译为 `script.js`，打包 `script.js + metadata.json + apk/ + templates/` 经 `/api/probe/script-import` 推送后发 `0x13` 执行；同步返回全量日志（同 `run` 的日志结构）。17 种步骤类型 + 条件分支 + 变量替换 + count/interval/retry + runScript 嵌套全部支持；`waitFor`/`condition-template` 走设备端模板匹配（灰度金字塔，无需 scrcpy/OpenCV）；中文输入走设备端剪贴板粘贴链（焦点输入框前置 tap）

@@ -37,6 +37,7 @@
 > 见 `3.8` / `3.9`）。
 > v2.7 新增 `0x0D` 无障碍点击：设备端按 `id`（精确）/`text`（包含）/`desc`（包含）匹配组件树节点，
 > 直接执行 `ACTION_CLICK`（不走坐标注入；节点不可点击时经 `dispatchGesture` 在节点中心坐标派发点击兜底），见 `3.10`。
+> **v2.15 起匹配规则变更**：`id` 仍精确；`text`/`desc` 无通配符时精确相等（不再包含匹配，避免「设置」误点「其他设置」），含通配符时整串 glob 匹配（`*` 任意多字符、`?` 单字符、`[abc]` 任一字符、`{a,b}` 任一选项）；找不到匹配节点直接回 `404`，不再坐标兜底（见 `3.10`）。
 > v2.8 新增设备端离线脚本三命令字 `0x0E` / `0x0F` / `0x10`（`ScriptEngine.java`）：PC 侧把
 > 模拟脚本导出 zip 经 `adb push` 送到设备固定地址 `files/script_in/`，设备端解压到
 > `files/script_store/{脚本名}/`、列出已导入脚本、离线执行并返回逐步骤成败日志；
@@ -59,6 +60,9 @@
 > `script.js`、`0x0F` 仅列含 `script.js` 的目录，导出包签名机制退役（见
 > `docx/脚本方案3-设备端JS执行设计.md` §5）；探针页「导入脚本/设备脚本列表/
 > 执行设备脚本」三按钮删除。
+> v2.15 无障碍点击匹配规则变更：`0x0D` 的 `text`/`desc` 由包含匹配改为精确相等 + 通配符
+> （`*` `?` `[abc]` `{a,b}`，整串匹配），找不到节点直接 `404`；PC 端 `accClick` 步骤
+> 多轮降级与坐标兑底删除（见 `3.10`）。
 
 ---
 
@@ -206,7 +210,7 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x0A` | CMD_CAMERA | PC→设备 | `{}` 或 `{"cameraId":"0"}` | camera2 无预览拍照存设备端；应答帧 `0x8A`（见「3.7」） |
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC→设备 | `{}` | 检测无障碍服务：未启用时跳转系统设置页；应答帧 `0x8B`，`data` 为 `{enabled,started}`（见「3.8」） |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC→设备 | `{}` | 返回无障碍服务采集的当前窗口组件树；应答帧 `0x8C`，`data` 为 `{package,nodeCount,truncated,root}`（见「3.9」） |
-| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC→设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配节点并执行 ACTION_CLICK（不可点击时经 dispatchGesture 在节点中心坐标兜底）；应答帧 `0x8D`，`data` 为 `{clicked,id,text,desc}`（见「3.10」） |
+| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC→设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配节点并执行 ACTION_CLICK（v2.15：id 精确；text/desc 精确或通配符整串匹配，找不到直接 404 不再坐标兜底；不可点击节点回溯可点击祖先）；应答帧 `0x8D`，`data` 为 `{clicked,id,text,desc}`（见「3.10」） |
 | `0x0E` | CMD_SCRIPT_UNZIP | PC→设备 | `{"zip":"xxx.zip"}` | 解压 `files/script_in/xxx.zip` 到 `files/script_store/xxx/`；v2.14 起仅认 `script.js`（JS 引擎）；应答帧 `0x8E`，`data` 为 `{script,format:"js",steps,files,path}`（见「3.11」「3.12」） |
 | `0x0F` | CMD_SCRIPT_LIST | PC→设备 | `{}` | 列出 `files/script_store/` 下已导入脚本（v2.14 起仅列含 `script.js` 的目录）；应答帧 `0x8F`，`data` 为 `{scripts:[{name,steps,size,importedAt,error?}]}`（见「3.11」） |
 | ~~`0x10`~~ | ~~CMD_SCRIPT_RUN~~ | — | — | **v2.14 已退役**：旧 JSON 脚本引擎删除（方案3 §5），JS 脚本统一用 `0x13` 执行；设备端收到回 `unknown cmd: 0x10` |
@@ -920,18 +924,34 @@ PC 轮询此命令字即实现「打开串口持续读」；**应答顺序** `AC
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `id` | string | 否 | viewIdResourceName **精确相等**，如 `com.xxx:id/btn_ok` |
-| `text` | string | 否 | 节点文本 **包含匹配** |
-| `desc` | string | 否 | contentDescription **包含匹配** |
+| `text` | string | 否 | 节点文本：无通配符时**精确相等**；支持通配符（见下） |
+| `desc` | string | 否 | contentDescription：规则同 `text` |
 
 至少填一项；多项同时填写时为 AND 关系（全部满足才命中）。每项最长 200 字符。
 
-#### 匹配规则
+#### 匹配规则（v2.15）
 
+- **text / desc 通配符**（id 无通配符，始终精确相等）：
+
+  | 符号 | 含义 | 示例 |
+  | --- | --- | --- |
+  | `*` | 匹配任意数量任意字符 | `其*设置` 命中「其他设置」「其他高级设置」 |
+  | `?` | 匹配单个任意字符 | `其?设置` 命中「其他设置」 |
+  | `[abc]` | 匹配方括号内任一字符（支持区间 `[a-z]`、`[!a]` 取反） | `[网安]络和互联网` 命中「网络和互联网」 |
+  | `{a,b}` | 匹配花括号内任一选项（选项可含通配符） | `{确定,确认}` 命中「确定」或「确认」 |
+
+  - 不含任何通配符时为**精确相等**（v2.14 及以前是包含匹配，会导致「设置」误点「其他设置」，已改）；
+  - 含通配符时为**整串匹配**（pattern 须覆盖整个 value，非子串）：`*互联网*` 能命中「网络和互联网」，
+    但 `互联网` 单独不能（不再是包含匹配）；
+  - 通配符规则与脚本步骤输入框旁提示一致（前端 title 提示）。
 - 深度优先遍历当前窗口组件树（节点数上限 150，同 `0x0C`），返回首个满足全部已填条件的节点。
 - 命中节点自身 `clickable=false` 时，向上回溯取**最近的可点击祖先**执行点击（文本节点常包在父容器按钮内）。
 - 自身与祖先链均不可点击时**仍返回该命中节点**：先尝试 `ACTION_CLICK`（预期失败），随后经
   `dispatchGesture` 在节点 bounds 中心派发 1ms 点击手势兜底（API 24+，无需 root）。
-- 节点完全不在树中才返回 `404 无障碍树未找到节点（…）`。
+- 节点完全不在树中（或已填条件全部不满足）返回 `404 无障碍树未找到节点（…）`；
+  **v2.15 起无任何坐标兜底**：PC 端脚本 `accClick` 步骤不再做「desc-only/text-only/id-only 多轮降级」
+  与「录制坐标 input tap 兜底」（旧行为会在页面变化时误点无关节点），404 即步骤失败，可配合
+  `condition accExists` 先判存在再点击，或改用通配符放宽匹配。
 
 #### 返回参数
 

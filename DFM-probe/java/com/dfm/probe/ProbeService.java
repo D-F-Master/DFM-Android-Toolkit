@@ -1386,14 +1386,143 @@ public class ProbeService extends Service {
             return false;
         }
         CharSequence t = node.getText();
-        if (!text.isEmpty() && (t == null || !t.toString().contains(text))) {
+        if (!text.isEmpty() && (t == null || !globMatch(text, t.toString()))) {
             return false;
         }
         CharSequence d = node.getContentDescription();
-        if (!desc.isEmpty() && (d == null || !d.toString().contains(desc))) {
+        if (!desc.isEmpty() && (d == null || !globMatch(desc, d.toString()))) {
             return false;
         }
         return true;
+    }
+
+    /**
+     * text/desc 通配符匹配（v2.15）：
+     *   *        匹配任意数量任意字符
+     *   ?        匹配单个任意字符
+     *   [abc]    匹配方括号内任一字符（支持区间 [a-z]，!/^ 开头取反）
+     *   {a,b}    匹配花括号内任一选项（选项可含通配符）
+     * 不含任何通配符时为精确相等（不再做包含匹配，避免「设置」误点「其他设置」）。
+     * 含通配符时按整串匹配（pattern 必须覆盖整个 value，非子串）。
+     */
+    public static boolean globMatch(String pattern, String value) {
+        return globMatchAt(pattern, 0, value, 0);
+    }
+
+    private static boolean globMatchAt(String p, int pi, String v, int vi) {
+        while (pi < p.length()) {
+            char pc = p.charAt(pi);
+            if (pc == '*') {
+                // 连续 * 合并；尾部 * 直接命中
+                int next = pi + 1;
+                if (next >= p.length()) {
+                    return true;
+                }
+                for (int k = vi; k <= v.length(); k++) {
+                    if (globMatchAt(p, next, v, k)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (vi >= v.length()) {
+                return false;
+            }
+            char vc = v.charAt(vi);
+            if (pc == '?') {
+                pi++;
+                vi++;
+            } else if (pc == '[') {
+                int close = p.indexOf(']', pi + 1);
+                if (close < 0) {
+                    // 未闭合 [ 按字面处理
+                    if (pc != vc) return false;
+                    pi++;
+                    vi++;
+                } else {
+                    if (!charClassMatch(p, pi + 1, close, vc)) {
+                        return false;
+                    }
+                    pi = close + 1;
+                    vi++;
+                }
+            } else if (pc == '{') {
+                int close = matchBrace(p, pi);
+                if (close < 0) {
+                    if (pc != vc) return false;
+                    pi++;
+                    vi++;
+                } else {
+                    // 逐个选项递归匹配剩余串
+                    int bodyStart = pi + 1;
+                    int depth = 0;
+                    int optStart = bodyStart;
+                    for (int i = bodyStart; i <= close; i++) {
+                        char c = i < close ? p.charAt(i) : ',';
+                        if (c == '{') depth++;
+                        else if (c == '}') depth--;
+                        if ((c == ',' && depth == 0) || i == close) {
+                            String opt = p.substring(optStart, i);
+                            if (globMatchAt(opt + p.substring(close + 1), 0, v, vi)) {
+                                return true;
+                            }
+                            optStart = i + 1;
+                        }
+                    }
+                    return false;
+                }
+            } else {
+                if (pc != vc) {
+                    return false;
+                }
+                pi++;
+                vi++;
+            }
+        }
+        return vi == v.length();
+    }
+
+    /** [ ... ] 字符类匹配（pi 指向首字符，end 指向 ']' 下标）；!/^ 开头取反。 */
+    private static boolean charClassMatch(String p, int pi, int end, char vc) {
+        boolean negate = false;
+        int i = pi;
+        if (i < end && (p.charAt(i) == '!' || p.charAt(i) == '^')) {
+            negate = true;
+            i++;
+        }
+        boolean hit = false;
+        while (i < end) {
+            if (i + 2 < end && p.charAt(i + 1) == '-') {
+                if (vc >= p.charAt(i) && vc <= p.charAt(i + 2)) {
+                    hit = true;
+                    break;
+                }
+                i += 3;
+            } else {
+                if (p.charAt(i) == vc) {
+                    hit = true;
+                    break;
+                }
+                i++;
+            }
+        }
+        return negate != hit;
+    }
+
+    /** 找与 '{' 配对的 '}' 下标（忽略嵌套内层级越界）；找不到回 -1。 */
+    private static int matchBrace(String p, int open) {
+        int depth = 0;
+        for (int i = open; i < p.length(); i++) {
+            char c = p.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
     }
 
     /**

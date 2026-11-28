@@ -100,7 +100,7 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `0x0A` | CMD_CAMERA | `{}` 或 `{"cameraId":"0"}` | 统一信封，`data` 为 `{path,size,cameraId,width,height}` | camera2 无预览拍照存应用外部目录（需 PC 端 pm grant + GhostActivity），见 §4.5 |
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"enabled":bool,"started":bool}}` | 未启用无障碍服务时跳转系统设置页，已启用直接返回不跳页，见 §4.6 |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | `{}`（无必填字段） | 统一信封，`data` 为 `{package,nodeCount,truncated,root}` | 返回无障碍服务采集的当前窗口组件树（节点上限 150，超出置 truncated），见 §4.6 |
-| `0x0D` | CMD_ACCESSIBILITY_CLICK | `{"id":"","text":"","desc":""}`（至少一项） | 统一信封，`data` 为 `{clicked,id,text,desc}` | 按条件匹配组件树节点并执行 ACTION_CLICK（真无障碍点击；不可点击时 dispatchGesture 坐标兜底），见 §4.6 |
+| `0x0D` | CMD_ACCESSIBILITY_CLICK | `{"id":"","text":"","desc":""}`（至少一项） | 统一信封，`data` 为 `{clicked,id,text,desc}` | 按条件匹配组件树节点并执行 ACTION_CLICK（v2.15：id 精确；text/desc 精确或通配符整串匹配，找不到直接 404 不再坐标兜底），见 §4.6 |
 | `0x0E` | CMD_SCRIPT_UNZIP | `{"zip":"xxx.zip"}` | 统一信封，`data` 为 `{script,format:"js",steps,files,path,apks,templates}` | 解压 `script_in/xxx.zip` 到 `script_store/xxx/`（v2.14 起仅认 `script.js`，JS 引擎），见 §4.7 |
 | `0x0F` | CMD_SCRIPT_LIST | `{}` | 统一信封，`data` 为 `{scripts:[...]}` | 列出已导入脚本（v2.14 起仅列含 `script.js` 目录），见 §4.7 |
 | `0x13` | CMD_SCRIPT_RUN_JS | `{"script":"名字","repeat":N}` | 统一信封，`data` 为 `{script,ok,error,summary,logs[],truncated}` | Rhino 执行 JS 脚本（方案3，唯一执行入口；同步执行，日志全量回传），见 §4.7 |
@@ -197,14 +197,19 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
   取 `rootInActiveWindow` 递归序列化，返回 `{package, nodeCount, truncated, root}`；
   节点字段 `{class, text, desc, id, bounds, clickable, scrollable, enabled, children}`。
   节点数上限 150（`MAX_TREE_NODES`），达到上限停止展开并置 `truncated:true`，防止响应超出单帧 65535。
-- **`0x0D CMD_ACCESSIBILITY_CLICK`**：按 `id`（viewIdResourceName 精确相等）/ `text`（包含）/
-  `desc`（包含）匹配当前窗口组件树节点（至少填一项，多项 AND；深度优先取首个命中，节点数上限
-  150 同 `0x0C`），命中节点自身不可点击时向上回溯最近可点击祖先，对其执行
+- **`0x0D CMD_ACCESSIBILITY_CLICK`**：按 `id`（viewIdResourceName 精确相等）/ `text` / `desc`
+  匹配当前窗口组件树节点（至少填一项，多项 AND；深度优先取首个命中，节点数上限
+  150 同 `0x0C`）。**v2.15 匹配规则**：`id` 无通配符始终精确；`text`/`desc` 无通配符时**精确相等**
+  （v2.14 及以前是包含匹配，会导致「设置」误点「其他设置」），含通配符时**整串 glob 匹配**：
+  `*` 任意多字符、`?` 单字符、`[abc]` 字符类（区间 `[a-z]`、`[!a]` 取反）、`{a,b}` 选项（可嵌套通配符）；
+  命中节点自身不可点击时向上回溯最近可点击祖先，对其执行
   `performAction(ACTION_CLICK)`——真无障碍点击，不走坐标注入，可命中不可见/被遮挡控件；
   自身与祖先链均不可点击（纯展示控件）时，经无障碍服务 `dispatchGesture` 在节点 bounds 中心
-  派发 1ms 点击手势兜底（API 24+，无需 root，实现在 `DfmAccessibilityService.dispatchTap()`）。
+  派发 1ms 点击手势兑底（API 24+，无需 root，实现在 `DfmAccessibilityService.dispatchTap()`）。
   成功回 `{clicked:true, id, text, desc}`（条件原样回显）；未命中回 `404 无障碍树未找到节点（…）`；
-  手势兜底也失败回 `500 节点不支持 ACTION_CLICK 且手势派发失败（…）`；服务未启用保底拉起设置页（同 `0x0C`）。
+  手势兑底也失败回 `500 节点不支持 ACTION_CLICK 且手势派发失败（…）`；服务未启用保底拉起设置页（同 `0x0C`）。
+  PC 端配套（v2.15）：脚本 `accClick` 步骤删除「desc-only/text-only/id-only 多轮降级」与
+  「录制坐标 input tap 兑底」，单次直发，404 即步骤失败；`accExists` 条件同匹配语义。
 - **前置条件**：`0x0C` / `0x0D` 需设备端已启用「DFM Probe」无障碍服务；未启用时保底自动拉起无障碍设置页
   （同 `0x0B`），并回 `500 accessibility service not enabled (已在设备上打开无障碍设置页…)`；
   无活动窗口回 `500 no active window for accessibility`。

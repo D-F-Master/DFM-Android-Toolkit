@@ -152,25 +152,14 @@ class Compiler:
             return f"speak(__resolveText({_js(text)}, {seq}, dfm.roundNo()).trim());"
 
         if stype == "accClick":
+            # v2.15：单次调用、找不到直接失败（id 精确；text/desc 精确相等或通配符
+            # * ? [abc] {a,b}，匹配在设备端 0x0D 完成）。不再多轮降级/坐标兑底。
             spec = {k: str(step.get(k, "") or "").strip() for k in ("id", "text", "desc")}
-            attempts = []
-            if spec["id"] and spec["text"] and spec["desc"]:
-                attempts.append(spec)
-            for k in ("desc", "text", "id"):
-                if spec[k]:
-                    attempts.append({k: spec[k]})
-            has_xy = isinstance(step.get("x"), (int, float)) and isinstance(step.get("y"), (int, float))
-            lines = ["var __ok = false;",
-                     f"var __as = [{', '.join(_js_obj(a) for a in attempts)}];"]
-            lines.append("for (var i = 0; i < __as.length; i++) { var r = accClick(__as[i]); "
-                         "if (r !== undefined) { __ok = true; break; } }")
-            if has_xy:
-                # 录制坐标兜底（动态文本回放匹配不到时）：坐标按比例换算后 tap
-                lines.append("if (!__ok) { tap(__sx(%f, 'w'), __sx(%f, 'h')); __ok = true; }"
-                             % (float(step["x"]), float(step["y"])))
-            else:
-                lines.append("if (!__ok) throw new Error('无障碍点击失败: 无匹配节点且无兜底坐标');")
-            return "\n  ".join(lines)
+            if not any(spec.values()):
+                raise CompileError("accClick 步骤需至少填写 id/text/desc 一项")
+            return ("var r = accClick(" + _js_obj(spec) + ");"
+                    "if (r === undefined) throw new Error("
+                    "'无障碍点击失败: 未找到匹配节点（精确/通配符），请检查页面或改用通配符');")
 
         if stype == "sleep":
             seconds = float(step.get("seconds", 1) or 1)

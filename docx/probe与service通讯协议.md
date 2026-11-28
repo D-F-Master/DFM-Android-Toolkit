@@ -51,7 +51,7 @@
 | `0x0A` | CMD_CAMERA | PC → 设备 | `{}` 或 `{"cameraId":"0"}` | camera2 无预览拍照存设备端，见 `DFM-probe_接口文档.md` |
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe_接口文档.md` |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe_接口文档.md` |
-| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe_接口文档.md` |
+| `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（v2.15：id 精确；text/desc 精确或通配符 `* ? [abc] {a,b}` 整串匹配，找不到直接 404 不再坐标兜底），见 `DFM-probe_接口文档.md` |
 | `0x0E` | CMD_SCRIPT_UNZIP | PC → 设备 | `{"zip":"xxx.zip"}` | 解压脚本包（v2.14：仅 `script.js` → JS 引擎；旧 `script.json` 双格式已退役），见 `DFM-probe_接口文档.md` |
 | `0x0F` | CMD_SCRIPT_LIST | PC → 设备 | `{}` | 列出已导入脚本（v2.14：仅列含 `script.js` 的目录），见 `DFM-probe_接口文档.md` |
 | ~~`0x10`~~ | ~~CMD_SCRIPT_RUN~~ | — | — | **v2.14 已退役**（方案3：JSON 引擎删除，JS 脚本改用 `0x13` 执行，见 `docx/脚本方案3-设备端JS执行设计.md` §5）；设备端收到回 `unknown cmd` |

@@ -559,8 +559,8 @@ public class JsEngine {
         /** 与 PC 端 _acc_tree_find 同语义：id 精确、text/desc 包含，填了的同时满足。 */
         private static boolean treeFind(JSONObject node, String id, String text, String desc) {
             if (id.isEmpty() || id.equals(node.optString("id", ""))) {
-                if (text.isEmpty() || node.optString("text", "").contains(text)) {
-                    if (desc.isEmpty() || node.optString("desc", "").contains(desc)) {
+                if (text.isEmpty() || ProbeService.globMatch(text, node.optString("text", ""))) {
+                    if (desc.isEmpty() || ProbeService.globMatch(desc, node.optString("desc", ""))) {
                         return true;
                     }
                 }

@@ -2555,11 +2555,11 @@ onUnmounted(() => {
                               </div>
                               <div v-if="step.kind === 'accClick' || step.kind === 'accExists'" class="script-config-row">
                                 <span>文本</span>
-                                <el-input v-model="step.text" class="ep-config-input" placeholder="包含匹配，如 确定" />
+                                <el-input v-model="step.text" class="ep-config-input" placeholder="精确匹配，如 确定" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                               </div>
                               <div v-if="step.kind === 'accClick' || step.kind === 'accExists'" class="script-config-row">
                                 <span>内容描述</span>
-                                <el-input v-model="step.desc" class="ep-config-input" placeholder="包含匹配，如 提交按钮" />
+                                <el-input v-model="step.desc" class="ep-config-input" placeholder="精确匹配，如 提交按钮" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                               </div>
                               <div class="script-config-row">
                                 <span>成立时</span>
@@ -2673,11 +2673,11 @@ onUnmounted(() => {
                               </div>
                               <div v-if="step.onTrue.action === 'accClick'" class="script-config-row">
                                 <span>文本 text</span>
-                                <el-input v-model="step.onTrue.text" class="ep-config-input" placeholder="包含匹配，如「登录」" />
+                                <el-input v-model="step.onTrue.text" class="ep-config-input" placeholder="精确匹配，如「登录」" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                               </div>
                               <div v-if="step.onTrue.action === 'accClick'" class="script-config-row">
                                 <span>描述 desc</span>
-                                <el-input v-model="step.onTrue.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
+                                <el-input v-model="step.onTrue.desc" class="ep-config-input" placeholder="content-desc 精确匹配" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                               </div>
                               <div v-if="step.onTrue.action === 'sleep'" class="script-config-row">
                                 <span>延时时长(秒)</span>
@@ -2823,11 +2823,11 @@ onUnmounted(() => {
                               </div>
                               <div v-if="step.onFalse.action === 'accClick'" class="script-config-row">
                                 <span>文本 text</span>
-                                <el-input v-model="step.onFalse.text" class="ep-config-input" placeholder="包含匹配，如「登录」" />
+                                <el-input v-model="step.onFalse.text" class="ep-config-input" placeholder="精确匹配，如「登录」" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                               </div>
                               <div v-if="step.onFalse.action === 'accClick'" class="script-config-row">
                                 <span>描述 desc</span>
-                                <el-input v-model="step.onFalse.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
+                                <el-input v-model="step.onFalse.desc" class="ep-config-input" placeholder="content-desc 精确匹配" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                               </div>
                               <div v-if="step.onFalse.action === 'sleep'" class="script-config-row">
                                 <span>延时时长(秒)</span>
@@ -2926,13 +2926,13 @@ onUnmounted(() => {
                               <el-input v-model="step.id" class="ep-config-input" placeholder="com.x:id/btn（精确匹配）" />
                               <button class="script-add-btn" :disabled="!scriptStreaming || scriptRunning" :title="scriptTreePickStep === idx ? '取消获取并恢复组件树原状态' : '开启组件树，点选组件自动填入 id/text/desc'" @click="startScriptTreePick(idx)">{{ scriptTreePickStep === idx ? '取消获取' : '获取组件' }}</button>
                             </div>
-                            <div v-if="step.type === 'accClick'" class="script-config-row">
+                              <div v-if="step.type === 'accClick'" class="script-config-row">
                               <span>文本 text</span>
-                              <el-input v-model="step.text" class="ep-config-input" placeholder="包含匹配，如「登录」" />
+                              <el-input v-model="step.text" class="ep-config-input" placeholder="精确匹配，如「登录」" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                             </div>
                             <div v-if="step.type === 'accClick'" class="script-config-row">
                               <span>描述 desc</span>
-                              <el-input v-model="step.desc" class="ep-config-input" placeholder="content-desc 包含匹配" />
+                              <el-input v-model="step.desc" class="ep-config-input" placeholder="精确匹配，如「提交按钮」" title="v2.15 匹配规则：无通配符时精确相等；支持通配符：* 任意多字符、? 单个字符、[abc] 任一字符、{a,b} 任一选项。找不到匹配节点时步骤直接失败，不再兑底点击" />
                             </div>
                             <div v-if="step.type === 'runScript'" class="script-config-row">
                               <span>目标脚本</span>
