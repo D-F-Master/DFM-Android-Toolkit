@@ -34,10 +34,9 @@ CMD_CAMERA = 0x0A
 CMD_ACK = 0x06
 CMD_ERROR = 0xFF
 
-# 设备端离线脚本命令字（0x0E 解压 / 0x0F 列表 / 0x10 执行）
+# 设备端脚本命令字（0x0E 解压 / 0x0F 列表；0x10 旧 JSON 执行已随方案3退役，见 docx/脚本方案3-设备端JS执行设计.md §5）
 CMD_SCRIPT_UNZIP = 0x0E
 CMD_SCRIPT_LIST = 0x0F
-CMD_SCRIPT_RUN = 0x10
 CMD_SCRIPT_RUN_JS = 0x13
 CMD_SCRIPT_STOP = 0x14
 
@@ -677,12 +676,6 @@ class ProbeScriptImportRequest(BaseModel):
     zipPath: str
 
 
-class ProbeScriptRunRequest(BaseModel):
-    deviceId: str
-    script: str
-    repeat: int = Field(1, ge=0, le=1000)
-
-
 class ProbeScriptRunJsRequest(BaseModel):
     deviceId: str
     script: str
@@ -733,7 +726,7 @@ def probe_script_import(req: ProbeScriptImportRequest):
          f"O=$(stat -c %U {files_dir} 2>/dev/null); "
          f"G=$(stat -c %G {files_dir} 2>/dev/null); "
          f"[ -n \"$O\" ] && chown $O:$G {DEVICE_SCRIPT_DIR}/{zip_name} && "
-         f"chmod 2770 {DEVICE_SCRIPT_DIR} && chmod 664 '{DEVICE_SCRIPT_DIR}/{zip_name}'",
+         f"chmod 2775 {DEVICE_SCRIPT_DIR} && chmod 664 '{DEVICE_SCRIPT_DIR}/{zip_name}'",
          timeout=30)
     result = _result(device_id, False, CMD_SCRIPT_UNZIP, {"zip": zip_name})
     resp = (result.get("data") or {}).get("response") or {}
@@ -748,29 +741,17 @@ def probe_script_import(req: ProbeScriptImportRequest):
 
 @router.post("/probe/script-list")
 def probe_script_list(req: ProbeRequest):
-    """列出设备端已导入的脚本（0x0F），返回 script_store 下含 script.json 的目录。"""
+    """列出设备端已导入的脚本（0x0F），返回 script_store 下含 script.js 的目录（JS 引擎）。"""
     return _result(req.deviceId, False, CMD_SCRIPT_LIST, {})
-
-
-@router.post("/probe/script-run")
-def probe_script_run(req: ProbeScriptRunRequest):
-    """执行设备端已导入的脚本（0x10），返回逐步骤成败日志。
-
-    注意：脚本执行时长受帧协议 RESPONSE_TIMEOUT=120s 限制，超长脚本
-    （如大 repeat、长 sleep）会因响应超时而失败；repeat=0 表示按脚本自身配置执行。
-    """
-    return _result(req.deviceId, False, CMD_SCRIPT_RUN,
-                   {"script": req.script, "repeat": req.repeat})
 
 
 @router.post("/probe/script-run-js")
 def probe_script_run_js(req: ProbeScriptRunJsRequest):
-    """执行设备端已导入的 JS 脚本（0x13，方案3 P0），返回 dfm.log 收集的日志。
+    """执行设备端已导入的 JS 脚本（0x13），返回 dfm.log 收集的日志。
 
-    JS 引擎（Rhino）与 JSON 引擎并存：0x13 执行 script_store/{script}/script.js，
-    0x10 仍执行 script.json。脚本同步执行，结束后一次性返回全部日志；
-    执行时长受帧协议 RESPONSE_TIMEOUT=120s 限制，超长脚本用 /probe/script-stop
-    停止（0x14 独立连接，不受当前执行阻塞）。
+    0x13 执行 script_store/{script}/script.js（Rhino 解释执行）。
+    脚本同步执行，结束后一次性返回全部日志；执行时长受帧协议 RESPONSE_TIMEOUT=120s
+    限制，超长脚本用 /probe/script-stop 停止（0x14 独立连接，不受当前执行阻塞）。
     """
     return _result(req.deviceId, False, CMD_SCRIPT_RUN_JS,
                    {"script": req.script, "repeat": req.repeat})

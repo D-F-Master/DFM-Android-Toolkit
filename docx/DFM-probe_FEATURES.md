@@ -101,10 +101,16 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | `{}`（无必填字段） | `{"code":200,"message":"success","data":{"enabled":bool,"started":bool}}` | 未启用无障碍服务时跳转系统设置页，已启用直接返回不跳页，见 §4.6 |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | `{}`（无必填字段） | 统一信封，`data` 为 `{package,nodeCount,truncated,root}` | 返回无障碍服务采集的当前窗口组件树（节点上限 150，超出置 truncated），见 §4.6 |
 | `0x0D` | CMD_ACCESSIBILITY_CLICK | `{"id":"","text":"","desc":""}`（至少一项） | 统一信封，`data` 为 `{clicked,id,text,desc}` | 按条件匹配组件树节点并执行 ACTION_CLICK（真无障碍点击；不可点击时 dispatchGesture 坐标兜底），见 §4.6 |
-| 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开 |
+| `0x0E` | CMD_SCRIPT_UNZIP | `{"zip":"xxx.zip"}` | 统一信封，`data` 为 `{script,format:"js",steps,files,path,apks,templates}` | 解压 `script_in/xxx.zip` 到 `script_store/xxx/`（v2.14 起仅认 `script.js`，JS 引擎），见 §4.7 |
+| `0x0F` | CMD_SCRIPT_LIST | `{}` | 统一信封，`data` 为 `{scripts:[...]}` | 列出已导入脚本（v2.14 起仅列含 `script.js` 目录），见 §4.7 |
+| `0x13` | CMD_SCRIPT_RUN_JS | `{"script":"名字","repeat":N}` | 统一信封，`data` 为 `{script,ok,error,summary,logs[],truncated}` | Rhino 执行 JS 脚本（方案3，唯一执行入口；同步执行，日志全量回传），见 §4.7 |
+| `0x14` | CMD_SCRIPT_STOP | `{}` | 统一信封，`data` 为 `{stopping,wasRunning,forceAbandoned}` | 停止正在执行的 JS 脚本（幂等；独立连接不受执行阻塞），见 §4.7 |
+| 其它任意值 | 未知命令 | 任意 JSON 对象 | `{"code":400,"message":"unknown cmd: 0x..","data":null}`（命令字 `0xFF`） | 明确报错，连接不断开（含已退役的 `0x10`） |
 
 > 旧版 `0x01`~`0x05`、`0x07`（PING / ECHO / TTS / INFO / QUIT / DEVICE_INFO）业务命令字已全部删除，
 > 本版为破坏性不兼容变更，PC 侧脚本、service 路由与前端页面须一起升级。
+> v2.14（方案3）：旧 JSON 脚本引擎及 `0x10 CMD_SCRIPT_RUN` 已删除（收到回 `unknown cmd`），
+> JS 脚本执行/停止统一走 `0x13` / `0x14`；导出包签名机制退役；详见 `docx/脚本方案3-设备端JS执行设计.md` §5。
 > `0x02` / `0x82` 为新增的设备详细信息命令字/响应字。
 > `0x03` / `0x83` 为串口读取（取会话增量）命令字/响应字；`0x04` / `0x84`、`0x05` / `0x85`、
 > `0x07` / `0x87` 为新增的串口会话打开 / 发送 / 关闭命令字/响应字。
@@ -205,6 +211,31 @@ CRC16-Modbus 覆盖 `帧序 + 长度(2B) + 命令字 + 数据区`。
 - **调用方式**：前端「探针工具 → 无障碍设置页 / 无障碍组件树」按钮，走 `POST /api/probe/message`
   发 `cmd:11` / `cmd:12`；组件树在页面结果区按层级缩进显示；`0x0D` 由模拟脚本
   「无障碍点击（accClick）」步骤自动调用（`cmd:13`），也可在探针工具页手工发帧验证。
+
+### 4.7 设备端 JS 脚本引擎（`0x0E` / `0x0F` / `0x13` / `0x14`，v2.13~v2.14，方案3）
+
+- **引擎**：内嵌 Mozilla Rhino 1.8.1（解释模式，`classes2.dex` + 本地化 properties），
+  脚本为任意 JS（`script_store/{脚本名}/script.js`），头部声明 `var apiVersion = 1;`
+  作为 API 契约，缺失或高于设备支持版本时拒执行；独立守护线程执行，
+  指令观察器每 N 条指令检查停止标志（配合 `0x14` 实现「立即中断」）。
+- **宿主函数集**（全局直接可用）：`tap` / `swipe` / `longpress` / `input`（ASCII）/
+  `inputUnicode`（剪贴板粘贴链，中文等非 ASCII）/ `keyevent` / `accClick` / `sleep` / `shell` /
+  `speak` / `startApp` / `stopApp` / `installApk` / `uninstallApp` / `deleteFolder` / `reboot` /
+  `screenSize` / `log` / `randomDigits` / `waitFor`（模板匹配） / `waitForTap` / `volume` /
+  `screenshot` / `installed` / `stopped` / `roundNo`。
+- **模板匹配**（v2.14）：纯 Java 灰度金字塔 SAD（1/4 缩样粗搜 top-8 → 原尺寸 ±3px 精验），
+  `waitFor(模板名, 超时秒, 阈值)` 轮询截屏（cache/dfm_wait.png，chmod 644）至命中或超时；
+  模板取自脚本包 `templates/` 子目录。
+- **脚本包**：zip 布局 `script.js + metadata.json + apk/ + templates/`，由 service 端
+  JSON→JS 编译器（`routes/script_compiler.py`）从模拟脚本 JSON 生成，`/api/device/script/run-js`
+  编译打包推送执行一条龙；`0x0E` 解压、`0x0F` 列表（仅含 `script.js` 目录）。
+- **执行/停止**：`0x13` 同步执行并全量回传日志 `{script,ok,error,summary,logs,truncated}`
+  （日志上限 500 条、单条 200 字符）；`0x14` 停止（幂等，独立连接，返回
+  `{stopping,wasRunning,forceAbandoned}`）；执行超 RESPONSE_TIMEOUT=120s 时长限制，
+  超长脚本须中途停止或拆分。
+- **旧 JSON 引擎退役**（v2.14，方案3 §5）：`ScriptEngine.java` 与 `0x10 CMD_SCRIPT_RUN`
+  删除（收到回 `unknown cmd`），旧脚本由 service 端编译器在下次执行时自动转换
+  （编译失败时明确报错，如引用已退役的 camReplace）。
 
 ### 4.2 系统 TTS 朗读
 

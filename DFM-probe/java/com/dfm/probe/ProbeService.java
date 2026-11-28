@@ -105,7 +105,6 @@ public class ProbeService extends Service {
     private static final int CMD_ACCESSIBILITY_CLICK = 0x0D;
     private static final int CMD_SCRIPT_IMPORT = 0x0E;
     private static final int CMD_SCRIPT_LIST = 0x0F;
-    private static final int CMD_SCRIPT_RUN = 0x10;
     private static final int CMD_SCRIPT_RUN_JS = 0x13;
     private static final int CMD_SCRIPT_STOP = 0x14;
     private static final int CMD_ACK = 0x06;
@@ -120,10 +119,8 @@ public class ProbeService extends Service {
     /** 0x0C 组件树序列化的节点数上限，超出后停止展开并置 truncated，防止响应超出单帧 65535。 */
     private static final int MAX_TREE_NODES = 150;
 
-    /** 设备端离线脚本引擎（0x0E 解压 / 0x0F 列表 / 0x10 执行），懒创建。 */
-    private ScriptEngine scriptEngine;
-
-    /** 设备端 JS 脚本引擎（0x13 执行 / 0x14 停止，Rhino），懒创建；与 JSON 引擎并存（P0/P1 双轨）。 */
+    /** 设备端 JS 脚本引擎（0x0E 解压 / 0x0F 列表 / 0x13 执行 / 0x14 停止，Rhino），懒创建。
+     *  旧 JSON 引擎（ScriptEngine / 0x10）已随方案3退役，见 docx/脚本方案3-设备端JS执行设计.md §5。 */
     private JsEngine jsEngine;
 
     /** 监听状态必须 static：系统每 60 秒把后台服务按 app idle 停掉（ onDestroy ），但进程仍存活；
@@ -372,7 +369,6 @@ public class ProbeService extends Service {
                     && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE
                     && cmd != CMD_ACCESSIBILITY_CLICK
                     && cmd != CMD_SCRIPT_IMPORT && cmd != CMD_SCRIPT_LIST
-                    && cmd != CMD_SCRIPT_RUN
                     && cmd != CMD_SCRIPT_RUN_JS && cmd != CMD_SCRIPT_STOP;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
@@ -484,7 +480,7 @@ public class ProbeService extends Service {
                 return fail(500, "cmd failed: " + e);
             }
         }
-        if (cmd == CMD_SCRIPT_IMPORT || cmd == CMD_SCRIPT_LIST || cmd == CMD_SCRIPT_RUN
+        if (cmd == CMD_SCRIPT_IMPORT || cmd == CMD_SCRIPT_LIST
                 || cmd == CMD_SCRIPT_RUN_JS || cmd == CMD_SCRIPT_STOP) {
             try {
                 JSONObject data;
@@ -492,8 +488,6 @@ public class ProbeService extends Service {
                     data = scriptImport(req);
                 } else if (cmd == CMD_SCRIPT_LIST) {
                     data = scriptList();
-                } else if (cmd == CMD_SCRIPT_RUN) {
-                    data = scriptRun(req);
                 } else if (cmd == CMD_SCRIPT_RUN_JS) {
                     data = scriptRunJs(req);
                 } else {
@@ -529,70 +523,23 @@ public class ProbeService extends Service {
         return res;
     }
 
-    // ===== 脚本离线执行（0x0E 解压 / 0x0F 列表 / 0x10 执行），引擎见 ScriptEngine =====
+    // ===== 脚本包导入 / 列表（0x0E / 0x0F）+ JS 执行（0x13 / 0x14），引擎见 JsEngine =====
 
-    /** 脚本引擎懒创建：依赖本服务上下文（外部私有目录 / 0x08 shell / 0x01 TTS / 0x0D 无障碍）。 */
-    private synchronized ScriptEngine scriptEngine() throws Exception {
-        if (scriptEngine == null) {
-            scriptEngine = new ScriptEngine(this);
-        }
-        return scriptEngine;
-    }
-
-    /** CMD_SCRIPT_IMPORT (0x0E)：解压 script_in/ 下 zip 到 script_store/{脚本名}/。请求 {"zip":"xxx.zip"}。
-     *  双格式：zip 根含 script.json 走 JSON 引擎，含 script.js 走 JS 引擎（方案3 P0-6）。 */
+    /** CMD_SCRIPT_IMPORT (0x0E)：解压 script_in/ 下 zip 到 script_store/{脚本名}/。
+     *  仅接受 JS 脚本包（zip 根含 script.js）；旧 JSON 包（script.json）已随方案3退役。 */
     private JSONObject scriptImport(JSONObject req) throws Exception {
         String zip = req.optString("zip", "").trim();
-        if (jsZipHasEntry(zip, JsEngine.JS_ENTRY)) {
-            return jsEngine().unzip(zip);
-        }
-        return scriptEngine().unzip(zip);
+        return jsEngine().unzip(zip);
     }
 
-    /** 探测 script_in/{zip}.zip 内是否含指定入口文件（不解压，流式扫描中央/本地文件头）。 */
-    private boolean jsZipHasEntry(String zip, String entry) throws Exception {
-        String name = zip.endsWith(".zip") ? zip.substring(0, zip.length() - 4) : zip;
-        if (name.contains("/") || name.contains("\\") || name.contains("..")) {
-            return false;
-        }
-        File base = getExternalFilesDir(null);
-        if (base == null) {
-            return false;
-        }
-        File f = new File(new File(base, "script_in"), name + ".zip");
-        if (!f.isFile()) {
-            return false;
-        }
-        java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(
-                new java.io.FileInputStream(f));
-        try {
-            java.util.zip.ZipEntry e;
-            while ((e = zis.getNextEntry()) != null) {
-                if (entry.equals(e.getName())) {
-                    return true;
-                }
-            }
-        } finally {
-            zis.close();
-        }
-        return false;
-    }
-
-    /** CMD_SCRIPT_LIST (0x0F)：列出 script_store/ 下已导入的脚本。 */
+    /** CMD_SCRIPT_LIST (0x0F)：列出 script_store/ 下已导入的 JS 脚本。 */
     private JSONObject scriptList() throws Exception {
-        return scriptEngine().list();
+        return jsEngine().list();
     }
 
-    /** CMD_SCRIPT_RUN (0x10)：执行 script_store/{script}/script.json。请求 {"script":"名字","repeat":N}。 */
-    private JSONObject scriptRun(JSONObject req) throws Exception {
-        String name = req.optString("script", req.optString("name", "")).trim();
-        int repeat = req.optInt("repeat", 1);
-        return scriptEngine().run(name, repeat);
-    }
+    // ===== JS 脚本执行（0x13 / 0x14，Rhino），方案3 见 docx/脚本方案3-设备端JS执行设计.md =====
 
-    // ===== JS 脚本执行（0x13 / 0x14，Rhino），引擎见 JsEngine；方案3 见 docx/脚本方案3-设备端JS执行设计.md =====
-
-    /** JS 脚本引擎懒创建：与 ScriptEngine 同依赖（外部私有目录 / 0x08 shell / 0x0D 无障碍）。 */
+    /** JS 脚本引擎懒创建：依赖外部私有目录 / 0x08 shell / 0x0D 无障碍。 */
     private synchronized JsEngine jsEngine() throws Exception {
         if (jsEngine == null) {
             jsEngine = new JsEngine(this);
@@ -1303,7 +1250,7 @@ public class ProbeService extends Service {
     }
 
     /** CMD_ACCESSIBILITY_TREE (0x0C)：返回当前活动窗口组件树（需无障碍服务已启用）；未启用时保底拉起设置页并回明确应答。 */
-    private JSONObject accessibilityTree() throws Exception {
+    JSONObject accessibilityTree() throws Exception {
         DfmAccessibilityService svc = DfmAccessibilityService.instance();
         if (svc == null) {
             // 保底：无障碍权限缺失时不只报错，直接把设置页拉到前台，让用户就地启用

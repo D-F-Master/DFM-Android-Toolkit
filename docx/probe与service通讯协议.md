@@ -4,6 +4,9 @@
 
 > 2026-11-27：摄像头画面替换/恢复命令字 `0x11` / `0x12`（响应帧 `0x91` / `0x92`）已随
 > 摄像头替换功能下线而移除，探针页不再提供「替换摄像头画面 / 恢复真实画面 / 相机列表」按钮。
+> 2026-11-28：脚本方案3落地（v2.14，见 `docx/脚本方案3-设备端JS执行设计.md`）：
+> 设备端旧 JSON 脚本引擎及命令字 `0x10` CMD_SCRIPT_RUN 删除（收到回 `unknown cmd`），
+> `0x0E` 解压仅认 `script.js`、`0x0F` 仅列含 `script.js` 的目录；JS 脚本执行/停止统一走 `0x13` / `0x14`。
 
 完整帧示例：AA 55 09 02 00 00 7B 7D 9B 93（帧序 0x09、长度 02 00、命令字 0x00 心跳、数据区 {}、CRC 9B 93；长度字段 2 字节，低字节在前）
 
@@ -49,15 +52,15 @@
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC → 设备 | `{}` | 检测无障碍服务，未启用时跳转系统设置页，见 `DFM-probe_接口文档.md` |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC → 设备 | `{}` | 返回无障碍服务采集的当前窗口组件树，见 `DFM-probe_接口文档.md` |
 | `0x0D` | CMD_ACCESSIBILITY_CLICK | PC → 设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配组件树节点并执行 ACTION_CLICK（不可点击时 dispatchGesture 坐标兜底），见 `DFM-probe_接口文档.md` |
-| `0x0E` | CMD_SCRIPT_UNZIP | PC → 设备 | `{"zip":"xxx.zip"}` | 解压脚本包（v2.13 双格式：`script.json` → JSON 引擎 / `script.js` → JS 引擎），见 `DFM-probe_接口文档.md` |
-| `0x0F` | CMD_SCRIPT_LIST | PC → 设备 | `{}` | 列出已导入脚本，见 `DFM-probe_接口文档.md` |
-| `0x10` | CMD_SCRIPT_RUN | PC → 设备 | `{"script":"名字","repeat":N}` | 离线执行 JSON 脚本，见 `DFM-probe_接口文档.md` |
-| `0x13` | CMD_SCRIPT_RUN_JS | PC → 设备 | `{"script":"名字","repeat":N}` | v2.13 新增：Rhino 执行 JS 脚本（方案3 P0），见 `DFM-probe_接口文档.md` |
+| `0x0E` | CMD_SCRIPT_UNZIP | PC → 设备 | `{"zip":"xxx.zip"}` | 解压脚本包（v2.14：仅 `script.js` → JS 引擎；旧 `script.json` 双格式已退役），见 `DFM-probe_接口文档.md` |
+| `0x0F` | CMD_SCRIPT_LIST | PC → 设备 | `{}` | 列出已导入脚本（v2.14：仅列含 `script.js` 的目录），见 `DFM-probe_接口文档.md` |
+| ~~`0x10`~~ | ~~CMD_SCRIPT_RUN~~ | — | — | **v2.14 已退役**（方案3：JSON 引擎删除，JS 脚本改用 `0x13` 执行，见 `docx/脚本方案3-设备端JS执行设计.md` §5）；设备端收到回 `unknown cmd` |
+| `0x13` | CMD_SCRIPT_RUN_JS | PC → 设备 | `{"script":"名字","repeat":N}` | Rhino 执行 JS 脚本（方案3，v2.13 新增、v2.14 起为唯一执行入口），见 `DFM-probe_接口文档.md` |
 | `0x14` | CMD_SCRIPT_STOP | PC → 设备 | `{}` | v2.13 新增：停止正在执行的 JS 脚本（幂等），见 `DFM-probe_接口文档.md` |
 | `0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x8E` ~ `0x90`、`0x93` ~ `0x94` | CMD_RESPONSE | 设备 → PC | UTF-8 JSON | 数据响应帧，命令字 = 请求命令字按位或 `0x80` |
 | `0xFF` | CMD_ERROR | 设备 → PC | `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 未知命令或业务异常 |
 
-`0x00`、`0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x07`、`0x08`、`0x09`、`0x0A`、`0x0B`、`0x0C`、`0x0D`、`0x0E`、`0x0F`、`0x10`、`0x13`、`0x14` 为业务帧，**要求 ACK**；`0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x8E` ~ `0x90`、`0x93` ~ `0x94`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
+`0x00`、`0x01`、`0x02`、`0x03`、`0x04`、`0x05`、`0x07`、`0x08`、`0x09`、`0x0A`、`0x0B`、`0x0C`、`0x0D`、`0x0E`、`0x0F`、`0x13`、`0x14` 为业务帧，**要求 ACK**；`0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x8E` ~ `0x90`、`0x93` ~ `0x94`、`0xFF` 为通知类响应帧，**不要求 ACK**，避免确认环。
 
 > 旧版 `0x01`~`0x05`、`0x07` 业务命令字已全部删除，本版为破坏性不兼容变更；
 > 设备端不再有关闭连接的命令字，连接由 PC 侧主动关闭，服务常驻监听。

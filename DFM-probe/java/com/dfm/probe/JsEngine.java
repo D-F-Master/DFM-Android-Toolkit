@@ -1,5 +1,9 @@
 package com.dfm.probe;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -70,6 +74,9 @@ public class JsEngine {
     private volatile Thread runThread;
     /** 停止标记：0x14 置位，脚本线程在指令观察者 / sleep / shell 间隙检查。 */
     private volatile boolean stopFlag;
+
+    /** 当前执行轮号（1 起），由 runRhino 每轮更新；dfm.roundNo() 读给 {执行轮数} 变量用 */
+    private volatile int currentRound;
 
     /** Rhino ContextFactory 全局单例：observeInstructionCount 挂停止检查。 */
     private static class DfmContextFactory extends ContextFactory {
@@ -289,6 +296,10 @@ public class JsEngine {
                 if (stopFlag) {
                     throw new ScriptStop("脚本已停止（0x14）");
                 }
+                // 编译器生成的脚本用 __stopRequested 标记 condition 的 stop 动作
+                // （对齐 PC 引擎：stop = 结束整个脚本，后续轮次不再执行）
+                scope.put("__stopRequested", scope, Boolean.FALSE);
+                currentRound = round;
                 // 直接在全局作用域上逐轮执行：evaluateString 每次都会重新执行顶层 var 声明。
                 // 不能对 scope 自身 setPrototype(scope)（自引用原型链会让 getBase 无限循环，
                 // 卡死线程且 0x14 无法中断——此前 ART 上 live-lock 的根因）
@@ -297,6 +308,12 @@ public class JsEngine {
                 Object v = scope.get("apiVersion", scope);
                 if (!(v instanceof Number) || ((Number) v).intValue() > 1) {
                     throw new IllegalArgumentException("脚本 apiVersion 缺失或高于设备支持版本（设备支持 1）");
+                }
+                // condition 的 stop 动作：本轮结束时终止整个脚本（不再进入下一轮）
+                Object stopReq = scope.get("__stopRequested", scope);
+                if (Boolean.TRUE.equals(stopReq)) {
+                    engineLog(logs, 0, "round", true, "判断步骤触发 stop，脚本提前结束");
+                    return;
                 }
                 engineLog(logs, 0, "round", true, "第 " + round + " 轮执行完成"
                         + (result != Context.getUndefinedValue() ? "，返回 " + abbreviate(Context.toString(result), 80) : ""));
@@ -366,8 +383,10 @@ public class JsEngine {
             ScriptableObject dfm = (ScriptableObject) cx.newObject(scope);
             dfm.setPrototype(scope);
             String[] names = {"tap", "longpress", "swipe", "input", "keyevent", "accClick",
-                    "sleep", "shell", "speak", "startApp", "stopApp", "installApk",
-                    "uninstallApp", "deleteFolder", "reboot", "screenSize", "log", "randomDigits"};
+                    "accExists", "sleep", "shell", "speak", "startApp", "stopApp", "installApk",
+                    "uninstallApp", "deleteFolder", "reboot", "screenSize", "log", "randomDigits",
+                    "volume", "screenshot", "installed", "stopped", "roundNo",
+                    "waitFor", "waitForTap", "inputUnicode"};
             dfm.defineFunctionProperties(names, DfmBridge.class, ScriptableObject.DONTENUM);
             ScriptableObject.putProperty(global, "dfm", dfm);
 
@@ -434,11 +453,62 @@ public class JsEngine {
             }
             for (int i = 0; i < text.length(); i++) {
                 if (text.charAt(i) > 127) {
-                    throw new Exception("input 仅支持 ASCII（设备端暂不支持中文输入，P2 修复）");
+                    // 非 ASCII：input text 会 NPE（AOSP Input.java 只做 KeyEvent 映射），
+                    // 走剪贴板 + PASTE 链（P2，见 inputUnicode）
+                    inputUnicode(text);
+                    return;
                 }
             }
             ShellOut r = shellExec("input text " + shellQuote(text), true, SHELL_TIMEOUT);
             checkExit(r, "input text");
+        }
+
+        /**
+         * Unicode 输入（方案3 P2）：剪贴板 + 系统粘贴键。
+         *
+         * 为什么不用 cmd clipboard / input text：前者在本设备不可用（"No shell
+         * command implementation."），后者对非 ASCII 会 NPE。写入剪贴板不受
+         * Android 10 "仅焦点应用/默认 IME 可读"限制（限制的是读取），PASTE 事件
+         * 由系统分发给焦点窗口，粘贴进目标输入框。前置条件：焦点已在目标输入框
+         * （脚本里通常先用 tap 点输入框），无焦点时 PASTE 无效果 —— 与真人手操
+         * 一致，不做额外兜底。
+         */
+        public static void inputUnicode(String text) throws Exception {
+            if (text == null || text.isEmpty()) {
+                return;
+            }
+            final String t = text;
+            // ClipboardManager 的 setPrimaryClip 部分实现校验主线程 Handler，
+            // 引擎线程在后台：切主线程写入，用 CountDownLatch 同步等待结果
+            final Object[] err = new Object[1];
+            android.os.Handler h = new android.os.Handler(
+                    bridge().probe.getMainLooper());
+            final java.util.concurrent.CountDownLatch latch =
+                    new java.util.concurrent.CountDownLatch(1);
+            h.post(() -> {
+                try {
+                    ClipboardManager cm = (ClipboardManager)
+                            bridge().probe.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                    if (cm == null) {
+                        err[0] = "ClipboardManager unavailable";
+                    } else {
+                        cm.setPrimaryClip(ClipData.newPlainText("dfm", t));
+                    }
+                } catch (Exception e) {
+                    err[0] = e.getMessage() == null ? e.toString() : e.getMessage();
+                } finally {
+                    latch.countDown();
+                }
+            });
+            latch.await(3000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (err[0] != null) {
+                throw new Exception("inputUnicode 写入剪贴板失败: " + err[0]);
+            }
+            // PASTE（KEYCODE_PASTE=279）：事件进焦点窗口；shell uid 注入，与调用方权限无关
+            ShellOut r = shellExec("input keyevent 279", true, SHELL_TIMEOUT);
+            checkExit(r, "input keyevent PASTE");
+            // 给目标应用处理粘贴留一小段时间（多数 IME/输入框立即生效，纯节奏缓冲）
+            sleep(100);
         }
 
         public static void keyevent(double keycode) throws Exception {
@@ -459,6 +529,199 @@ public class JsEngine {
             JSONObject res = bridge().probe.accessibilityClick(req);
             boolean clicked = res.optInt("code", 500) == 200;
             return clicked ? res.opt("data") : Context.getUndefinedValue();
+        }
+
+        /**
+         * 无障碍组件存在判断（对齐 PC 端 accExists 条件，0x0C 树查找，只查不点）：
+         * {"id","text","desc"} 至少一项；存在返回 true，不存在/未启用返回 false。
+         */
+        public static boolean accExists(Object spec) throws Exception {
+            if (!(spec instanceof Scriptable)) {
+                throw new Exception("accExists 参数必须是 {id/text/desc} 对象");
+            }
+            Scriptable s = (Scriptable) spec;
+            String id = strProp(s, "id");
+            String text = strProp(s, "text");
+            String desc = strProp(s, "desc");
+            if (id.isEmpty() && text.isEmpty() && desc.isEmpty()) {
+                throw new Exception("accExists 需至少填写 id/text/desc 一项");
+            }
+            // 点击式查找会回溯可点击祖先，存在性判断需要纯匹配，这里直接查树。
+            // 树接口返回整棵 JSON（≤150 节点），体积可接受（百级节点 ≈ 数十 KB）。
+            JSONObject res = bridge().probe.accessibilityTree();
+            if (res.optInt("code", 500) != 200) {
+                return false;
+            }
+            JSONObject root = res.optJSONObject("data").optJSONObject("root");
+            return root != null && treeFind(root, id, text, desc);
+        }
+
+        /** 与 PC 端 _acc_tree_find 同语义：id 精确、text/desc 包含，填了的同时满足。 */
+        private static boolean treeFind(JSONObject node, String id, String text, String desc) {
+            if (id.isEmpty() || id.equals(node.optString("id", ""))) {
+                if (text.isEmpty() || node.optString("text", "").contains(text)) {
+                    if (desc.isEmpty() || node.optString("desc", "").contains(desc)) {
+                        return true;
+                    }
+                }
+            }
+            org.json.JSONArray children = node.optJSONArray("children");
+            if (children != null) {
+                for (int i = 0; i < children.length(); i++) {
+                    JSONObject c = children.optJSONObject(i);
+                    if (c != null && treeFind(c, id, text, desc)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /**
+         * 应用是否已安装（对齐 PC 端 appInstalled 条件与 startApp 前置检查）：
+         * pm path 有输出即已安装。
+         */
+        public static boolean installed(String pkg) throws Exception {
+            checkNotEmpty(pkg, "installed package");
+            ShellOut r = shellExec("pm path " + shellQuote(pkg.trim()), false, SHELL_TIMEOUT);
+            return r.exit == 0 && !r.stdout.trim().isEmpty();
+        }
+
+        /**
+         * 音量：action up/down（KEYCODE_VOLUME_UP/DOWN）或 mute（service call audio 静音指定流）。
+         * stream 仅 mute 生效：media/ring/alarm/notification，默认 media（与 PC 端一致）。
+         */
+        public static void volume(String action, Object stream) throws Exception {
+            String a = action == null ? "" : action.trim();
+            if ("up".equals(a) || "down".equals(a)) {
+                String key = "up".equals(a) ? "KEYCODE_VOLUME_UP" : "KEYCODE_VOLUME_DOWN";
+                ShellOut r = shellExec("input keyevent " + key, true, SHELL_TIMEOUT);
+                checkExit(r, "volume " + a);
+                return;
+            }
+            if ("mute".equals(a)) {
+                String st = stream == null ? "media" : Context.toString(stream);
+                int type;
+                if ("ring".equals(st)) type = 2;
+                else if ("alarm".equals(st)) type = 4;
+                else if ("notification".equals(st)) type = 5;
+                else type = 3; // media（STREAM_MUSIC），与 adb_utils.get_stream_type 一致
+                ShellOut r = shellExec("service call audio " + (7 + type) + " i32 1", true, SHELL_TIMEOUT);
+                checkExit(r, "volume mute");
+                return;
+            }
+            throw new Exception("volume action 仅支持 up/down/mute: " + a);
+        }
+
+        /**
+         * 截图存档到当前脚本目录 screenshots/（对齐 PC 端 screenshot 步骤，落盘名 label_HHMMSS.png）。
+         * 返回保存的文件绝对路径。
+         */
+        public static String screenshot(Object label) throws Exception {
+            String name = label == null ? "step" : Context.toString(label).trim();
+            if (name.isEmpty()) {
+                name = "step";
+            }
+            name = name.replaceAll("[^0-9A-Za-z_-]", "_");
+            if (name.length() > 64) {
+                name = name.substring(0, 64);
+            }
+            File dir = new File(bridge().currentScriptDir(), "screenshots");
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw new Exception("cannot create dir: " + dir);
+            }
+            String ts = new java.text.SimpleDateFormat("HHmmss", java.util.Locale.US)
+                    .format(new java.util.Date());
+            File out = new File(dir, name + "_" + ts + ".png");
+            ShellOut r = shellExec("screencap -p " + shellQuote(out.getAbsolutePath()), true, 30);
+            checkExit(r, "screenshot");
+            if (!out.isFile()) {
+                throw new Exception("screenshot 保存失败: " + out.getName());
+            }
+            return out.getAbsolutePath();
+        }
+
+        /**
+         * 等待模板图像出现在屏幕上（方案3 P2 waitFor/condition-template）。
+         *
+         * 算法与 PC 端 wait_for_template / TemplateBench 基准同构：灰度化（luma 299/587/114）
+         * → 1/4 金字塔粗搜（SAD，取前 8 候选）→ 原尺寸 ±3px 精验取最小 SAD。基准
+         * （TemplateBench，PC JVM）100×100 模板全屏 43-82ms，设备端预留轮询间隔
+         * 300ms，不影响实时性。
+         *
+         * @param template 模板文件名（相对当前脚本 templates/ 目录）
+         * @param timeoutSec 超时秒数（0 = 单次匹配，与 PC condition-template 一致）
+         * @param threshold 匹配阈值 0-1（归一化 SAD score <= (1-threshold)*255 判命中）
+         * @return 命中时返回 {x,y,score}（屏幕坐标，模板左上角），超时返回 null（Rhino undefined）
+         */
+        public static Object waitFor(Object template, Object timeoutSec, Object threshold) throws Exception {
+            String name = template == null ? "" : Context.toString(template).trim();
+            if (name.isEmpty() || name.contains("..") || name.contains("/") || name.contains("\\")) {
+                throw new Exception("waitFor 模板名无效: " + name);
+            }
+            File tplFile = new File(new File(bridge().currentScriptDir(), "templates"), name);
+            if (!tplFile.isFile()) {
+                throw new Exception("waitFor 模板不存在: templates/" + name);
+            }
+            double timeout = timeoutSec == null ? 15 : Context.toNumber(timeoutSec);
+            if (Double.isNaN(timeout) || timeout < 0) {
+                timeout = 15;
+            }
+            double th = threshold == null ? 0.85 : Context.toNumber(threshold);
+            if (Double.isNaN(th) || th <= 0 || th > 1) {
+                th = 0.85;
+            }
+            int[] tplPix = TemplateMatcher.loadGray(tplFile);
+            int[] tplDim = TemplateMatcher.lastSize;
+            long deadline = timeout <= 0 ? 0 : System.currentTimeMillis() + (long) (timeout * 1000);
+            File shot = new File(bridge().probe.getCacheDir(), "dfm_wait.png");
+            while (true) {
+                if (bridge().stopFlag) {
+                    throw new ScriptStop("脚本已停止（0x14）");
+                }
+                ShellOut r = shellExec("screencap -p " + shellQuote(shot.getAbsolutePath())
+                        + " && chmod 644 " + shellQuote(shot.getAbsolutePath()), true, 30);
+                if (r.exit != 0) {
+                    throw new Exception("waitFor 截屏失败: " + firstLine(
+                            r.stderr == null || r.stderr.isEmpty() ? r.stdout : r.stderr));
+                }
+                int[] screen = TemplateMatcher.loadGray(shot);
+                int[] screenDim = TemplateMatcher.lastSize;
+                TemplateMatcher.Match m = TemplateMatcher.match(screen, screenDim[0], screenDim[1],
+                        tplPix, tplDim[0], tplDim[1], th);
+                if (m != null) {
+                    Scriptable js = Context.getCurrentContext().newObject(currentScope(), "Object");
+                    js.put("x", js, m.x);
+                    js.put("y", js, m.y);
+                    js.put("score", js, m.score);
+                    return js;
+                }
+                if (deadline == 0 || System.currentTimeMillis() >= deadline) {
+                    return null; // Rhino 侧为 undefined：condition-template 用作布尔
+                }
+                sleep(Math.min(300, Math.max(50, deadline - System.currentTimeMillis())));
+            }
+        }
+
+        /**
+         * 等待模板出现并点击中心（waitFor + tap 组合，等待期间停止即抛）。
+         * @return 命中时返回点击坐标 {x,y,score}，超时抛异常（与 PC 画面校验-先等后点行为一致）
+         */
+        public static Object waitForTap(Object template, Object timeoutSec, Object threshold) throws Exception {
+            int[] tplDim = TemplateMatcher.templateSize(new File(
+                    new File(bridge().currentScriptDir(), "templates"),
+                    template == null ? "" : Context.toString(template).trim()));
+            Object m = waitFor(template, timeoutSec, threshold);
+            if (m == null) {
+                throw new Exception("waitForTap 超时未找到模板: " + template);
+            }
+            Scriptable s = (Scriptable) m;
+            double cx = ((Number) ScriptableObject.getProperty(s, "x")).doubleValue()
+                    + tplDim[0] / 2.0;
+            double cy = ((Number) ScriptableObject.getProperty(s, "y")).doubleValue()
+                    + tplDim[1] / 2.0;
+            tap(cx, cy);
+            return m;
         }
 
         public static void sleep(double ms) throws Exception {
@@ -568,6 +831,11 @@ public class JsEngine {
             }
         }
 
+        /** 当前轮号（1 起），编译器用它实现 {执行轮数}；手写脚本也可直接读。 */
+        public static double roundNo() throws Exception {
+            return bridge().currentRound;
+        }
+
         /** N 位随机数字（首位不为 0），对齐 {N位随机数} 变量语义。 */
         public static String randomDigits(double digits) {
             int n = (int) Math.max(1, Math.min(18, digits));
@@ -580,6 +848,11 @@ public class JsEngine {
                 sb.setCharAt(0, '1');
             }
             return sb.toString();
+        }
+
+        /** 当前脚本是否被请求停止（0x14），供 JS 层长循环主动让出。 */
+        public static boolean stopped() throws Exception {
+            return bridge().stopFlag;
         }
 
         // ---- 内部实现 ----
@@ -653,6 +926,196 @@ public class JsEngine {
             this.exit = exit;
             this.stdout = stdout;
             this.stderr = stderr;
+        }
+    }
+
+    /**
+     * 模板匹配（方案3 P2）：灰度金字塔 SAD，与 PC 端 TemplateBench 基准同构。
+     *
+     * 纯 Java 实现（无 OpenCV 依赖）：原图与模板先归一化为灰度 int[]（每像素 0-255），
+     * 1/4 缩样粗搜取 SAD 最小的前 8 个候选，再在各候选 ±3px 窗口内做原尺寸精验，
+     * 取归一化分最低的命中点。score = 平均绝对差（0-255），命中条件 score <= (1-threshold)*255。
+     * PC 基准（100×100 模板 / 1920×1080 全屏）43-233ms；设备端同量级，轮询间隔 300ms 足够。
+     */
+    static final class TemplateMatcher {
+        /** 最近一次 loadGray 的 {width,height}（调用方读取，避免多返回值） */
+        static int[] lastSize = new int[]{0, 0};
+
+        private TemplateMatcher() {
+        }
+
+        /** 读 PNG/BMP → 灰度 int[]（行优先）。失败拋 Exception，尺寸写入 lastSize。 */
+        static int[] loadGray(File f) throws Exception {
+            BitmapFactory.Options opt = new BitmapFactory.Options();
+            opt.inPreferredConfig = Bitmap.Config.ALPHA_8;
+            Bitmap bmp = BitmapFactory.decodeFile(f.getAbsolutePath(), opt);
+            if (bmp == null) {
+                throw new Exception("图像解码失败: " + f.getName());
+            }
+            int w = bmp.getWidth(), h = bmp.getHeight();
+            if (w <= 0 || h <= 0) {
+                bmp.recycle();
+                throw new Exception("图像尺寸无效: " + f.getName());
+            }
+            int[] gray = new int[w * h];
+            int[] row = new int[w];
+            for (int y = 0; y < h; y++) {
+                bmp.getPixels(row, 0, w, 0, y, w, 1);
+                int base = y * w;
+                for (int x = 0; x < w; x++) {
+                    int p = row[x];
+                    // ALPHA_8 下像素值存 alpha 通道；普通 ARGB 按上一致处理（截图不透明）
+                    int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+                    int luma = (r * 299 + g * 587 + b * 114) / 1000;
+                    // ALPHA_8：getPixels 返回 p=0xAARRGGBB 形式但颜色通道为 0，
+                    // 实际灰度在 alpha 字节 —— 两者都算，取合理值
+                    int alpha = (p >>> 24) & 0xFF;
+                    gray[base + x] = (r == 0 && g == 0 && b == 0) ? alpha : luma;
+                }
+            }
+            bmp.recycle();
+            lastSize = new int[]{w, h};
+            return gray;
+        }
+
+        /** 仅取图像尺寸（不解码像素到 int[]，waitForTap 计算中心用） */
+        static int[] templateSize(File f) throws Exception {
+            BitmapFactory.Options opt = new BitmapFactory.Options();
+            opt.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(f.getAbsolutePath(), opt);
+            if (opt.outWidth <= 0 || opt.outHeight <= 0) {
+                throw new Exception("图像解码失败: " + f.getName());
+            }
+            return new int[]{opt.outWidth, opt.outHeight};
+        }
+
+        static final class Match {
+            final int x;
+            final int y;
+            final double score;
+
+            Match(int x, int y, double score) {
+                this.x = x;
+                this.y = y;
+                this.score = score;
+            }
+        }
+
+        /**
+         * 匹配：金字塔粗搜（scale=4，top-8）+ 原尺寸精验（±3px）。
+         * @return 最佳命中（score <= maxScore），无命中返回 null
+         */
+        static Match match(int[] big, int bw, int bh, int[] tpl, int tw, int th, double threshold) {
+            if (tw <= 0 || th <= 0 || tw > bw || th > bh) {
+                return null;
+            }
+            double maxScore = (1.0 - threshold) * 255.0;
+            // 模板太小（<8px）金字塔失真，直接原尺寸全搜
+            if (tw < 8 || th < 8) {
+                return scanFull(big, bw, bh, tpl, tw, th, maxScore);
+            }
+            int scale = 4;
+            int sw = bw / scale, sh = bh / scale;
+            int stw = Math.max(1, tw / scale), sth = Math.max(1, th / scale);
+            if (stw > sw || sth > sh) {
+                return scanFull(big, bw, bh, tpl, tw, th, maxScore);
+            }
+            int[] sBig = downsample(big, bw, bh, scale);
+            int[] sTpl = downsample(tpl, tw, th, scale);
+            // 粗搜：记录前 8 低分候选（简单插入排序数组，N≈12 万帧开销可忽略）
+            long[] candScore = new long[8];
+            int[] candX = new int[8], candY = new int[8];
+            java.util.Arrays.fill(candScore, Long.MAX_VALUE);
+            int candN = 0;
+            int maxX = sw - stw, maxY = sh - sth;
+            for (int y = 0; y <= maxY; y++) {
+                for (int x = 0; x <= maxX; x++) {
+                    long s = sadAt(sBig, sw, sTpl, stw, sth, x, y, Long.MAX_VALUE);
+                    if (candN < 8 || s < candScore[7]) {
+                        int pos = candN < 8 ? candN++ : 7;
+                        while (pos > 0 && candScore[pos - 1] > s) {
+                            candScore[pos] = candScore[pos - 1];
+                            candX[pos] = candX[pos - 1];
+                            candY[pos] = candY[pos - 1];
+                            pos--;
+                        }
+                        candScore[pos] = s;
+                        candX[pos] = x;
+                        candY[pos] = y;
+                    }
+                }
+            }
+            // 精验：每个候选中心 ×scale 对应原图位置 ±3px 窗口内原尺寸匹配
+            Match best = null;
+            double bestScore = Double.MAX_VALUE;
+            for (int i = 0; i < candN; i++) {
+                int cx = candX[i] * scale, cy = candY[i] * scale;
+                for (int dy = -3; dy <= 3; dy++) {
+                    int oy = cy + dy;
+                    if (oy < 0 || oy + th > bh) continue;
+                    for (int dx = -3; dx <= 3; dx++) {
+                        int ox = cx + dx;
+                        if (ox < 0 || ox + tw > bw) continue;
+                        long s = sadAt(big, bw, tpl, tw, th, ox, oy, Long.MAX_VALUE);
+                        double norm = s / (double) (tw * th);
+                        if (norm < bestScore) {
+                            bestScore = norm;
+                            best = new Match(ox, oy, norm);
+                        }
+                    }
+                }
+            }
+            return best != null && best.score <= maxScore ? best : null;
+        }
+
+        /** 模板过小时的原尺寸全图扫描（带早退）。 */
+        private static Match scanFull(int[] big, int bw, int bh, int[] tpl, int tw, int th,
+                                      double maxScore) {
+            Match best = null;
+            double bestScore = Double.MAX_VALUE;
+            for (int y = 0; y + th <= bh; y++) {
+                for (int x = 0; x + tw <= bw; x++) {
+                    long s = sadAt(big, bw, tpl, tw, th, x, y, (long) (bestScore * tw * th));
+                    double norm = s / (double) (tw * th);
+                    if (norm < bestScore) {
+                        bestScore = norm;
+                        best = new Match(x, y, norm);
+                    }
+                }
+            }
+            return best != null && best.score <= maxScore ? best : null;
+        }
+
+        /** (ox,oy) 处 tw×th 窗口的绝对差之和；超过 earlyExit 提前返回。 */
+        private static long sadAt(int[] big, int bw, int[] tpl, int tw, int th,
+                                  int ox, int oy, long earlyExit) {
+            long sum = 0;
+            for (int y = 0; y < th; y++) {
+                int bRow = (oy + y) * bw + ox;
+                int tRow = y * tw;
+                for (int x = 0; x < tw; x++) {
+                    int d = big[bRow + x] - tpl[tRow + x];
+                    sum += d < 0 ? -d : d;
+                }
+                if (sum > earlyExit) {
+                    return sum;
+                }
+            }
+            return sum;
+        }
+
+        /** 步长 scale 的降采样（取每块左上像素，与基准一致）。 */
+        private static int[] downsample(int[] px, int w, int h, int scale) {
+            int sw = w / scale, sh = h / scale;
+            int[] out = new int[sw * sh];
+            for (int y = 0; y < sh; y++) {
+                int srcRow = y * scale * w;
+                int dstRow = y * sw;
+                for (int x = 0; x < sw; x++) {
+                    out[dstRow + x] = px[srcRow + x * scale];
+                }
+            }
+            return out;
         }
     }
 

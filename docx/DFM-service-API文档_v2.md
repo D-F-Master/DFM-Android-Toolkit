@@ -1221,11 +1221,18 @@
 
 ## 更新日志
 
+### v2.8.1
+- 模拟脚本执行链路切换到设备端 JS 引擎（方案3 P1/P3 完成，设备需 v2.14+ APK，详见 `DFM-probe_接口文档.md` §3.11/3.12 与 `脚本方案3-设备端JS执行设计.md`）：
+  - 新增 `POST /api/device/script/run-js` `{"deviceId":"...","name":"脚本名","repeat":1}`：服务端 JSON→JS 编译器（`routes/script_compiler.py`）把 `data/scripts/{name}.json` 编译为 `script.js`，打包 `script.js + metadata.json + apk/ + templates/` 经 `/api/probe/script-import` 推送后发 `0x13` 执行；同步返回全量日志（同 `run` 的日志结构）。17 种步骤类型 + 条件分支 + 变量替换 + count/interval/retry + runScript 嵌套全部支持；`waitFor`/`condition-template` 走设备端模板匹配（灰度金字塔，无需 scrcpy/OpenCV）；中文输入走设备端剪贴板粘贴链（焦点输入框前置 tap）
+  - 前端模拟脚本页「▶ 执行」改调 `run-js`（设备离线也能跑，PC 引擎 `run-steps` 保留为兼容旧版设备的降级入口）
+  - **退役**：`POST /api/probe/script-run`（旧 `0x10` JSON 引擎执行端点，返回 405）；导出/导入包签名机制（`signature.txt`/HMAC）删除，`export-zip`/`import-zip` 为普通 zip
+  - 已真机端到端验证（编译→推送→执行→停止→中文输入→模板匹配）
+
 ### v2.8.0
 - 探针（probe）新增设备端 JS 脚本执行链路（方案3 P0，设备需 v2.13+ APK，详见 `DFM-probe_接口文档.md` §3.12）：
   - 新增 `POST /api/probe/script-run-js` `{"deviceId":"...","script":"脚本名","repeat":1}`：发帧 `0x13` 让设备端 Rhino 执行 `script_store/{脚本名}/script.js`，返回 `{script,ok,error,summary,logs[],truncated}`（日志来自脚本内 `dfm.log(...)`）
   - 新增 `POST /api/probe/script-stop` `{"deviceId":"..."}`：发帧 `0x14` 停止正在执行的 JS 脚本（幂等），返回 `{stopping,wasRunning,forceAbandoned}`；走独立 TCP 连接，不被执行中的 `0x13` 阻塞
-  - `POST /api/probe/script-import` 支持双格式脚本包：zip 根含 `script.js` 时按 JS 引擎导入（返回 `format:"js"`），含 `script.json` 走原 JSON 引擎，两套并存
+  - `POST /api/probe/script-import` 支持双格式脚本包：zip 根含 `script.js` 时按 JS 引擎导入（返回 `format:"js"`），含 `script.json` 走原 JSON 引擎，两套并存（v2.8.1 起仅 JS 格式）
   - 已真机端到端验证（导入 → 执行 → 停止）；JS 脚本需声明 `var apiVersion = 1;`，宿主函数集见 `DFM-probe_接口文档.md` §3.12.3
 
 ### v2.7.0

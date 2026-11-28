@@ -47,12 +47,18 @@
 > `POST /api/probe/cameras` 后端保留（拍照选摄像头仍在用），探针页不再有独立「相机列表」入口。
 > 帧层不变。
 > v2.13 新增设备端 JS 脚本引擎（方案3 P0，见 `docx/脚本方案3-设备端JS执行设计.md`）：
-> 内嵌 Rhino 1.8.1 解释模式（`classes2.dex` + 本地化 properties + `assets/dfm.js` 占位），
-> 新增 `0x13` 执行 JS 脚本 / `0x14` 停止（响应帧 `0x93` / `0x94`，见 `3.12`）；
-> `0x0E` 支持双格式脚本包（zip 根含 `script.json` 走 JSON 引擎、含 `script.js` 走 JS 引擎），
+> 内嵌 Rhino 1.8.1 解释模式（`classes2.dex` + 本地化 properties + `assets/dfm.js` 运行时），
+> 新增 `0x13` 执行 JS 脚本 / `0x14` 停止（响应帧 `0x93` / `0x94`，见 `3.12`），
 > service 新增 `/api/probe/script-run-js` / `/api/probe/script-stop`。已真机端到端验证。
 > 帧层（2 字节长度、ACK、CRC、去重、超时）保持不变，
 > 但**命令字不兼容旧版 APK / service / PC 脚本 / 前端**，必须一起升级。
+> v2.14 脚本方案3全面落地（P1/P2/P3 完成）：JSON→JS 编译器上线，模拟脚本页
+> 「▶ 执行」改走「编译→推送到设备→0x13 执行」链路（`/api/device/script/run-js`），
+> 设备端支持模板匹配 waitFor / condition-template / 中文输入；**旧 JSON 脚本引擎
+> 与 `0x10` CMD_SCRIPT_RUN 删除**（设备端收到回 `unknown cmd`），`0x0E` 仅认
+> `script.js`、`0x0F` 仅列含 `script.js` 的目录，导出包签名机制退役（见
+> `docx/脚本方案3-设备端JS执行设计.md` §5）；探针页「导入脚本/设备脚本列表/
+> 执行设备脚本」三按钮删除。
 
 ---
 
@@ -201,10 +207,10 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC→设备 | `{}` | 检测无障碍服务：未启用时跳转系统设置页；应答帧 `0x8B`，`data` 为 `{enabled,started}`（见「3.8」） |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC→设备 | `{}` | 返回无障碍服务采集的当前窗口组件树；应答帧 `0x8C`，`data` 为 `{package,nodeCount,truncated,root}`（见「3.9」） |
 | `0x0D` | CMD_ACCESSIBILITY_CLICK | PC→设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配节点并执行 ACTION_CLICK（不可点击时经 dispatchGesture 在节点中心坐标兜底）；应答帧 `0x8D`，`data` 为 `{clicked,id,text,desc}`（见「3.10」） |
-| `0x0E` | CMD_SCRIPT_UNZIP | PC→设备 | `{"zip":"xxx.zip"}` | 解压 `files/script_in/xxx.zip` 到 `files/script_store/xxx/`；**双格式**：zip 根含 `script.json` 走 JSON 引擎，含 `script.js` 走 JS 引擎（Rhino）；应答帧 `0x8E`，JSON 格式 `data` 为 `{script,steps,files,path,apks,templates}`，JS 格式为 `{script,format:"js",steps,files,path}`（见「3.11」「3.12」） |
-| `0x0F` | CMD_SCRIPT_LIST | PC→设备 | `{}` | 列出 `files/script_store/` 下已导入脚本；应答帧 `0x8F`，`data` 为 `{scripts:[{name,steps,size,importedAt,error?}]}`（见「3.11」） |
-| `0x10` | CMD_SCRIPT_RUN | PC→设备 | `{"script":"名字","repeat":N}` | 离线执行已导入脚本，返回逐步骤成败日志；应答帧 `0x90`，`data` 为 `{script,ok,error,summary,logs,truncated}`（见「3.11」） |
-| `0x13` | CMD_SCRIPT_RUN_JS | PC→设备 | `{"script":"名字","repeat":N}` | v2.13 新增：Rhino 执行已导入 JS 脚本（方案3 P0）；应答帧 `0x93`，`data` 为 `{script,ok,error,summary,logs,truncated}`（见「3.12」） |
+| `0x0E` | CMD_SCRIPT_UNZIP | PC→设备 | `{"zip":"xxx.zip"}` | 解压 `files/script_in/xxx.zip` 到 `files/script_store/xxx/`；v2.14 起仅认 `script.js`（JS 引擎）；应答帧 `0x8E`，`data` 为 `{script,format:"js",steps,files,path}`（见「3.11」「3.12」） |
+| `0x0F` | CMD_SCRIPT_LIST | PC→设备 | `{}` | 列出 `files/script_store/` 下已导入脚本（v2.14 起仅列含 `script.js` 的目录）；应答帧 `0x8F`，`data` 为 `{scripts:[{name,steps,size,importedAt,error?}]}`（见「3.11」） |
+| ~~`0x10`~~ | ~~CMD_SCRIPT_RUN~~ | — | — | **v2.14 已退役**：旧 JSON 脚本引擎删除（方案3 §5），JS 脚本统一用 `0x13` 执行；设备端收到回 `unknown cmd: 0x10` |
+| `0x13` | CMD_SCRIPT_RUN_JS | PC→设备 | `{"script":"名字","repeat":N}` | Rhino 执行已导入 JS 脚本（方案3，唯一执行入口）；应答帧 `0x93`，`data` 为 `{script,ok,error,summary,logs,truncated}`（见「3.12」） |
 | `0x14` | CMD_SCRIPT_STOP | PC→设备 | `{}` | v2.13 新增：停止正在执行的 JS 脚本，幂等；应答帧 `0x94`，`data` 为 `{stopping,wasRunning,forceAbandoned}`（见「3.12」） |
 | `0x80` | CMD_HEARTBEAT_RESPONSE | 设备→PC | 统一信封 | 由 `0x00 \| 0x80` 得到；通知类，不要求 ACK |
 | `0x81` | CMD_TTS_RESPONSE | 设备→PC | 统一信封 | 由 `0x01 \| 0x80` 得到；通知类，不要求 ACK |
@@ -221,7 +227,7 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x8D` | CMD_ACCESSIBILITY_CLICK_RESPONSE | 设备→PC | 统一信封 | 由 `0x0D \| 0x80` 得到；通知类，不要求 ACK |
 | `0x8E` | CMD_SCRIPT_UNZIP_RESPONSE | 设备→PC | 统一信封 | 由 `0x0E \| 0x80` 得到；通知类，不要求 ACK |
 | `0x8F` | CMD_SCRIPT_LIST_RESPONSE | 设备→PC | 统一信封 | 由 `0x0F \| 0x80` 得到；通知类，不要求 ACK |
-| `0x90` | CMD_SCRIPT_RUN_RESPONSE | 设备→PC | 统一信封 | 由 `0x10 \| 0x80` 得到；通知类，不要求 ACK |
+| `0x90` | CMD_SCRIPT_RUN_RESPONSE | 设备→PC | 统一信封 | 由 `0x10 \| 0x80` 得到；**0x10 已于 v2.14 退役，此响应帧不再出现** |
 | `0x93` | CMD_SCRIPT_RUN_JS_RESPONSE | 设备→PC | 统一信封 | 由 `0x13 \| 0x80` 得到；通知类，不要求 ACK |
 | `0x94` | CMD_SCRIPT_STOP_RESPONSE | 设备→PC | 统一信封 | 由 `0x14 \| 0x80` 得到；通知类，不要求 ACK |
 | `0xFF` | CMD_ERROR | 设备→PC | 统一信封 `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 仅未知命令字；业务异常仍走 `cmd \| 0x80` 响应帧（信封内 `code:500`）；通知类，不要求 ACK |
@@ -959,14 +965,17 @@ PC 轮询此命令字即实现「打开串口持续读」；**应答顺序** `AC
 `DFM-service` 端模拟脚本「无障碍点击（accClick）」步骤自动调用（`routes/script.py` 走
 `POST /api/probe/message` 传 `cmd:13`）；探针工具页可手工发 `{"deviceId":"...","cmd":13,"data":{"text":"登录"}}` 验证。
 
-### 3.11 设备端离线脚本 `0x0E` / `0x0F` / `0x10`
+### 3.11 设备端脚本包 `0x0E` / `0x0F`（v2.14：仅 JS 引擎，旧 JSON 引擎已退役）
 
-**描述**: PC 侧把模拟脚本导出 zip（`DFM-service` `export_script_zip` 的产物，布局
-`script.json + apk/ + templates/ + media/ + signature.txt`）经 `adb push` 送到设备固定地址
-`/sdcard/Android/data/com.dfm.probe/files/script_in/`，随后由设备端解压、列出、离线执行，
-执行日志逐步骤回传，全程不依赖 PC 在线。  
-**实现位置**: `ScriptEngine.java`（独立引擎，`unzip()` / `list()` / `run()`）；
-`ProbeService.java` 的 `execute()` 三分支仅做薄壳转发。
+> **v2.14 变更**（方案3，见 `docx/脚本方案3-设备端JS执行设计.md` §5）：旧 JSON 脚本
+> 引擎（`ScriptEngine.java`）与 `0x10 CMD_SCRIPT_RUN` 已删除；本节仅保留脚本包
+> 导入（解压）与列表两个命令字，脚本执行统一走 `3.12` 的 `0x13`。
+> 导出包签名机制（`signature.txt` + HMAC 校验）同步退役，导出/导入为普通 zip。
+
+**描述**: PC 侧把编译后的脚本包 zip（布局 `script.js + metadata.json + apk/ + templates/`）
+经 `adb push` 送到设备固定地址 `/sdcard/Android/data/com.dfm.probe/files/script_in/`，
+设备端解压到 `files/script_store/{脚本名}/`、列出已导入脚本；执行走 `0x13`（见 3.12）。
+**实现位置**: `JsEngine.java`（`unzip()` / `list()`）；`ProbeService.java` 薄壳转发。
 
 #### 3.11.1 `0x0E CMD_SCRIPT_UNZIP` 解压脚本包
 
@@ -977,15 +986,16 @@ PC 轮询此命令字即实现「打开串口持续读」；**应答顺序** `AC
 | `zip` | string | 是 | zip 文件名（相对 `script_in/`，自动去 `.zip` 后缀）；空回 `400 zip is required`，含 `/`、`\\`、`..` 回 `400 zip 含非法字符` |
 
 **执行逻辑**: 解压前先清空 `script_store/{脚本名}/` 旧目录（重复导入幂等）；逐条目
-canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 回
-`500 script.json not found in zip`。
+canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.js` 回
+`500 script.js not found in zip`。
 
 #### 返回参数（`0x8E`）
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `data.script` | string | 脚本名（= zip 文件名去扩展名） |
-| `data.steps` | int | `script.json` 的 `steps` 数组长度 |
+| `data.format` | string | 固定 `"js"` |
+| `data.steps` | int | `metadata.json` 的 `steps` 数组长度 |
 | `data.files` | int | 实际解压出的文件数 |
 | `data.path` | string | 解压目标绝对路径 |
 | `data.apks` | array\<string\> | `apk/` 子目录文件名列表（无则空） |
@@ -993,17 +1003,46 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
 
 #### 3.11.2 `0x0F CMD_SCRIPT_LIST` 列出脚本
 
-不带参数。返回 `script_store/` 下含 `script.json` 的目录：
+不带参数。返回 `script_store/` 下含 `script.js` 的目录：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `data.scripts[]` | array\<object\> | 已导入脚本列表，无脚本时为空数组 |
 | `scripts[].name` | string | 脚本名（目录名） |
-| `scripts[].steps` | int | 步骤数；`script.json` 解析失败时为 `0` 并带 `error` 字段 |
-| `scripts[].size` | int | `script.json` 字节数 |
+| `scripts[].steps` | int | 步骤数；`metadata.json` 解析失败时为 `0` 并带 `error` 字段 |
+| `scripts[].size` | int | `script.js` 字节数 |
 | `scripts[].importedAt` | string | 导入时间（目录 mtime，`yyyy-MM-dd HH:mm:ss`） |
 
-#### 3.11.3 `0x10 CMD_SCRIPT_RUN` 执行脚本
+
+#### 3.11.3 `0x10 CMD_SCRIPT_RUN`（v2.14 已退役）
+
+> **v2.14 起命令字删除**：旧 JSON 脚本引擎（`ScriptEngine.java`）随方案3退役
+> （见 `docx/脚本方案3-设备端JS执行设计.md` §5），JS 脚本统一经 `0x13` 执行（`3.12`）。
+> 设备端收到 `0x10` 回 `{"code":400,"message":"unknown cmd: 0x10","data":null}`
+>（`0xFF` CMD_ERROR 帧）；service 端 `/api/probe/script-run` 端点同步删除（405）。
+> 响应帧 `0x90` 不再出现。以下历史描述仅存档，供追溯旧版行为。
+<details>
+<summary>历史存档：0x10 JSON 引擎执行语义（v2.14 已删除）</summary>
+
+</details>
+
+#### 3.11.4 调用方式（v2.14 更新）
+
+`DFM-service` 端串联端点（`routes/probe.py`）:
+
+- `POST /api/probe/script-import` `{"deviceId":"...","zipPath":"D:\\log\\script_exports\\xxx.zip"}`
+  —— `adb push` 到 `files/script_in/` 后发 `0x0E`，解压成功自动删设备端 zip。
+- `POST /api/probe/script-list` `{"deviceId":"..."}` —— 发 `0x0F`。
+- `POST /api/probe/script-run-js` `{"deviceId":"...","script":"xxx","repeat":1}` —— 发 `0x13`。
+- `POST /api/probe/script-stop` `{"deviceId":"..."}` —— 发 `0x14`。
+
+也可经通用端点 `POST /api/probe/message` 传 `cmd:14/15/19/20`（即 `0x0E`/`0x0F`/`0x13`/`0x14`）直发。
+
+#### 注意
+
+- **执行超时**: JS 脚本执行时长受帧协议响应超时限制（service 端 `RESPONSE_TIMEOUT = 120s`）；
+  超长脚本（大 `repeat`、长 `interval`）会因响应超时失败；中途停止用 `/api/probe/script-stop`
+  （`0x14` 独立连接，不受当前执行阻塞）。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |

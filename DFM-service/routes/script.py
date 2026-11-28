@@ -197,6 +197,7 @@ class ScriptMoveRequest(BaseModel):
 class ScriptRunRequest(BaseModel):
     deviceId: str
     name: str
+    path: str = ""       # 脚本所在文件夹相对路径，"" 表示根目录
     repeat: Optional[int] = None  # 不传则用脚本自身保存的 repeat
 
 
@@ -959,23 +960,9 @@ def import_script(request: ScriptImportRequest):
 EXPORT_APK_DIR = "apk"
 EXPORT_TEMPLATE_DIR = "templates"
 EXPORT_MEDIA_DIR = "media"
-# 导出包签名文件名与校验密钥：导入时验证包由本工具导出且未被篡改
-EXPORT_SIGNATURE_MEMBER = "signature.txt"
-EXPORT_SECRET = b"DFM-Android-Toolkit::script-bundle::v1"
-
-import hmac
-import hashlib
-
-
-def _bundle_signature(manifest: str) -> str:
-    """HMAC-SHA256(manifest 文本) 的十六进制签名，manifest 为逐行 '成员名 字节数 sha256' 清单"""
-    return hmac.new(EXPORT_SECRET, manifest.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def _manifest_line(filename: str, file_bytes: bytes) -> str:
-    """生成清单一行：成员名 字节数 sha256（sha256 基于解压后的真实字节）"""
-    return f"{filename} {len(file_bytes)} {hashlib.sha256(file_bytes).hexdigest()}"
-
+# 方案3：签名关键字机制已退役（旧 EXPORT_SECRET/EXPORT_SIGNATURE_MEMBER/_bundle_signature
+# 已删除，见 docx/脚本方案3-设备端JS执行设计.md §5.1）；导出包为普通 zip，
+# 防护转移为推送入口受控 + 设备端 apiVersion 校验。
 
 def _script_referenced_files(script: dict) -> tuple[List[str], List[str], List[str]]:
     """
@@ -1005,14 +992,13 @@ def _script_referenced_files(script: dict) -> tuple[List[str], List[str], List[s
 @router.post("/device/script/export-zip")
 def export_script_zip(request: ScriptExportRequest):
     """
-    导出脚本为可迁移的 zip 包：脚本 JSON + 它引用的全部 APK/模板图/摄像头素材
+    导出脚本为可迁移的 zip 包：脚本 JSON + 它引用的全部 APK/模板图素材
 
     zip 布局：
       script.json          脚本原文（与 data/scripts/{name}.json 完全一致）
       apk/{apkName}        脚本引用的 APK（installApk 步骤）
-      templates/{tpl}.png  脚本引用的模板图（waitFor 步骤）
+      templates/{tpl}.png  脚本引用的模板图（waitFor / condition-template 步骤）
       media/{file}         脚本引用的媒体素材
-      signature.txt        HMAC 签名（对以上全部成员的清单），导入时强制校验
 
     zip 写到 D:\\log\\script_exports\\{name}.zip，前端提示保存位置。
     """
@@ -1065,29 +1051,14 @@ def export_script_zip(request: ScriptExportRequest):
         os.makedirs(export_root, exist_ok=True)
         zip_path = os.path.join(export_root, f"{name}.zip")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            # 用 writestr 写入（而非 zf.write），便于对每个成员的真实字节做 sha256 签名
-            members: List[tuple] = []  # (arcname, bytes)
             script_bytes = path.read_bytes()
             zf.writestr("script.json", script_bytes)
-            members.append(("script.json", script_bytes))
             for p in apk_paths:
-                arc = f"{EXPORT_APK_DIR}/{p.name}"
-                b = p.read_bytes()
-                zf.writestr(arc, b)
-                members.append((arc, b))
+                zf.writestr(f"{EXPORT_APK_DIR}/{p.name}", p.read_bytes())
             for p in tpl_paths:
-                arc = f"{EXPORT_TEMPLATE_DIR}/{p.name}"
-                b = p.read_bytes()
-                zf.writestr(arc, b)
-                members.append((arc, b))
+                zf.writestr(f"{EXPORT_TEMPLATE_DIR}/{p.name}", p.read_bytes())
             for p in media_paths:
-                arc = f"{EXPORT_MEDIA_DIR}/{p.name}"
-                b = p.read_bytes()
-                zf.writestr(arc, b)
-                members.append((arc, b))
-            # 对全部成员做内容签名（成员名+字节数+sha256），任何篡改都会导致签名不匹配
-            manifest = "\n".join(_manifest_line(arc, b) for arc, b in members)
-            zf.writestr(EXPORT_SIGNATURE_MEMBER, _bundle_signature(manifest))
+                zf.writestr(f"{EXPORT_MEDIA_DIR}/{p.name}", p.read_bytes())
 
         size = os.path.getsize(zip_path)
         logger.info(f"Script exported: {zip_path} (apk={len(apk_paths)}, templates={len(tpl_paths)}, media={len(media_paths)}, {size} bytes)")
@@ -1124,22 +1095,9 @@ async def import_script_zip(script: UploadFile = File(..., description="脚本�
         with zf:
             names = zf.namelist()
 
-            # 1) 签名校验：只接受由本工具导出且未被篡改的包（成员名+字节数+sha256）
-            if EXPORT_SIGNATURE_MEMBER not in names:
-                return {"code": 400, "message": "该 zip 不是本工具导出的脚本包（缺少签名），拒绝导入", "data": None}
-            try:
-                sig_in_zip = zf.read(EXPORT_SIGNATURE_MEMBER).decode("utf-8").strip()
-            except Exception:
-                return {"code": 400, "message": "签名文件损坏，无法校验", "data": None}
-            manifest = "\n".join(
-                _manifest_line(info.filename, zf.read(info.filename))
-                for info in zf.infolist()
-                if info.filename != EXPORT_SIGNATURE_MEMBER
-            )
-            if not hmac.compare_digest(sig_in_zip, _bundle_signature(manifest)):
-                return {"code": 400, "message": "签名校验失败：包内容已被篡改或不是本工具导出，拒绝导入", "data": None}
-
-            # 2) 定位脚本 JSON（固定名 script.json）
+            # 1) 定位脚本 JSON（固定名 script.json；兼容未指定名的单 JSON 包）
+            # 方案3：签名校验已退役（见 docx/脚本方案3-设备端JS执行设计.md §5.1），
+            # 导入不再要求本工具导出的签名包。
             script_member = "script.json" if "script.json" in names else None
             if script_member is None:
                 json_members = [n for n in names if n.lower().endswith(".json") and "/" not in n]
@@ -2233,15 +2191,14 @@ def run_script(request: ScriptRunRequest):
 
         _ensure_scripts_dir()
         name = _safe_name(request.name)
-        path = SCRIPTS_DIR / f"{name}.json"
+        path = _script_file(name, request.path)
         if not path.exists():
-            return {"code": 404, "message": f"脚本 {name} 不存在", "data": None}
+            return {"code": 404, "message": f"脚本 {request.name} 不存在", "data": None}
         with open(path, "r", encoding="utf-8") as f:
             script = json.load(f)
 
         repeat = request.repeat if request.repeat is not None else script.get("repeat", 1)
         repeat = max(1, int(repeat))
-
         from config.queue_config import task_queue
         task_queue.submit_task(
             _run_script_on_device,
@@ -2257,6 +2214,168 @@ def run_script(request: ScriptRunRequest):
         }
     except Exception as e:
         return {"code": 500, "message": f"执行脚本失败: {str(e)}", "data": None}
+
+
+# ========== 设备端 JS 执行（方案3 P1：编译 → 推送 → 0x13） ==========
+
+class ScriptRunJsRequest(BaseModel):
+    """编译脚本 JSON 并在设备端以 JS 引擎（0x13）执行
+
+    path 为脚本所在文件夹相对路径（"" 表示根目录），与 runScript 引用
+    嵌套子脚本的解析规则一致。
+    """
+    deviceId: str
+    name: str
+    path: str = ""
+    repeat: Optional[int] = None  # 不传则用脚本自身保存的 repeat
+
+
+def _build_js_zip(name: str, script: dict, repeat: int) -> tuple:
+    """编译 + 打包脚本 zip（script.js + metadata.json + apk/ + templates/），
+    返回 (zip_path, apks, steps)"""
+    from routes.script_compiler import compile_script, CompileError
+    try:
+        r = compile_script(script, SCRIPTS_DIR, APKS_DIR, name,
+                           templates_dir=TEMPLATES_DIR)
+    except CompileError as e:
+        raise RuntimeError(str(e))
+    build_dir = get_data_path() / "script_build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = build_dir / f"{name}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("script.js", r["js"])
+        zf.writestr("metadata.json", json.dumps(
+            {"name": name, "repeat": repeat, "steps": r["steps"],
+             "videoWidth": r["videoWidth"], "videoHeight": r["videoHeight"],
+             "apiVersion": 1}, ensure_ascii=False).encode("utf-8"))
+        for apk in r["apks"]:
+            zf.write(APKS_DIR / apk, f"apk/{apk}")
+        for tpl in r.get("templates") or []:
+            zf.write(TEMPLATES_DIR / tpl, f"templates/{tpl}")
+    return zip_path, r["apks"], r["steps"]
+
+
+@router.post("/device/script/run-js")
+def run_script_js(request: ScriptRunJsRequest):
+    """编译脚本并推送到设备，用设备端 JS 引擎（0x13）同步执行。
+
+    与 PC 引擎 /device/script/run 不同：脚本在设备本地解释执行（Rhino），
+    不依赖 scrcpy 会话；坐标在设备端按 videoWidth/Height 换算。
+    同步返回 dfm.log 收集的逐步日志；执行时长受帧协议 RESPONSE_TIMEOUT=120s 限制。
+    """
+    try:
+        if not _check_device_online(request.deviceId):
+            return {"code": 400, "message": f"设备 {request.deviceId} 不在线", "data": None}
+        _ensure_scripts_dir()
+        path = _script_file(request.name, request.path)
+        if not path.exists():
+            return {"code": 404, "message": f"脚本 {request.name} 不存在", "data": None}
+        script = json.loads(path.read_text(encoding="utf-8"))
+        repeat = max(1, int(request.repeat if request.repeat is not None else script.get("repeat", 1)))
+
+        # 编译 + 打包（编译失败的消息直接面向用户：如不支持的功能/嵌套过深/APK 缺失）
+        zip_path, apks, steps = _build_js_zip(request.name, script, repeat)
+
+        # 推送 + 0x0E 解压 + 0x13 执行（probe 路由已有现成链路，直接函数级调用）
+        from routes.probe import probe_script_import, probe_script_run_js
+        imp = probe_script_import(type("Req", (), {"deviceId": request.deviceId, "zipPath": str(zip_path)})())
+        resp = (imp.get("data") or {}).get("response") or {}
+        if imp.get("code") != 200 or resp.get("code") != 200:
+            return {"code": 500, "message": f"脚本推送失败: {imp.get('message')}" +
+                    (f" / {resp.get('message')}" if resp else ""), "data": None}
+        run = probe_script_run_js(type("Req", (), {"deviceId": request.deviceId,
+                                                   "script": request.name, "repeat": repeat})())
+        rresp = (run.get("data") or {}).get("response") or {}
+        ok = run.get("code") == 200 and rresp.get("code") == 200
+        rdata = rresp.get("data") or {}
+        logs = rdata.get("logs") or []
+        summary = rdata.get("summary") or {}
+        script_error = rdata.get("error")
+        # 设备信封 code=200 只代表帧通讯成功，脚本本身的成败看 summary.ok
+        ok = ok and bool(summary.get("ok", True))
+        logger.info(f"Script JS run finished: {request.name} repeat={repeat} ok={ok} "
+                    f"steps={steps} durationMs={summary.get('durationMs')}")
+        if not ok:
+            # 设备端执行失败：把日志带回（失败原因在最后几条日志里）
+            tail = " | ".join((lg.get("message") or "")[:80] for lg in logs[-3:])
+            msg = script_error or rresp.get("message") or "执行失败"
+            return {"code": 500, "message": f"{msg}{('：' + tail) if tail else ''}",
+                    "data": {"logs": logs, "summary": summary}}
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"engine": "device-js", "repeat": repeat, "stepCount": steps,
+                     "apks": apks, "logs": logs, "summary": summary,
+                     "truncated": bool(rdata.get("truncated"))},
+        }
+    except Exception as e:
+        return {"code": 500, "message": f"设备端 JS 执行失败: {str(e)}", "data": None}
+
+
+class ScriptRunJsStepsRequest(BaseModel):
+    """内存步骤 → 设备端 JS 引擎执行（不落盘；面板执行/重复按钮默认走这里）"""
+    deviceId: str
+    steps: List[dict]
+    repeat: int = 1
+    videoWidth: Optional[int] = None
+    videoHeight: Optional[int] = None
+
+
+@router.post("/device/script/run-js-steps")
+def run_js_steps(request: ScriptRunJsStepsRequest):
+    """把面板传入的步骤编译为 script.js，推送到设备端 JS 引擎（0x13）同步执行。
+
+    与 run-js 的区别：步骤来自面板内存（不读已保存脚本）；编译失败会抛出
+    面向用户的消息（如 waitFor 等设备端暂不支持的功能），前端据此回退 PC 引擎。
+    """
+    try:
+        if not _check_device_online(request.deviceId):
+            return {"code": 400, "message": f"设备 {request.deviceId} 不在线", "data": None}
+        error = _validate_steps(request.steps)
+        if error:
+            return {"code": 400, "message": f"步骤校验失败: {error}", "data": None}
+        repeat = max(1, int(request.repeat or 1))
+        script = {
+            "name": "面板步骤",
+            "steps": _normalize_steps(request.steps),
+            "repeat": repeat,
+        }
+        if request.videoWidth and request.videoHeight:
+            script["videoWidth"] = int(request.videoWidth)
+            script["videoHeight"] = int(request.videoHeight)
+
+        zip_path, apks, steps = _build_js_zip("current_steps", script, repeat)
+
+        from routes.probe import probe_script_import, probe_script_run_js
+        imp = probe_script_import(type("Req", (), {"deviceId": request.deviceId,
+                                                   "zipPath": str(zip_path)})())
+        resp = (imp.get("data") or {}).get("response") or {}
+        if imp.get("code") != 200 or resp.get("code") != 200:
+            return {"code": 500, "message": f"脚本推送失败: {imp.get('message')}" +
+                    (f" / {resp.get('message')}" if resp else ""), "data": None}
+        run = probe_script_run_js(type("Req", (), {"deviceId": request.deviceId,
+                                                   "script": "current_steps",
+                                                   "repeat": repeat})())
+        rresp = (run.get("data") or {}).get("response") or {}
+        ok = run.get("code") == 200 and rresp.get("code") == 200
+        rdata = rresp.get("data") or {}
+        logs = rdata.get("logs") or []
+        summary = rdata.get("summary") or {}
+        script_error = rdata.get("error")
+        ok = ok and bool(summary.get("ok", True))
+        if not ok:
+            tail = " | ".join((lg.get("message") or "")[:80] for lg in logs[-3:])
+            msg = script_error or rresp.get("message") or "执行失败"
+            return {"code": 500, "message": f"{msg}{('：' + tail) if tail else ''}",
+                    "data": {"logs": logs, "summary": summary}}
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"engine": "device-js", "repeat": repeat, "stepCount": steps,
+                     "apks": apks, "logs": logs, "summary": summary},
+        }
+    except Exception as e:
+        return {"code": 500, "message": f"设备端 JS 执行失败: {str(e)}", "data": None}
 
 
 @router.post("/device/script/run-steps")

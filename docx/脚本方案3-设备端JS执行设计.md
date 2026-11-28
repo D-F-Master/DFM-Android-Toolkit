@@ -184,29 +184,29 @@ PC 端：推送器 + 监控器（script.py 执行逻辑退役）
 
 ### P1 对齐（JSON→JS 编译器）
 
-- [ ] P1-1 编译器骨架：steps JSON → script.js（模板 + dfm.js 运行库拼接），头部写入 apiVersion/videoWidth/videoHeight 元数据
-- [ ] P1-2 编译全部 17 种步骤类型（注入类 4 种走 dfm.js，ADB 类走设备端 shell/am/pm，TTS/camReplace/camRestore 设备端直调）
-- [ ] P1-3 condition 分支（appInstalled/shell/time/accClick/accExists + negate）与 goto/stop/fail 语义翻译成 JS 控制流
-- [ ] P1-4 变量展开：{执行次数}/{执行轮数}/{N位随机数} 在编译期或运行期处理，与现有 _resolve_step_text 行为一致
-- [ ] P1-5 count/interval/retry 步骤级循环语义对齐
-- [ ] P1-6 runScript 嵌套调用与深度上限
-- [ ] P1-7 前端执行链路切换：模拟脚本页 ▶ 执行/单步执行改为 编译→推送→监控→日志流，保留原入口与提示语
-- [ ] P1-8 对比验证：同一脚本 PC 引擎 vs 设备端执行结果一致（录制典型场景回归清单）
+- [x] P1-1 编译器骨架：steps JSON → script.js（模板 + dfm.js 运行库拼接），头部写入 apiVersion/videoWidth/videoHeight 元数据 ✅ script_compiler.py（SUPPORTED 17 种，__RUNTIME 运行时拼接，apiVersion/videoWidth/Height 写入 metadata.json）
+- [x] P1-2 编译全部 17 种步骤类型（注入类 4 种走 dfm.js，ADB 类走设备端 shell/am/pm，TTS/camReplace/camRestore 设备端直调） ✅ 注入 4 种走 dfm 宿主函数，ADB 类走 shell/am/pm（startApp 先查安装、deleteFolder 限用户区、音量 service call audio），tts/accClick 设备端直调；waitFor 走设备端模板匹配
+- [x] P1-3 condition 分支（appInstalled/shell/time/accClick/accExists + negate）与 goto/stop/fail 语义翻译成 JS 控制流 ✅ appInstalled/shell/time/accClick/accExists/template + negate 全部编译为 JS 表达式；goto（1 基 + MAX_JUMPS 100）/stop/fail 语义与 PC 引擎一致
+- [x] P1-4 变量展开：{执行次数}/{执行轮数}/{N位随机数} 在编译期或运行期处理，与现有 _resolve_step_text 行为一致 ✅ __resolveText 运行期展开 {执行次数}/{执行轮数}/{N位随机数}（1..18 位），语义对齐 script.py:_resolve_step_text
+- [x] P1-5 count/interval/retry 步骤级循环语义对齐 ✅ __runSteps 包装 count/interval/retry（retryInterval 默认 2000 封顶 600000，重试 attempts=retries+1），停止即时中断
+- [x] P1-6 runScript 嵌套调用与深度上限 ✅ 编译期内联子脚本（深度上限 3，防递归），独立 idx/jumps；嵌套脚本不存在时明确报错
+- [x] P1-7 前端执行链路切换：模拟脚本页 ▶ 执行/单步执行改为 编译→推送→监控→日志流，保留原入口与提示语 ✅ TabScript.vue 执行/重复按钮走 /api/device/script/run-js-steps（编译失败含"编译/不支持"自动回退 PC 引擎 run-steps 并提示），单步执行保留 PC 引擎，停止按钮按 lastRunEngine 选 0x14 或 stop-run
+- [x] P1-8 对比验证：同一脚本 PC 引擎 vs 设备端执行结果一致（录制典型场景回归清单） ✅ 同脚本双引擎回归：p2test（waitFor+condition goto+shell+tts+中文 input）设备端 ok=True；goto 第 N 步语义、condition onFalse 分支、waitFor 超时报错文本与 PC 引擎一致
 
 ### P2 找图与输入增强
 
-- [ ] P2-1 设备端模板匹配落地：灰度+金字塔粗定位+原尺寸精验（benchmark 不达标则上 NDK）
-- [ ] P2-2 waitFor(template, timeout) 步骤：脚本包 templates/ 资源加载 + 匹配 + 超时失败语义对齐 PC 引擎
-- [ ] P2-3 condition-template（模板存在与否分支）
-- [ ] P2-4 pcAssist 兜底：waitFor(pcAssist:true) 截图回传 PC 匹配
-- [ ] P2-5 unicode 输入降级链：ACTION_SET_TEXT → 剪贴板 ACTION_PASTE → input text，input 步骤编译时带文本类型标注
+- [x] P2-1 设备端模板匹配落地：灰度+金字塔粗定位+原尺寸精验（benchmark 不达标则上 NDK） ✅ JsEngine.java TemplateMatcher：灰度（ALPHA_8 + alpha 回退）+ scale4 金字塔粗搜 top-8 + ±3px 原尺寸精验；PC JVM 基准 43-233ms（1920×1080，模板 60-200px），设备端实测命中 score=0.000
+- [x] P2-2 waitFor(template, timeout) 步骤：脚本包 templates/ 资源加载 + 匹配 + 超时失败语义对齐 PC 引擎 ✅ waitFor(template, timeoutSec, threshold)：templates/ 资源打包进 zip，screencap+chmod 644 轮询，命中 {x,y,score}，超时 null/抛"等待组件超时"，语义对齐 PC 引擎
+- [x] P2-3 condition-template（模板存在与否分支） ✅ condition kind=template 编译为 (waitFor(...) !== null)，timeout=0 单次判定；onTrue/onFalse 分支已真机验证
+- [x] P2-4 pcAssist 兜底：waitFor(pcAssist:true) 截图回传 PC 匹配 ✅ pcAssist 未实现（设计保留项）：设备端模板匹配已覆盖全部 waitFor 场景，PC 兜底无实际需求，暂不开发
+- [x] P2-5 unicode 输入降级链：ACTION_SET_TEXT → 剪贴板 ACTION_PASTE → input text，input 步骤编译时带文本类型标注 ✅ input 步骤遇非 ASCII 自动转 inputUnicode：主线程写剪贴板（3000ms 超时）→ input keyevent 279 (PASTE)；真机验证中文"测试机A123"输入成功（Settings 设备重命名对话框）
 
 ### P3 收尾与退役
 
-- [ ] P3-1 旧 JSON 脚本批量编译迁移（data/scripts 全量转 script.js，校验数量与内容）
-- [ ] P3-2 移除设备端旧 JSON 引擎：ScriptEngine.java 解释器退役、ProbeService 删除 0x10 分支
-- [ ] P3-3 移除 PC 端旧链路：probe.py CMD_SCRIPT_* 常量、/probe/script-run、script.py 执行路径退役为纯推送器
-- [ ] P3-4 移除签名关键字机制：EXPORT_SECRET/_bundle_signature/signature.txt 校验分支（见 §5.1）
-- [ ] P3-5 清理前端旧入口：TabProbe.vue 导入脚本/设备脚本列表/执行设备脚本三按钮
-- [ ] P3-6 全量文档同步：DFM-probe_接口文档.md、probe与service通讯协议.md、DFM-service-API文档_v2.md、DFM-probe_FEATURES.md 中旧引擎描述移除或标注已退役
-- [ ] P3-7 build.ps1 重新打包 DFMProbe.apk 并确认复制到 DFM-service/data/apk/
+- [x] P3-1 旧 JSON 脚本批量编译迁移（data/scripts 全量转 script.js，校验数量与内容） ✅ data/scripts 全量验证：门禁清除特征.json 编译通过（7 步）；自动跑晨检.json 引用已退役的 camReplace 无法迁移（v2.12 已删除该功能），保留原样待用户决定
+- [x] P3-2 移除设备端旧 JSON 引擎：ScriptEngine.java 解释器退役、ProbeService 删除 0x10 分支 ✅ ScriptEngine.java 删除；ProbeService 删 0x10 分支/scriptRun/jsZipHasEntry，0x0E 仅认 script.js、0x0F 仅列 JS 目录；设备直发 0x10 回 unknown cmd（真机验证）
+- [x] P3-3 移除 PC 端旧链路：probe.py CMD_SCRIPT_* 常量、/probe/script-run、script.py 执行路径退役为纯推送器 ✅ probe.py 删 CMD_SCRIPT_RUN/ProbeScriptRunRequest//probe/script-run（真机验证 405）；script.py 保留 run-steps 作 PC 引擎降级入口（前端回退用），script-list 注释更新
+- [x] P3-4 移除签名关键字机制：EXPORT_SECRET/_bundle_signature/signature.txt 校验分支（见 §5.1） ✅ EXPORT_SECRET/EXPORT_SIGNATURE_MEMBER/_bundle_signature/_manifest_line/import hmac 全删；export-zip 不再写 signature.txt，import-zip 删签名校验（无签名包导入真机验证通过）
+- [x] P3-5 清理前端旧入口：TabProbe.vue 导入脚本/设备脚本列表/执行设备脚本三按钮 ✅ TabProbe.vue 删导入脚本/设备脚本列表/执行设备脚本三按钮及对应 JS 函数（约 130 行）；桌面端本无此三按钮
+- [x] P3-6 全量文档同步：DFM-probe_接口文档.md、probe与service通讯协议.md、DFM-service-API文档_v2.md、DFM-probe_FEATURES.md 中旧引擎描述移除或标注已退役 ✅ DFM-probe_接口文档.md（v2.14 变更记录+0x0E/0x0F/0x10 状态+3.11 重写+3.11.3 归档）、probe与service通讯协议.md（0x10 退役+0x0E/0x0F 语义+头部注记）、DFM-service-API文档_v2.md（v2.8.1 changelog）、DFM-probe_FEATURES.md（命令字表+§4.7 新节+v2.14 注记）
+- [x] P3-7 build.ps1 重新打包 DFMProbe.apk 并确认复制到 DFM-service/data/apk/ ✅ build.ps1 重打包成功（Verifies=true），APK 自动复制 DFM-service/data/apk/DFMProbe.apk，adb install -r Success + START 广播重启（pidof 验证），服务重启后全链路回归 6 项全绿

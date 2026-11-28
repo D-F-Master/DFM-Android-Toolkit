@@ -1912,6 +1912,9 @@ const sendRunNotify = async (subject: string, body: string) => {
   }
 }
 
+// 上次执行的引擎（device-js = 设备端 JS 引擎；停止按钮据此选 0x14 或 PC 停止标志）
+const lastRunEngine = ref('')
+
 // 执行当前步骤：直接把步骤发给后端执行，不落盘（不再产生 current_xxx.json 临时文件）
 const runCurrentSteps = async () => {
   if (!selectedDevice.value) {
@@ -1928,14 +1931,31 @@ const runCurrentSteps = async () => {
   }
   scriptRunning.value = true
   try {
-    // 后端同步执行：接口返回时脚本已跑完，失败原因直接在 message 里
-    const response = await axios.post(`${API_BASE.value}/api/device/script/run-steps`, {
-      deviceId: selectedDevice.value,
-      steps: scriptSteps.value,
-      repeat: scriptRepeat.value,
-      videoWidth: scriptMeta.width,
-      videoHeight: scriptMeta.height,
-    }, { timeout: 600000 })
+    // 方案3：默认走设备端 JS 引擎（编译 → 0x0E 推送 → 0x13 执行）；失败自动回退 PC 引擎
+    let response: any
+    try {
+      response = await axios.post(`${API_BASE.value}/api/device/script/run-js-steps`, {
+        deviceId: selectedDevice.value,
+        steps: scriptSteps.value,
+        repeat: scriptRepeat.value,
+        videoWidth: scriptMeta.width,
+        videoHeight: scriptMeta.height,
+      }, { timeout: 600000 })
+      lastRunEngine.value = 'device-js'
+    } catch (e: any) {
+      const msg = String(e?.response?.data?.message || e.message || '')
+      if (!msg.includes('编译') && !msg.includes('不支持')) throw e
+      // 编译失败（脚本用了 P2 未实现的功能等）：回退 PC 引擎
+      showNotification('设备端引擎不支持，回退 PC 引擎: ' + msg.slice(0, 80), 'info')
+      response = await axios.post(`${API_BASE.value}/api/device/script/run-steps`, {
+        deviceId: selectedDevice.value,
+        steps: scriptSteps.value,
+        repeat: scriptRepeat.value,
+        videoWidth: scriptMeta.width,
+        videoHeight: scriptMeta.height,
+      }, { timeout: 600000 })
+      lastRunEngine.value = 'pc'
+    }
     if (response.data.code !== 200) {
       const reason = response.data.message || '执行失败'
       showNotification(reason, 'error')
@@ -1988,10 +2008,21 @@ const runScriptStep = async (idx: number) => {
   }
 }
 
-// 停止当前设备上正在执行的脚本
+// 停止当前设备上正在执行的脚本（设备端 JS 引擎用 0x14，PC 引擎置停止标志）
 const stopScriptRun = async () => {
   if (!selectedDevice.value) return
   try {
+    if (lastRunEngine.value === 'device-js') {
+      const response = await axios.post(`${API_BASE.value}/api/probe/script-stop`, {
+        deviceId: selectedDevice.value,
+      })
+      if (response.data.code === 200) {
+        showNotification(response.data.message || '已发送停止请求', 'info')
+      } else {
+        showNotification('停止失败: ' + (response.data.message || '未知错误'), 'error')
+      }
+      return
+    }
     const response = await axios.post(`${API_BASE.value}/api/device/script/stop-run`, {
       deviceId: selectedDevice.value,
     })
