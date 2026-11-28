@@ -752,7 +752,14 @@ const SCRIPT_GESTURE_STEPS: Array<{ type: string; label: string; icon: string }>
 const SCRIPT_VARIABLE_HELP = `输入框支持的关键字：
 {执行次数} → 当前第几次执行
 {执行轮数} → 当前第几轮
-{n位随机数} → n 位随机数字（n 取 1~18，如 {6位随机数}）`
+{n位随机数} → n 位随机数字（n 取 1~18，如 {6位随机数}）
+
+无障碍点击 text/desc 通配符（整串匹配，找不到节点直接失败）：
+* → 任意数量任意字符
+? → 单个任意字符
+[abc] → 方括号内任一字符（支持 [a-z] 区间、[!a] 取反）
+{a,b} → 花括号内任一选项（可嵌套通配符）
+不含通配符时为精确匹配（如填「设置」不会命中「其他设置」）`
 
 // 判断步骤：四种条件与分支动作
 const SCRIPT_CONDITION_KINDS: Array<{ kind: string; label: string }> = [
