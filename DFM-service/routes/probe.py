@@ -38,6 +38,8 @@ CMD_ERROR = 0xFF
 CMD_SCRIPT_UNZIP = 0x0E
 CMD_SCRIPT_LIST = 0x0F
 CMD_SCRIPT_RUN = 0x10
+CMD_SCRIPT_RUN_JS = 0x13
+CMD_SCRIPT_STOP = 0x14
 
 # 脚本 zip 在设备端的固定推送地址（应用外部私有目录下）
 DEVICE_SCRIPT_DIR = "/sdcard/Android/data/com.dfm.probe/files/script_in"
@@ -51,6 +53,7 @@ INSTALL_TIMEOUT = 180
 _locks_lock = threading.Lock()
 _device_locks = {}
 _seq_by_device = {}
+_seq_lock = threading.Lock()
 
 # 连接复用池：device_id -> {"device_id","conn","reader","host","port","forward_port"}
 # 命中时直接在旧连接上发帧，省去重复广播 / forward / 建连
@@ -92,9 +95,11 @@ def _device_lock(device_id: str) -> threading.Lock:
 
 
 def _next_seq(device_id: str) -> int:
-    """帧序 0~255 循环递增，按设备分别计数。需在设备锁内调用。"""
-    seq = (_seq_by_device.get(device_id, -1) + 1) & 0xFF
-    _seq_by_device[device_id] = seq
+    """帧序 0~255 循环递增，按设备分别计数。全局锁保护：0x14 停止
+    请求绕过设备锁并发发送，与 0x13 并发取号必须互斥。"""
+    with _seq_lock:
+        seq = (_seq_by_device.get(device_id, -1) + 1) & 0xFF
+        _seq_by_device[device_id] = seq
     return seq
 
 
@@ -678,6 +683,12 @@ class ProbeScriptRunRequest(BaseModel):
     repeat: int = Field(1, ge=0, le=1000)
 
 
+class ProbeScriptRunJsRequest(BaseModel):
+    deviceId: str
+    script: str
+    repeat: int = Field(1, ge=1, le=1000)
+
+
 @router.post("/probe/script-import")
 def probe_script_import(req: ProbeScriptImportRequest):
     """把本地脚本 zip 推送到设备并解压。
@@ -700,9 +711,21 @@ def probe_script_import(req: ProbeScriptImportRequest):
     rc, out, err = _adb(device_id, "shell", "mkdir", "-p", DEVICE_SCRIPT_DIR)
     if rc != 0:
         return {"code": 500, "message": f"创建设备目录失败: {err or out}", "data": None}
-    rc, out, err = _adb(device_id, "push", zip_path, f"{DEVICE_SCRIPT_DIR}/{zip_name}", timeout=600)
+    # adb push 直写 script_in 在部分设备/adb 版本上会触发 post-write fchown
+    # 失败（remote fchown failed: Operation not permitted）并把文件回滚删除；
+    # 先推到 /sdcard 根（不受限），再用 shell cp 挪进 script_in。
+    tmp_push = f"/sdcard/{zip_name}.tmp"
+    rc, out, err = _adb(device_id, "push", zip_path, tmp_push, timeout=600)
     if rc != 0:
-        return {"code": 500, "message": f"adb push 失败: {err or out}", "data": None}
+        # 兜底：直接推目标目录（老 adb 无 fchown 问题）
+        rc2, out2, err2 = _adb(device_id, "push", zip_path, f"{DEVICE_SCRIPT_DIR}/{zip_name}", timeout=600)
+        if rc2 != 0:
+            return {"code": 500, "message": f"adb push 失败: {err or err2 or out or out2}", "data": None}
+    else:
+        rc, out, err = _adb(device_id, "shell", "cp", tmp_push, f"{DEVICE_SCRIPT_DIR}/{zip_name}", timeout=30)
+        _adb(device_id, "shell", "rm", "-f", tmp_push, timeout=15)
+        if rc != 0:
+            return {"code": 500, "message": f"设备内挪移 zip 失败: {err or out}", "data": None}
     # adb 为 root 时 push 出的文件属 root，应用读不到，这里修正属主
     #（命令整体作单参数传给 adb shell，避免多参数被 adb 拼接剥引号）
     files_dir = "/sdcard/Android/data/com.dfm.probe/files"
@@ -738,3 +761,45 @@ def probe_script_run(req: ProbeScriptRunRequest):
     """
     return _result(req.deviceId, False, CMD_SCRIPT_RUN,
                    {"script": req.script, "repeat": req.repeat})
+
+
+@router.post("/probe/script-run-js")
+def probe_script_run_js(req: ProbeScriptRunJsRequest):
+    """执行设备端已导入的 JS 脚本（0x13，方案3 P0），返回 dfm.log 收集的日志。
+
+    JS 引擎（Rhino）与 JSON 引擎并存：0x13 执行 script_store/{script}/script.js，
+    0x10 仍执行 script.json。脚本同步执行，结束后一次性返回全部日志；
+    执行时长受帧协议 RESPONSE_TIMEOUT=120s 限制，超长脚本用 /probe/script-stop
+    停止（0x14 独立连接，不受当前执行阻塞）。
+    """
+    return _result(req.deviceId, False, CMD_SCRIPT_RUN_JS,
+                   {"script": req.script, "repeat": req.repeat})
+
+
+@router.post("/probe/script-stop")
+def probe_script_stop(req: ProbeRequest):
+    """停止正在执行的 JS 脚本（0x14），幂等。返回 {stopping, wasRunning, forceAbandoned}。
+
+    forceAbandoned=true 表示脚本线程在停止后 3s 内未退出（如原型链卡死），
+    已被放弃并放行后续脚本执行。
+
+    停止请求必须绕过设备锁与连接池：执行中的 0x13 会持有设备锁（同步等待脚本结束），
+    而停止恰恰要在这个窗口发出去——设备端 0x14 走独立连接、可与 0x13 并发处理。
+    """
+    device_id = (req.deviceId or "").strip()
+    if not device_id:
+        return {"code": 400, "message": "deviceId 不能为空", "data": None}
+    try:
+        payload = json.dumps({}, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError) as e:
+        return {"code": 500, "message": f"数据区序列化失败: {e}", "data": None}
+    # 不抢设备锁：设备端 0x14 与 0x13 并发安全（独立 TCP 连接 + 停止标志）
+    d = _run_probe(device_id, False, CMD_SCRIPT_STOP, {}, payload,
+                   response_timeout=30.0)
+    connected = bool(d.get("connected"))
+    logger.info(f"probe device={device_id} cmd=0x14 connected={connected} {d.get('reason', '')}")
+    return {
+        "code": 200,
+        "message": "通讯正常" if connected else d.get("reason", "通讯失败"),
+        "data": d,
+    }

@@ -161,15 +161,26 @@ PC 端：推送器 + 监控器（script.py 执行逻辑退役）
 
 ### P0 验证（Rhino 闭环）
 
-- [ ] P0-1 设备端模板匹配 benchmark 原型：拿真实模板图验证灰度+金字塔方案的速度与命中率，达标才继续
-- [ ] P0-2 probe 集成 Rhino：引入 mozilla rhino 依赖，封装 JsEngine（独立线程 + Context），加载 assets 里的 dfm.js
-- [ ] P0-3 dfm.js 最小运行库：tap / swipe / longpress / input(ASCII) / keyevent / accClick / sleep / shell 八个全局函数，桥接到设备端现有原语
-- [ ] P0-4 停止机制：脚本线程注册指令观察器（setInstructionObserverThreshold），检查停止标志
-- [ ] P0-5 新命令字 0x13 CMD_SCRIPT_RUN_JS / 0x14 CMD_SCRIPT_STOP（含 0x93/0x94 应答），ProbeService 挂接 JsEngine
-- [ ] P0-6 0x0E 扩展：解压后识别 script.js + apiVersion 元数据（兼容旧 script.json 期间两套并存）
-- [ ] P0-7 service 端：/probe/script-run-js 推送+监控链路，执行日志透传
-- [ ] P0-8 端到端验证：手写 JS 脚本真机执行 + 执行中 STOP 打断成功
-- [ ] P0-9 文档同步：DFM-probe_接口文档.md / probe与service通讯协议.md 增加 0x13/0x14 条目
+- [x] P0-1 设备端模板匹配 benchmark 原型：拿真实模板图验证灰度+金字塔方案的速度与命中率，达标才继续
+  - 完成（2026-11-27）。原型：`DFM-probe/pc/template-bench/TemplateBench.java`（纯 Java，无 OpenCV；灰度 → 1/4 金字塔粗搜 SAD → top-8 候选原尺寸 ±3px 精验）。1920×1080 真机截图 + 100×100 模板：总耗时 82~89ms（PC JVM；设备按 5~10 倍余量估算仍在 0.5s 内），远优于 1~2s 预算 → 性能达标。
+  - 命中率结论：唯一纹理区域（std=125）原图与 JPEG q75 压缩噪声图均精确命中（fine 分数 0）；误报全部来自屏幕上真实存在的重复内容（纯色带/重复 UI 元素，SAD=0 有成百上千个位置），属模板选择问题而非算法问题 —— 算法正确，服务端复用现有 _resolve_step_text/模板规范即可。
+- [x] P0-2 probe 集成 Rhino：引入 mozilla rhino 依赖，封装 JsEngine（独立线程 + Context），加载 assets 里的 dfm.js
+  - 完成（2026-11-28）。`libs/rhino-1.8.1.jar`（Maven Central，与 AutoX 同版）；`build.ps1` 改 JDK17 javac（rhino class v55）+ rhino classpath，37.0.0 d8 单独 dex rhino → `classes2.dex`（34.0.0 d8 对 MethodParameters 属性 NPE），另提取 rhino 本地化 properties 入 APK 根；新 `JsEngine.java`（ContextFactory 全局单例、解释模式 -1、ES6、脚本 daemon 线程、DfmBridge 宿主函数直接注册在全局作用域）。
+  - 教训：脚本作用域不可自引用 `setPrototype(scope)`（getBase 无限循环且指令观察器永远不触发，0x14 无法中断）；PowerShell 5.1 读无 BOM UTF-8 按 GBK，中文注释字节吞换行会破坏脚本结构 → .ps1 注释全 ASCII。
+- [x] P0-3 dfm.js 最小运行库：tap / swipe / longpress / input(ASCII) / keyevent / accClick / sleep / shell 八个全局函数，桥接到设备端现有原语
+  - 完成（2026-11-28，超出原设计）。宿主函数不止 8 个：另含 speak/startApp/stopApp/installApk/uninstallApp/deleteFolder/reboot/screenSize/log/randomDigits（复用 ProbeService 现有原语）。`shell`/`screenSize` 返回 NativeObject（JS 属性可直接访问）；`accClick`/`speak` 走 0x0D/0x01 信封语义。`assets/dfm.js` 为占位（P1 编译器公共运行时），宿主函数由 DfmBridge 反射注册。
+- [x] P0-4 停止机制：脚本线程注册指令观察器（setInstructionObserverThreshold），检查停止标志
+  - 完成（2026-11-28）。`observeInstructionCount` 检查 volatile stopFlag 抛 ScriptStop；`sleep` 用 interruptible 条件等待；`0x14 stop()` 置标志 + interrupt，等 3s 未退出则放弃线程（`forceAbandoned:true`，daemon 孤儿不阻进程退出）。真机验证：longjs 30s 循环在第 4s 被停止，`error=脚本已停止（0x14）`。
+- [x] P0-5 新命令字 0x13 CMD_SCRIPT_RUN_JS / 0x14 CMD_SCRIPT_STOP（含 0x93/0x94 应答），ProbeService 挂接 JsEngine
+  - 完成（2026-11-28）。`ProbeService.java` 新增 CMD_SCRIPT_RUN_JS/STOP 常量、unknown-cmd 白名单、execute 分支、`jsEngine()` 懒创建单例、互斥（新脚本需先 0x14 或线程已放弃）。响应帧 `0x13|0x80=0x93` / `0x14|0x80=0x94`。
+- [x] P0-6 0x0E 扩展：解压后识别 script.js + apiVersion 元数据（兼容旧 script.json 期间两套并存）
+  - 完成（2026-11-28）。`scriptImport` 双格式：`jsZipHasEntry` 流式探测 zip 根是否含 `script.js`，含则走 JsEngine.unzip（返回 `format:"js"`），否则走 ScriptEngine.unzip；apiVersion 正则预扫（MULTILINE）快速拒绝 + 运行后作用域值权威校验，缺失/超版本拒执行。
+- [x] P0-7 service 端：/probe/script-run-js 推送+监控链路，执行日志透传
+  - 完成（2026-11-28）。`DFM-service/routes/probe.py` 新增 `CMD_SCRIPT_RUN_JS=0x13` / `CMD_SCRIPT_STOP=0x14`、`POST /probe/script-run-js`（{deviceId, script, repeat 1..1000}）、`POST /probe/script-stop`；0x14 走独立 TCP 连接不被执行中的 0x13 阻塞；日志结构透传（与 0x10 同构）。py_compile 通过；端到端待服务重启后复测（直连帧级已绿）。
+- [x] P0-8 端到端验证：手写 JS 脚本真机执行 + 执行中 STOP 打断成功
+  - 完成（2026-11-28，真机 202600210090 / 1920×1080）。0x0E 双格式导入（format:js）→ 0x13 执行 benchjs（screenSize/randomDigits/tap/shell/sleep，repeat=1/2 无跨轮状态泄漏，durationMs≈1.5s）→ 0x14 停止 longjs（tick 0~3 后中断，durationMs≈4s，forceAbandoned=false）。帧级 harness 直连验证；service 端点级待服务重启复测。
+- [x] P0-9 文档同步：DFM-probe_接口文档.md / probe与service通讯协议.md 增加 0x13/0x14 条目
+  - 完成（2026-11-28）。接口文档升 v2.13：基础信息源码清单加 JsEngine.java，帧命令字总表加 0x13/0x14/0x93/0x94 行与 0x0E 双格式说明，新增 §3.12（含 dfm 宿主函数集、停止语义、service 调用方式），错误码表补充 JS 引擎错误，验证记录新增真机 E2E 行；通讯协议命令字表加 0x0E~0x10/0x13/0x14 与响应帧区间、ACK 清单更新；DFM-service-API文档_v2.md 补 /probe/script-run-js 与 /probe/script-stop。
 
 ### P1 对齐（JSON→JS 编译器）
 

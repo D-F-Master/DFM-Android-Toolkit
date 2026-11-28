@@ -106,6 +106,8 @@ public class ProbeService extends Service {
     private static final int CMD_SCRIPT_IMPORT = 0x0E;
     private static final int CMD_SCRIPT_LIST = 0x0F;
     private static final int CMD_SCRIPT_RUN = 0x10;
+    private static final int CMD_SCRIPT_RUN_JS = 0x13;
+    private static final int CMD_SCRIPT_STOP = 0x14;
     private static final int CMD_ACK = 0x06;
     private static final int CMD_ERROR = 0xFF;
 
@@ -120,6 +122,9 @@ public class ProbeService extends Service {
 
     /** 设备端离线脚本引擎（0x0E 解压 / 0x0F 列表 / 0x10 执行），懒创建。 */
     private ScriptEngine scriptEngine;
+
+    /** 设备端 JS 脚本引擎（0x13 执行 / 0x14 停止，Rhino），懒创建；与 JSON 引擎并存（P0/P1 双轨）。 */
+    private JsEngine jsEngine;
 
     /** 监听状态必须 static：系统每 60 秒把后台服务按 app idle 停掉（ onDestroy ），但进程仍存活；
      *  监听线程挂在 static 字段上即可跨服务生命周期继续 accept，端口不中断。 */
@@ -367,7 +372,8 @@ public class ProbeService extends Service {
                     && cmd != CMD_ACCESSIBILITY_SETTINGS && cmd != CMD_ACCESSIBILITY_TREE
                     && cmd != CMD_ACCESSIBILITY_CLICK
                     && cmd != CMD_SCRIPT_IMPORT && cmd != CMD_SCRIPT_LIST
-                    && cmd != CMD_SCRIPT_RUN;
+                    && cmd != CMD_SCRIPT_RUN
+                    && cmd != CMD_SCRIPT_RUN_JS && cmd != CMD_SCRIPT_STOP;
             JSONObject res = execute(cmd, req, unknown);
             int respCmd = unknown ? CMD_ERROR : (cmd | 0x80);
             byte[] respData = res.toString().getBytes(UTF8);
@@ -478,15 +484,20 @@ public class ProbeService extends Service {
                 return fail(500, "cmd failed: " + e);
             }
         }
-        if (cmd == CMD_SCRIPT_IMPORT || cmd == CMD_SCRIPT_LIST || cmd == CMD_SCRIPT_RUN) {
+        if (cmd == CMD_SCRIPT_IMPORT || cmd == CMD_SCRIPT_LIST || cmd == CMD_SCRIPT_RUN
+                || cmd == CMD_SCRIPT_RUN_JS || cmd == CMD_SCRIPT_STOP) {
             try {
                 JSONObject data;
                 if (cmd == CMD_SCRIPT_IMPORT) {
                     data = scriptImport(req);
                 } else if (cmd == CMD_SCRIPT_LIST) {
                     data = scriptList();
-                } else {
+                } else if (cmd == CMD_SCRIPT_RUN) {
                     data = scriptRun(req);
+                } else if (cmd == CMD_SCRIPT_RUN_JS) {
+                    data = scriptRunJs(req);
+                } else {
+                    data = scriptStopJs();
                 }
                 return ok(data);
             } catch (IllegalArgumentException e) {
@@ -528,10 +539,43 @@ public class ProbeService extends Service {
         return scriptEngine;
     }
 
-    /** CMD_SCRIPT_IMPORT (0x0E)：解压 script_in/ 下 zip 到 script_store/{脚本名}/。请求 {"zip":"xxx.zip"}。 */
+    /** CMD_SCRIPT_IMPORT (0x0E)：解压 script_in/ 下 zip 到 script_store/{脚本名}/。请求 {"zip":"xxx.zip"}。
+     *  双格式：zip 根含 script.json 走 JSON 引擎，含 script.js 走 JS 引擎（方案3 P0-6）。 */
     private JSONObject scriptImport(JSONObject req) throws Exception {
         String zip = req.optString("zip", "").trim();
+        if (jsZipHasEntry(zip, JsEngine.JS_ENTRY)) {
+            return jsEngine().unzip(zip);
+        }
         return scriptEngine().unzip(zip);
+    }
+
+    /** 探测 script_in/{zip}.zip 内是否含指定入口文件（不解压，流式扫描中央/本地文件头）。 */
+    private boolean jsZipHasEntry(String zip, String entry) throws Exception {
+        String name = zip.endsWith(".zip") ? zip.substring(0, zip.length() - 4) : zip;
+        if (name.contains("/") || name.contains("\\") || name.contains("..")) {
+            return false;
+        }
+        File base = getExternalFilesDir(null);
+        if (base == null) {
+            return false;
+        }
+        File f = new File(new File(base, "script_in"), name + ".zip");
+        if (!f.isFile()) {
+            return false;
+        }
+        java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(
+                new java.io.FileInputStream(f));
+        try {
+            java.util.zip.ZipEntry e;
+            while ((e = zis.getNextEntry()) != null) {
+                if (entry.equals(e.getName())) {
+                    return true;
+                }
+            }
+        } finally {
+            zis.close();
+        }
+        return false;
     }
 
     /** CMD_SCRIPT_LIST (0x0F)：列出 script_store/ 下已导入的脚本。 */
@@ -544,6 +588,28 @@ public class ProbeService extends Service {
         String name = req.optString("script", req.optString("name", "")).trim();
         int repeat = req.optInt("repeat", 1);
         return scriptEngine().run(name, repeat);
+    }
+
+    // ===== JS 脚本执行（0x13 / 0x14，Rhino），引擎见 JsEngine；方案3 见 docx/脚本方案3-设备端JS执行设计.md =====
+
+    /** JS 脚本引擎懒创建：与 ScriptEngine 同依赖（外部私有目录 / 0x08 shell / 0x0D 无障碍）。 */
+    private synchronized JsEngine jsEngine() throws Exception {
+        if (jsEngine == null) {
+            jsEngine = new JsEngine(this);
+        }
+        return jsEngine;
+    }
+
+    /** CMD_SCRIPT_RUN_JS (0x13)：执行 script_store/{script}/script.js。请求 {"script":"名字","repeat":N}。同步返回（与 0x10 对齐）。 */
+    private JSONObject scriptRunJs(JSONObject req) throws Exception {
+        String name = req.optString("script", req.optString("name", "")).trim();
+        int repeat = req.optInt("repeat", 1);
+        return jsEngine().run(name, repeat);
+    }
+
+    /** CMD_SCRIPT_STOP (0x14)：停止正在执行的 JS 脚本（幂等）。 */
+    private JSONObject scriptStopJs() throws Exception {
+        return jsEngine().stop();
     }
 
 

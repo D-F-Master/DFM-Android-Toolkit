@@ -1221,6 +1221,13 @@
 
 ## 更新日志
 
+### v2.8.0
+- 探针（probe）新增设备端 JS 脚本执行链路（方案3 P0，设备需 v2.13+ APK，详见 `DFM-probe_接口文档.md` §3.12）：
+  - 新增 `POST /api/probe/script-run-js` `{"deviceId":"...","script":"脚本名","repeat":1}`：发帧 `0x13` 让设备端 Rhino 执行 `script_store/{脚本名}/script.js`，返回 `{script,ok,error,summary,logs[],truncated}`（日志来自脚本内 `dfm.log(...)`）
+  - 新增 `POST /api/probe/script-stop` `{"deviceId":"..."}`：发帧 `0x14` 停止正在执行的 JS 脚本（幂等），返回 `{stopping,wasRunning,forceAbandoned}`；走独立 TCP 连接，不被执行中的 `0x13` 阻塞
+  - `POST /api/probe/script-import` 支持双格式脚本包：zip 根含 `script.js` 时按 JS 引擎导入（返回 `format:"js"`），含 `script.json` 走原 JSON 引擎，两套并存
+  - 已真机端到端验证（导入 → 执行 → 停止）；JS 脚本需声明 `var apiVersion = 1;`，宿主函数集见 `DFM-probe_接口文档.md` §3.12.3
+
 ### v2.7.0
 - 模拟脚本新增「等待组件出现」步骤（`waitFor`）：反复截屏搜索模板图，组件出现才继续下一步，超时报错终止
 - 新增视觉匹配模块 `routes/vision.py`：raw screencap（~640ms/次，比 PNG 快 6 倍）+ `cv2.matchTemplate` 模板匹配

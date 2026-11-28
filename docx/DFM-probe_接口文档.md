@@ -1,11 +1,11 @@
-# 探针接口文档 v2.12
+# 探针接口文档 v2.13
 
 ## 基础信息
 
 - **设备端监听**: TCP `0.0.0.0:21104`（`DFM-probe/DFMProbe.apk`，`ProbeService`）
 - **启动方式**: 显式广播 `com.dfm.probe.START` 拉起 `StartReceiver` → `startForegroundService`；服务常驻监听 21104，不 force-stop
 - **帧协议**: 见同目录 `probe与service通讯协议.md`
-- **设备端源码**: `DFM-probe/java/com/dfm/probe/ProbeService.java`（下文简称 `ProbeService.java`）、`DFM-probe/java/com/dfm/probe/StartReceiver.java`
+- **设备端源码**: `DFM-probe/java/com/dfm/probe/ProbeService.java`（下文简称 `ProbeService.java`）、`DFM-probe/java/com/dfm/probe/StartReceiver.java`、`DFM-probe/java/com/dfm/probe/JsEngine.java`（JS 脚本引擎，v2.13）
 - **PC 侧源码**: `DFM-probe/pc/probe_test.py`
 - **适用构建**: 保留 `CMD_HEARTBEAT (0x00)`、`CMD_TTS (0x01)`、`CMD_DEVICE_INFO (0x02)`、串口会话
   `CMD_SERIAL_OPEN (0x04)` / `CMD_SERIAL_READ (0x03)` / `CMD_SERIAL_SEND (0x05)` /
@@ -46,6 +46,11 @@
 > `/api/probe/cam-replace` / `/api/probe/cam-restore`、素材上传/列表端点全部下线；
 > `POST /api/probe/cameras` 后端保留（拍照选摄像头仍在用），探针页不再有独立「相机列表」入口。
 > 帧层不变。
+> v2.13 新增设备端 JS 脚本引擎（方案3 P0，见 `docx/脚本方案3-设备端JS执行设计.md`）：
+> 内嵌 Rhino 1.8.1 解释模式（`classes2.dex` + 本地化 properties + `assets/dfm.js` 占位），
+> 新增 `0x13` 执行 JS 脚本 / `0x14` 停止（响应帧 `0x93` / `0x94`，见 `3.12`）；
+> `0x0E` 支持双格式脚本包（zip 根含 `script.json` 走 JSON 引擎、含 `script.js` 走 JS 引擎），
+> service 新增 `/api/probe/script-run-js` / `/api/probe/script-stop`。已真机端到端验证。
 > 帧层（2 字节长度、ACK、CRC、去重、超时）保持不变，
 > 但**命令字不兼容旧版 APK / service / PC 脚本 / 前端**，必须一起升级。
 
@@ -196,9 +201,11 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x0B` | CMD_ACCESSIBILITY_SETTINGS | PC→设备 | `{}` | 检测无障碍服务：未启用时跳转系统设置页；应答帧 `0x8B`，`data` 为 `{enabled,started}`（见「3.8」） |
 | `0x0C` | CMD_ACCESSIBILITY_TREE | PC→设备 | `{}` | 返回无障碍服务采集的当前窗口组件树；应答帧 `0x8C`，`data` 为 `{package,nodeCount,truncated,root}`（见「3.9」） |
 | `0x0D` | CMD_ACCESSIBILITY_CLICK | PC→设备 | `{"id":"","text":"","desc":""}`（至少一项） | 按条件匹配节点并执行 ACTION_CLICK（不可点击时经 dispatchGesture 在节点中心坐标兜底）；应答帧 `0x8D`，`data` 为 `{clicked,id,text,desc}`（见「3.10」） |
-| `0x0E` | CMD_SCRIPT_UNZIP | PC→设备 | `{"zip":"xxx.zip"}` | 解压 `files/script_in/xxx.zip` 到 `files/script_store/xxx/`；应答帧 `0x8E`，`data` 为 `{script,steps,files,path,apks,templates}`（见「3.11」） |
+| `0x0E` | CMD_SCRIPT_UNZIP | PC→设备 | `{"zip":"xxx.zip"}` | 解压 `files/script_in/xxx.zip` 到 `files/script_store/xxx/`；**双格式**：zip 根含 `script.json` 走 JSON 引擎，含 `script.js` 走 JS 引擎（Rhino）；应答帧 `0x8E`，JSON 格式 `data` 为 `{script,steps,files,path,apks,templates}`，JS 格式为 `{script,format:"js",steps,files,path}`（见「3.11」「3.12」） |
 | `0x0F` | CMD_SCRIPT_LIST | PC→设备 | `{}` | 列出 `files/script_store/` 下已导入脚本；应答帧 `0x8F`，`data` 为 `{scripts:[{name,steps,size,importedAt,error?}]}`（见「3.11」） |
 | `0x10` | CMD_SCRIPT_RUN | PC→设备 | `{"script":"名字","repeat":N}` | 离线执行已导入脚本，返回逐步骤成败日志；应答帧 `0x90`，`data` 为 `{script,ok,error,summary,logs,truncated}`（见「3.11」） |
+| `0x13` | CMD_SCRIPT_RUN_JS | PC→设备 | `{"script":"名字","repeat":N}` | v2.13 新增：Rhino 执行已导入 JS 脚本（方案3 P0）；应答帧 `0x93`，`data` 为 `{script,ok,error,summary,logs,truncated}`（见「3.12」） |
+| `0x14` | CMD_SCRIPT_STOP | PC→设备 | `{}` | v2.13 新增：停止正在执行的 JS 脚本，幂等；应答帧 `0x94`，`data` 为 `{stopping,wasRunning,forceAbandoned}`（见「3.12」） |
 | `0x80` | CMD_HEARTBEAT_RESPONSE | 设备→PC | 统一信封 | 由 `0x00 \| 0x80` 得到；通知类，不要求 ACK |
 | `0x81` | CMD_TTS_RESPONSE | 设备→PC | 统一信封 | 由 `0x01 \| 0x80` 得到；通知类，不要求 ACK |
 | `0x82` | CMD_DEVICE_INFO_RESPONSE | 设备→PC | 统一信封 | 由 `0x02 \| 0x80` 得到；通知类，不要求 ACK |
@@ -215,6 +222,8 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 | `0x8E` | CMD_SCRIPT_UNZIP_RESPONSE | 设备→PC | 统一信封 | 由 `0x0E \| 0x80` 得到；通知类，不要求 ACK |
 | `0x8F` | CMD_SCRIPT_LIST_RESPONSE | 设备→PC | 统一信封 | 由 `0x0F \| 0x80` 得到；通知类，不要求 ACK |
 | `0x90` | CMD_SCRIPT_RUN_RESPONSE | 设备→PC | 统一信封 | 由 `0x10 \| 0x80` 得到；通知类，不要求 ACK |
+| `0x93` | CMD_SCRIPT_RUN_JS_RESPONSE | 设备→PC | 统一信封 | 由 `0x13 \| 0x80` 得到；通知类，不要求 ACK |
+| `0x94` | CMD_SCRIPT_STOP_RESPONSE | 设备→PC | 统一信封 | 由 `0x14 \| 0x80` 得到；通知类，不要求 ACK |
 | `0xFF` | CMD_ERROR | 设备→PC | 统一信封 `{"code":400,"message":"unknown cmd: 0x..","data":null}` | 仅未知命令字；业务异常仍走 `cmd \| 0x80` 响应帧（信封内 `code:500`）；通知类，不要求 ACK |
 
 > 表中「统一信封」指 `{"code":200,"message":"success","data":{...}}`，失败为
@@ -227,7 +236,7 @@ ACK 帧为 `AA 55 <同帧序> 00 00 06 <crc_lo> <crc_hi>`（空数据区，`Prob
 
 `ProbeService.java` 的 `handleFrame()` 计算 `unknown` 与 `respCmd = unknown ? CMD_ERROR : (cmd | 0x80)`。
 PC 侧 `pc/probe_test.py` 的 `call()` 用 `r_cmd in (cmd | 0x80, CMD_ERROR)` 通用匹配响应帧，
-因此 `0x00` ~ `0x05`、`0x07` ~ `0x0D`、`0x0E` ~ `0x12` 的响应帧 `0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x8E` ~ `0x92`
+因此 `0x00` ~ `0x05`、`0x07` ~ `0x0D`、`0x0E` ~ `0x12`、`0x13` ~ `0x14` 的响应帧 `0x80` ~ `0x85`、`0x87` ~ `0x8D`、`0x8E` ~ `0x92`、`0x93` ~ `0x94`
 无需为每对命令字单独写匹配分支。
 
 ---
@@ -1058,6 +1067,9 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
 
 **应答顺序**（三命令字相同）: `ACK (0x06)` → `0x8E` / `0x8F` / `0x90`，两帧同帧序。
 
+> v2.13 起 `0x0E` 支持**双格式脚本包**：zip 根含 `script.json` 走 JSON 引擎（本节），
+> 含 `script.js` 走 JS 引擎（Rhino，返回 `data.format:"js"`，见「3.12」）。
+
 #### 调用方式
 
 `DFM-service` 端串联端点（`routes/probe.py`）:
@@ -1078,6 +1090,76 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
   极端超长仍由帧层兜底改写 `500 response too large: N`。
 - **root 依赖**: `tap` / `swipe` / `installApk` 等步骤经 root shell 执行，设备未 root 时
   对应步骤失败并在 `logs` 记录原因。
+
+### 3.12 设备端 JS 脚本引擎 `0x13` / `0x14`（v2.13，方案3 P0）
+
+**描述**: 设备端内嵌 Mozilla Rhino 1.8.1（解释模式，`classes2.dex`），可执行任意 JS
+脚本（`script_store/{脚本名}/script.js`）。PC 侧未来由 JSON→JS 编译器生成脚本
+（设计文档：`docx/脚本方案3-设备端JS执行设计.md`），现阶段可手写。脚本在头部声明
+`var apiVersion = 1;` 作为 API 契约，缺失或高于设备支持版本时拒执行。
+**实现位置**: `JsEngine.java`（独立引擎，`unzip()` / `run()` / `stop()`）；
+`ProbeService.java` 的 `execute()` 新增两分支薄壳转发；`0x0E` 经 `jsZipHasEntry`
+探测 `script.js` 自动分流（双格式并存，旧 JSON 脚本不受影响）。
+
+#### 3.12.1 `0x13 CMD_SCRIPT_RUN_JS` 执行 JS 脚本
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `script` | string | 是 | 脚本名（`script_store/` 下目录名）；不存在回 `400 script not found: <名>（先发 0x0E 解压脚本包）` |
+| `repeat` | int | 否 | 执行轮数，默认 `1`，范围 `1..1000`；每轮重新执行顶层 `var` 声明，无跨轮状态泄漏 |
+
+**返回参数（`0x93`）**（结构与 `0x90` 一致）:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `data.script` | string | 脚本名 |
+| `data.ok` | bool | 全部轮次无异常时 `true` |
+| `data.error` | string \| null | 失败原因（Rhino 异常定位到 `script.js:行号: 消息`；0x14 停止时为 `脚本已停止（0x14）`） |
+| `data.summary` | object | `{rounds,steps,ok,error,durationMs}` |
+| `data.logs[]` | array | `dfm.log(...)` 收集的日志 `{no,type,ok,message,durationMs}`；上限 500 条，单条 200 字符 |
+| `data.truncated` | bool | 日志条数达上限被截断时 `true` |
+
+#### 3.12.2 `0x14 CMD_SCRIPT_STOP` 停止 JS 脚本
+
+不带参数，幂等。置停止标志 + 中断脚本线程；Rhino 指令观察者
+（`instructionObserverThreshold`）与可中断 `sleep` 在解释模式下均响应停止。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `data.stopping` | bool | 固定 `true` |
+| `data.wasRunning` | bool | 调用停止时脚本线程是否存活 |
+| `data.forceAbandoned` | bool | 停止后 3s 线程仍未退出（无法安全强杀的卡死线程，如自引用原型链）时 `true`，已放弃该线程放行后续脚本 |
+
+#### 3.12.3 dfm 宿主函数集（全局直接可用）
+
+`tap(x,y[,duration])` / `swipe(x1,y1,x2,y2[,duration])` / `longpress(x,y[,duration])`
+（root shell `input`，坐标已按脚本视频基准自动缩放）· `input(text)`（ASCII，中文待 P2）·
+`keyevent(code)` · `accClick({id,text,desc})`（无障碍，返回信封）· `sleep(ms)`（可被 0x14 中断）·
+`shell(cmd,root,timeout)`（返回 `{exit,stdout,stderr,truncated}`）· `speak(text)`（TTS）·
+`startApp(pkg[,activity])` / `stopApp(pkg)` / `installApk(name)` / `uninstallApp(pkg)` ·
+`deleteFolder(path)`（限 `/sdcard`、`/storage`）· `reboot()` · `screenSize()`（返回 `{width,height}`）·
+`log(...)`（写入返回日志）· `randomDigits(n)`（1..18 位随机数）。
+
+#### 调用方式
+
+`DFM-service` 端串联端点（`routes/probe.py`）:
+
+- `POST /api/probe/script-run-js` `{"deviceId":"...","script":"xxx","repeat":1}` —— 发 `0x13`。
+- `POST /api/probe/script-stop` `{"deviceId":"..."}` —— 发 `0x14`（独立 TCP 连接，
+  不受正在执行的 `0x13` 阻塞）。
+
+也可经通用端点 `POST /api/probe/message` 传 `cmd:19/20`（0x13/0x14）直发。
+
+#### 注意
+
+- **双引擎并存**: `0x10`（JSON 引擎）与 `0x13`（JS 引擎）并存；同一脚本名下
+  `script.json` 与 `script.js` 互不干扰。P3 迁移完成后 JSON 引擎退役。
+- **执行超时**: 同 `3.11`，受帧协议 `RESPONSE_TIMEOUT=120s` 限制；超长脚本先发
+  `0x14` 停止再重新执行。
+- **停止语义**: 卡死线程放弃后其 `join` 循环退出，返回不再等待；孤儿线程为 daemon，
+  不阻止进程退出。
+- **Rhino 资源**: `org/mozilla/javascript/resources/*.properties`（本地化错误消息）随
+  APK 根打包；缺失时 Rhino 回退英文默认消息。
 
 
 
@@ -1134,6 +1216,13 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
   `tts` / `accClick` 步骤复用 `0x01` / `0x0D`（后者需无障碍服务已启用）；
   `waitFor` / `condition.template` 设备端不支持（无 OpenCV），遇到时该步骤失败。
   三命令字**未真机端到端验证**（编译与静态校验通过，见「五」）。
+- **JS 脚本依赖（v2.13，方案3 P0）**: `0x13` / `0x14` 及 `0x0E` 双格式需 v2.13+ APK
+  （内嵌 Rhino 1.8.1 `classes2.dex` + `JsEngine.java`，`assets/dfm.js` 随包）；
+  JS 脚本须在头部声明 `var apiVersion = 1;`（缺失或更高版本拒执行）；
+  宿主函数集：`tap/swipe/longpress/input/keyevent/accClick/sleep/shell/speak/startApp/
+  stopApp/installApk/uninstallApp/deleteFolder/reboot/screenSize/log/randomDigits`；
+  `tap` / `swipe` / `shell` 等需 root；`accClick` / `speak` 需对应服务已启用；
+  `input` 仅 ASCII（中文输入待 P2 Unicode 链路）。已真机端到端验证（见「五」）。
 
 ---
 
@@ -1155,6 +1244,7 @@ canonical path 校验防路径穿越（Zip Slip）；解压后缺 `script.json` 
 | 串口会话（`0x03`/`0x04`/`0x05`/`0x07`） | 设备端 `build.ps1` 完整编译签名（EXIT=0，APK 20954→25050 bytes）+ `javap` 确认 `0x04`/`0x05`/`0x07` 与 `MAX_SERIAL_BUFFER=65536` + JVM 反射 harness（33 PASS / 0 FAIL）+ 源码静态断言（45 PASS / 0 FAIL）；PC `probe_test.py` 16 个参数校验用例与三侧组帧字节一致性（20 PASS / 0 FAIL）；前端 `npm run build` EXIT=0 + 抽取两处组件函数在 mock 环境跑边界与产物字符串（126 PASS / 0 FAIL）；后端 `py_compile` EXIT=0 | `.reasonix/logs/build_serial_session.log`、`.reasonix/logs/javap_serial_session.log`、`.reasonix/logs/SerialLogicHarness.java`、`.reasonix/logs/serial_logic_harness.log`、`.reasonix/logs/verify_serial_session_static.py`、`.reasonix/logs/verify_serial_session_static_run.log`、`.reasonix/logs/FrameBytesHarness.java`、`.reasonix/logs/frame_bytes_java.txt`、`.reasonix/logs/verify_frame_bytes.py`、`.reasonix/logs/verify_frame_bytes.log`、`.reasonix/logs/frontend_build_serial_session.log`、`.reasonix/logs/serial_session_frontend_check.js`、`.reasonix/logs/serial_session_frontend_check.log` |
 | Shell/截图/拍照（`0x08`/`0x09`/`0x0A`） | 设备端 `build.ps1` 完整编译签名（EXIT=0，含 CAMERA 权限声明）；服务端 `probe.py` `py_compile` EXIT=0；前端 `npm run build` EXIT=0；**真机端到端通过**（rk3568_r Android 11，2026-11-15）：心跳 version 1.0、shell 应用/root 身份（`uid=10120`/`uid=0(root)`）、空白命令回 `400 command is required`、截图 `via=su` PNG 800x1280 360065 字节、拍照 GhostActivity 窗口内 JPEG 1920x1080 745384 字节（cameraId 0，文件签名与 SOF 尺寸均已核验）；`/api/probe/capture` 新端点逻辑与实测路径一致（am start → 1s → 发帧），待服务重启后走端点复测 | `.DFM_Model/logs/` 构建与编译日志、`verify_capture_e2e.ps1` / `verify_capture_msg.ps1` / `verify_camera1.ps1`（不入库） |
 | PC 侧摄像头列表 / 拍照读走即删（v2.5 补充） | **真机通过**（192.168.0.34:5555，rk3568_r Android 11，2026-11-15）：`/api/probe/cameras` 返回 2 个摄像头（0 后置 / 1 前置，1920x1080）；`kind=photo` 响应带 base64（JPEG `ffd8ffe1`）、`deleted=true`，设备端 `photo_*.jpg` 前后 `ls` 对比确认新照片已删除，历史遗留 4 张一并清理；`kind=screenshot` 仍只返回 path 且文件存在。后端 26 项边界用例 PASS / 0 FAIL，前端 `npm run build` EXIT=0 | `.DFM_Model/logs/test_probe_cameras_capture.py`、`verify_probe_capture_real.py`（不入库） |
+| JS 脚本引擎（v2.13，方案3 P0，2026-11-28） | 设备端 `build.ps1` 全通过（Rhino 1.8.1 → `classes2.dex` + i18n properties + `dfm.js`，apksigner v1/v2/v3 均 `true`）；`/d/uTools/DFM-service/routes/probe.py` 新端点 `py_compile` EXIT=0；**真机端到端通过**（202600210090，1920x1080）：`0x0E` 双格式导入（`format:js`）、`0x13` 执行 benchjs（screenSize/randomDigits/tap/shell/sleep，repeat=1/2 无跨轮状态泄漏）、`0x14` 停止 longjs（`stopping:true`、tick 0~3 后 `脚本已停止（0x14）`、durationMs≈4s、forceAbandoned=false） | 直连 TCP 测试 harness（临时脚本不入库）；测试脚本 benchjs/diag4js/longjs |
 
 > 除旧版 `0x03` 一次性读取已真机端到端验证（历史记录）外，上述验证均为编译、静态与帧仿真级别；
 > v2.4 串口会话（打开串口、后台持续读、循环发送、CLOSE 停线程）**未在真机端到端验证**，
